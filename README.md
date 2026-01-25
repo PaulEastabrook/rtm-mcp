@@ -29,7 +29,7 @@ pip install rtm-mcp
 ### From Source
 
 ```bash
-git clone https://github.com/lukasz/rtm-mcp.git
+git clone https://github.com/ljadach/rtm-mcp.git
 cd rtm-mcp
 uv sync
 ```

@@ -197,7 +197,7 @@ uv publish
 
 ```bash
 docker build -t rtm-mcp .
-docker push ghcr.io/lukasz/rtm-mcp
+docker push ghcr.io/ljadach/rtm-mcp
 ```
 
 ## Common Issues

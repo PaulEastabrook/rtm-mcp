@@ -2,7 +2,7 @@
 name = "rtm-mcp"
 version = "1.0.0"
 description = "Remember The Milk MCP Server - Full API coverage for Claude"
-authors = [{ name = "Lukasz", email = "lukasz@example.com" }]
+authors = [{ name = "Lukasz Jadach" }]
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -38,9 +38,9 @@ rtm-mcp = "rtm_mcp.server:main"
 rtm-setup = "rtm_mcp.scripts.setup_auth:main"
 
 [project.urls]
-Homepage = "https://github.com/lukasz/rtm-mcp"
-Repository = "https://github.com/lukasz/rtm-mcp"
-Issues = "https://github.com/lukasz/rtm-mcp/issues"
+Homepage = "https://github.com/ljadach/rtm-mcp"
+Repository = "https://github.com/ljadach/rtm-mcp"
+Issues = "https://github.com/ljadach/rtm-mcp/issues"
 
 [build-system]
 requires = ["hatchling"]
