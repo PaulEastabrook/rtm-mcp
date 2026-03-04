@@ -38,9 +38,12 @@ uv sync
 
 ### 1. Get RTM API Credentials
 
-1. Go to [RTM API Keys](https://www.rememberthemilk.com/services/api/keys.rtm)
-2. Create a new API key
-3. Note your **API Key** and **Shared Secret**
+RTM API keys are issued through a separate developer portal (not your account settings):
+
+1. Go to [RTM API Key Registration](https://www.rememberthemilk.com/services/api/keys.rtm) — you may need to log in first
+2. Click **"Apply for an API Key"**
+3. Fill in the form — app name (e.g. "Claude MCP"), description, anything works
+4. After submitting, you'll see your **API Key** and **Shared Secret** — save both
 
 ### 2. Run Setup
 
