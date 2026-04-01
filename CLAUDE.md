@@ -8,7 +8,7 @@ src/rtm_mcp/
 ├── client.py           # Async RTM API client with signing
 ├── config.py           # Pydantic settings (env + file)
 ├── types.py            # Pydantic models for type safety
-├── exceptions.py       # RTMError hierarchy
+├── exceptions.py       # RTMError hierarchy + ERROR_GUIDANCE recovery hints
 ├── response_builder.py # Consistent response formatting
 ├── tools/
 │   ├── tasks.py        # Task CRUD + metadata + hierarchy (19 tools)
@@ -62,6 +62,38 @@ client = RTMClient(config)
 result = await client.call("rtm.tasks.add", require_timeline=True, name="Task")
 ```
 
+### Error Handling
+
+Two layers of error handling:
+
+**RTM API errors** — `raise_for_error()` in `exceptions.py` maps RTM error codes to exception classes (`RTMAuthError`, `RTMValidationError`, `RTMNotFoundError`, etc.) and appends recovery guidance from `ERROR_GUIDANCE`:
+
+```python
+# exceptions.py
+ERROR_GUIDANCE: dict[int, str] = {
+    98: "Re-run rtm-setup to get a fresh auth token.",
+    340: "Call get_lists to see available list names.",
+    341: "Call list_tasks to find the correct task name or IDs.",
+    4040: "Subtask features require an RTM Pro account.",
+    # ... 11 codes total
+}
+
+def raise_for_error(code: int, message: str) -> None:
+    error_class = ERROR_CODE_MAP.get(code, RTMError)
+    guidance = ERROR_GUIDANCE.get(code)
+    full_message = f"{message} — {guidance}" if guidance else message
+    raise error_class(full_message, code)
+```
+
+**Application-level errors** — `_resolve_task_ids` helpers (in both `tasks.py` and `notes.py`) and tool functions return actionable error messages via `build_response(data={"error": ...})` that guide agents to the correct next step:
+
+```python
+# Example: suggests the tool to call next
+{"error": "Task not found: 'Buy milk'. Use list_tasks to search by filter or check spelling."}
+{"error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."}
+{"error": "List 'Projects' not found. Use get_lists to see available list names."}
+```
+
 ### Task Identification
 
 RTM uses three IDs for task operations:
@@ -84,7 +116,7 @@ RTM supports parent/child task relationships (Pro required, max 3 levels):
 - If the parent is in a different list, the task is **implicitly moved** to that list
 - Repeating tasks cannot be parents or children of other repeating tasks
 - `isSubtask:true` is an **undocumented** RTM filter — client-side filtering by `parent_task_id` is the reliable fallback
-- RTM error codes: 4040 = Pro required, 4050 = invalid parent, 4060 = max nesting exceeded, 4070 = repeating task conflict, 4090 = self-parenting
+- RTM error codes: 4040 = Pro required, 4050 = invalid parent, 4060 = max nesting exceeded, 4070 = repeating task conflict, 4080 = due date before start date, 4090 = self-parenting
 
 ### Write Response Format
 
@@ -202,9 +234,11 @@ asyncio.run(test())
 
 1. Identify RTM API method from [docs](https://www.rememberthemilk.com/services/api/)
 2. Add tool function in appropriate tools/*.py file
-3. Use `require_timeline=True` for write operations
-4. Return via `build_response()` with transaction_id if applicable
-5. Add tests (unit tests for helpers, FakeMCP tests for tool functions)
+3. Write an enriched docstring following Anthropic's best practices: opening sentence (what + when), parameter semantics, return shape, examples, and edge cases
+4. Use `require_timeline=True` for write operations
+5. Return via `build_response()` with transaction_id if applicable
+6. Use actionable error messages that suggest the next tool to call
+7. Add tests (unit tests for helpers, FakeMCP tests for tool functions)
 
 Example:
 
@@ -218,7 +252,14 @@ async def set_task_location(
     taskseries_id: str | None = None,
     list_id: str | None = None,
 ) -> dict[str, Any]:
-    """Set task location."""
+    """Assign a saved location to a task. Use get_locations to find location IDs.
+    Use list_tasks with filter "location:name" to find tasks at a location.
+
+    Identify the task by either task_name or all three IDs.
+
+    Returns:
+        {"message": "Location set"} with transaction_id for undo.
+    """
     client: RTMClient = await get_client()
     ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
     if "error" in ids:
