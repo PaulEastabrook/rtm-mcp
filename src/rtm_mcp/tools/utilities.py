@@ -235,15 +235,22 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
     ) -> dict[str, Any]:
         """Undo a previous write operation using its transaction_id. Most write tools
         return a transaction_id in their metadata. Not all operations are undoable —
-        check the "undoable" field in the original response. Must be called within
-        the same session (timelines expire).
+        check the "transaction_undoable" field in the original response. Must be called
+        within the same session (timelines expire).
+
+        Use get_timeline_info to see all transactions and their undo status. For
+        undoing multiple operations at once, use batch_undo instead.
 
         Args:
-            transaction_id: The transaction_id from the operation's response metadata.
+            transaction_id: The transaction_id from the operation's response metadata
+                or from get_timeline_info output.
 
         Returns:
-            {"status": "success", "message": "Operation undone"} or
-            {"status": "error", "error": "..."}.
+            {"status": "success", "message": "Operation undone", "transaction_id": "..."}
+            or {"status": "error", "error": "...", "transaction_id": "..."}.
+
+        Examples:
+            - undo(transaction_id="12345") → reverses that operation
         """
         from ..client import RTMClient
 
@@ -279,19 +286,27 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         ctx: Context,
         transaction_ids: list[str],
     ) -> dict[str, Any]:
-        """Undo multiple write operations in reverse chronological order. All
-        transaction_ids must belong to the current session's timeline. Processing
-        stops on the first failure; already-undone transactions are skipped silently.
+        """Undo multiple write operations in one call. Operations are undone in
+        reverse chronological order (most recent first) to maintain data consistency.
+        All transaction_ids must belong to the current session's timeline.
 
-        Use get_timeline_info to see which transactions are available for undo.
+        Processing stops on the first failure. Transactions already undone (via undo
+        or a previous batch_undo) are skipped silently. Use get_timeline_info to see
+        which transactions are available and their current undo status.
 
         Args:
-            transaction_ids: List of transaction_ids to undo (from response metadata
-                or get_timeline_info).
+            transaction_ids: List of transaction_ids to undo. Order does not matter —
+                they are automatically sorted most-recent-first. Get IDs from write
+                tool response metadata or from get_timeline_info output.
 
         Returns:
-            {"undone": [...], "skipped": [...], "failed": {...} | null,
-            "timeline_id": "..."}.
+            {"undone": ["tx3", "tx2"], "skipped": ["tx1"], "failed": null |
+            {"transaction_id": "...", "error": "..."}, "timeline_id": "..."}.
+
+        Examples:
+            - batch_undo(transaction_ids=["tx1", "tx2", "tx3"]) → undoes tx3, tx2,
+              tx1 in that order
+            - If tx2 fails: returns undone=["tx3"], failed={tx2 info}, tx1 not attempted
         """
         from ..client import RTMClient
 
@@ -344,15 +359,24 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
     @mcp.tool()
     async def get_timeline_info(ctx: Context) -> dict[str, Any]:
-        """Get information about the current session's timeline and transaction
-        history. Use this to review what write operations have been performed and
-        which can be undone. If no writes have been performed yet, timeline_id
-        will be null.
+        """View the current session's timeline and full transaction history. Use this
+        to review what write operations have been performed, which can be undone, and
+        to get transaction_ids for undo or batch_undo.
+
+        If no write operations have been performed yet, timeline_id and created_at
+        will be null. Transactions are listed in chronological order (oldest first).
 
         Returns:
-            {"timeline_id": "..." | null, "created_at": "..." | null,
+            {"timeline_id": "..." | null, "created_at": "ISO timestamp" | null,
             "transaction_count": N, "transactions": [{transaction_id, method,
             undoable, undone, summary}]}.
+
+            Each transaction entry includes:
+            - transaction_id: ID for use with undo or batch_undo
+            - method: the tool that created it (e.g., "add_task")
+            - undoable: whether RTM supports undoing this operation
+            - undone: whether this transaction has already been undone
+            - summary: human-readable description of what was done
         """
         from ..client import RTMClient
 
