@@ -14,7 +14,7 @@ src/rtm_mcp/
 │   ├── tasks.py        # Task CRUD + metadata + hierarchy (19 tools)
 │   ├── lists.py        # List management (7 tools)
 │   ├── notes.py        # Note operations (4 tools)
-│   └── utilities.py    # Tags, locations, settings, undo
+│   └── utilities.py    # Tags, locations, settings, undo (9 tools)
 └── scripts/
     └── setup_auth.py   # Interactive auth setup CLI
 ```
@@ -156,10 +156,17 @@ class FakeMCP:
         return decorator
 ```
 
-Test files:
+Test files (198 tests total):
+- `tests/test_client.py` — client signing, API calls, timeline caching (7 tests)
+- `tests/test_config.py` — config load/save, file fallback, corrupt JSON (10 tests)
+- `tests/test_exceptions.py` — error code mapping including subtask codes 4040-4090 (16 tests)
 - `tests/test_response_builder.py` — parser and formatter tests (30 tests)
-- `tests/test_tools/test_tasks.py` — `_apply_subtask_counts` and `_analyze_tasks` helpers (17 tests)
 - `tests/test_tools/test_task_tools.py` — all 19 task tools via FakeMCP (60 tests)
+- `tests/test_tools/test_tasks.py` — `_apply_subtask_counts` and `_analyze_tasks` helpers (17 tests)
+- `tests/test_tools/test_list_tools.py` — all 7 list tools via FakeMCP (16 tests)
+- `tests/test_tools/test_note_tools.py` — all 4 note tools via FakeMCP (14 tests)
+- `tests/test_tools/test_utility_tools.py` — all 9 utility tools via FakeMCP (25 tests)
+- `tests/test_tools/test_lists.py` — list response filtering and sorting (3 tests)
 
 ### Integration Testing
 

@@ -6,7 +6,7 @@ Enables Claude to manage your tasks through natural language conversation.
 
 ## Features
 
-- **Full RTM API Coverage**: 30+ tools covering tasks, lists, tags, notes, and more
+- **Full RTM API Coverage**: 39 tools covering tasks, lists, tags, notes, and more
 - **Subtask Hierarchy**: Full parent/child task support with `parent_task_id`, subtask counts, and nesting up to 3 levels
 - **Smart Add Syntax**: Natural language task creation (`"Call mom ^tomorrow !1 #family"`)
 - **Undo Support**: All write operations return transaction IDs for undo
@@ -154,7 +154,8 @@ Tasks support parent/child relationships up to 3 levels deep (RTM Pro required):
 - `get_tags` - List all tags
 - `get_locations` - List saved locations
 - `get_settings` - View user settings
-- `get_contacts` / `get_groups` - Contact management
+- `get_contacts` - List contacts for task sharing
+- `get_groups` - List contact groups with member counts
 - `parse_time` - Parse natural language time
 - `undo` - Undo previous operation
 
