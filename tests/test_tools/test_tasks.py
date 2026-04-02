@@ -177,14 +177,14 @@ class TestTaskAnalysis:
 
     def test_analyze_empty_tasks(self) -> None:
         """Test analysis of empty task list."""
-        from rtm_mcp.tools.tasks import _analyze_tasks
+        from rtm_mcp.parsers import analyze_tasks as _analyze_tasks
 
         result = _analyze_tasks([])
         assert result == {}
 
     def test_analyze_tasks_with_priorities(self) -> None:
         """Test priority counting."""
-        from rtm_mcp.tools.tasks import _analyze_tasks
+        from rtm_mcp.parsers import analyze_tasks as _analyze_tasks
 
         tasks = [
             {"priority": "1", "due": None, "tags": []},
@@ -203,7 +203,7 @@ class TestTaskAnalysis:
 
     def test_analyze_overdue_tasks(self) -> None:
         """Test overdue task detection."""
-        from rtm_mcp.tools.tasks import _analyze_tasks
+        from rtm_mcp.parsers import analyze_tasks as _analyze_tasks
 
         tasks = [
             {"priority": "N", "due": "2020-01-01T00:00:00Z", "tags": []},  # Overdue
@@ -219,7 +219,7 @@ class TestTaskAnalysis:
         from datetime import UTC, datetime
         from zoneinfo import ZoneInfo
 
-        from rtm_mcp.tools.tasks import _analyze_tasks
+        from rtm_mcp.parsers import analyze_tasks as _analyze_tasks
 
         # Create a task due "today" in a specific timezone
         # Use a timezone that's ahead of UTC (e.g., Europe/Warsaw = UTC+1 or UTC+2)
@@ -251,7 +251,7 @@ class TestTaskAnalysis:
         from datetime import datetime, timedelta
         from zoneinfo import ZoneInfo
 
-        from rtm_mcp.tools.tasks import _analyze_tasks
+        from rtm_mcp.parsers import analyze_tasks as _analyze_tasks
 
         # Create a task that was due yesterday in the user's timezone
         test_tz = ZoneInfo("Europe/Warsaw")

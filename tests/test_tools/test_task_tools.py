@@ -103,9 +103,9 @@ def mock_client():
 
 @pytest.fixture
 def _patch_settings(mock_client):
-    """Make _get_user_timezone return None (skip settings call)."""
+    """Make client.get_timezone() return None (skip settings call)."""
     # We configure the mock in each test; this fixture is a reminder that
-    # settings calls must be accounted for when the tool calls _get_user_timezone.
+    # settings calls must be accounted for when the tool calls client.get_timezone().
     pass
 
 
@@ -993,11 +993,11 @@ class TestSmartListFilter:
 
 
 # ---------------------------------------------------------------------------
-# _find_task: partial name matching
+# find_task: partial name matching (via lookup.py)
 # ---------------------------------------------------------------------------
 
 class TestFindTask:
-    """Test _find_task helper for exact and partial matching."""
+    """Test find_task helper for exact and partial matching."""
 
     @pytest.mark.asyncio
     async def test_exact_match_preferred(self, task_tools):
@@ -1061,47 +1061,47 @@ class TestParseEstimateMinutes:
     """Test estimate string parsing."""
 
     def test_iso_hours(self):
-        from rtm_mcp.tools.tasks import _parse_estimate_minutes
+        from rtm_mcp.parsers import parse_estimate_minutes as _parse_estimate_minutes
         assert _parse_estimate_minutes("PT1H") == 60
         assert _parse_estimate_minutes("PT2H") == 120
 
     def test_iso_minutes(self):
-        from rtm_mcp.tools.tasks import _parse_estimate_minutes
+        from rtm_mcp.parsers import parse_estimate_minutes as _parse_estimate_minutes
         assert _parse_estimate_minutes("PT30M") == 30
         assert _parse_estimate_minutes("PT45M") == 45
 
     def test_iso_hours_and_minutes(self):
-        from rtm_mcp.tools.tasks import _parse_estimate_minutes
+        from rtm_mcp.parsers import parse_estimate_minutes as _parse_estimate_minutes
         assert _parse_estimate_minutes("PT1H30M") == 90
         assert _parse_estimate_minutes("PT2H15M") == 135
 
     def test_human_readable(self):
-        from rtm_mcp.tools.tasks import _parse_estimate_minutes
+        from rtm_mcp.parsers import parse_estimate_minutes as _parse_estimate_minutes
         assert _parse_estimate_minutes("1 hour") == 60
         assert _parse_estimate_minutes("30 minutes") == 30
         assert _parse_estimate_minutes("2 hours 30 minutes") == 150
 
     def test_empty_and_none(self):
-        from rtm_mcp.tools.tasks import _parse_estimate_minutes
+        from rtm_mcp.parsers import parse_estimate_minutes as _parse_estimate_minutes
         assert _parse_estimate_minutes(None) is None
         assert _parse_estimate_minutes("") is None
 
     def test_unparseable(self):
-        from rtm_mcp.tools.tasks import _parse_estimate_minutes
+        from rtm_mcp.parsers import parse_estimate_minutes as _parse_estimate_minutes
         assert _parse_estimate_minutes("soon") is None
         assert _parse_estimate_minutes("a while") is None
 
 
 # ---------------------------------------------------------------------------
-# _resolve_task_ids
+# resolve_task_ids (via lookup.py)
 # ---------------------------------------------------------------------------
 
 class TestResolveTaskIds:
-    """Test task ID resolution."""
+    """Test task ID resolution via lookup.resolve_task_ids."""
 
     @pytest.mark.asyncio
     async def test_with_direct_ids(self):
-        from rtm_mcp.tools.tasks import _resolve_task_ids
+        from rtm_mcp.lookup import resolve_task_ids as _resolve_task_ids
         mock_client = AsyncMock()
 
         result = await _resolve_task_ids(
@@ -1113,7 +1113,7 @@ class TestResolveTaskIds:
 
     @pytest.mark.asyncio
     async def test_missing_partial_ids(self):
-        from rtm_mcp.tools.tasks import _resolve_task_ids
+        from rtm_mcp.lookup import resolve_task_ids as _resolve_task_ids
         mock_client = AsyncMock()
 
         result = await _resolve_task_ids(
@@ -1123,7 +1123,7 @@ class TestResolveTaskIds:
 
     @pytest.mark.asyncio
     async def test_name_lookup(self):
-        from rtm_mcp.tools.tasks import _resolve_task_ids
+        from rtm_mcp.lookup import resolve_task_ids as _resolve_task_ids
         mock_client = AsyncMock()
         mock_client.call.return_value = _make_getlist_response([
             _ts(ts_id="10", task_id="100", name="My Task"),
@@ -1136,7 +1136,7 @@ class TestResolveTaskIds:
 
     @pytest.mark.asyncio
     async def test_name_not_found(self):
-        from rtm_mcp.tools.tasks import _resolve_task_ids
+        from rtm_mcp.lookup import resolve_task_ids as _resolve_task_ids
         mock_client = AsyncMock()
         mock_client.call.return_value = {"stat": "ok", "tasks": {}}
 

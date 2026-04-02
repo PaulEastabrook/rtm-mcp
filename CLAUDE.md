@@ -5,12 +5,14 @@
 ```
 src/rtm_mcp/
 ├── server.py           # FastMCP server, lifespan, tool registration
-├── client.py           # Async RTM API client with signing + retry
-├── config.py           # Pydantic settings (env + file + rate limits)
+├── client.py           # Async RTM API client with signing, retry, timezone caching
+├── config.py           # Pydantic settings (env + file + rate limits + connection retry)
+├── parsers.py          # RTM response parsing, formatting, normalization, analysis
+├── response_builder.py # MCP response envelope + transaction recording
+├── lookup.py           # Shared name-to-ID resolution for tasks and lists
 ├── rate_limiter.py     # Token bucket rate limiter + diagnostics stats
 ├── types.py            # Pydantic models for type safety
 ├── exceptions.py       # RTMError hierarchy + ERROR_GUIDANCE recovery hints
-├── response_builder.py # Consistent response formatting
 ├── tools/
 │   ├── tasks.py        # Task CRUD + metadata + hierarchy (19 tools)
 │   ├── lists.py        # List management (7 tools)
@@ -19,6 +21,18 @@ src/rtm_mcp/
 └── scripts/
     └── setup_auth.py   # Interactive auth setup CLI
 ```
+
+### Module Responsibilities
+
+| Module | Single Responsibility |
+|--------|----------------------|
+| `client.py` | HTTP transport: signing, connection pooling, rate limiting, retry, timezone caching |
+| `parsers.py` | Translate RTM's quirky API responses into clean Python dicts |
+| `response_builder.py` | Wrap tool output in the standard MCP response envelope |
+| `lookup.py` | Resolve human-readable names (task name, list name) to RTM IDs |
+| `exceptions.py` | Map RTM error codes to typed exceptions with recovery hints |
+| `rate_limiter.py` | Token bucket pacing + rolling-window diagnostics |
+| `tools/*.py` | Register MCP tools — thin glue between `client`, `parsers`, and `response_builder` |
 
 ## Key Patterns
 
@@ -37,36 +51,40 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
 ### Response Format
 
-All tools return consistent structure:
+All tools return a consistent envelope:
 
 ```python
 {
     "data": {...},                    # Main response data
-    "analysis": {"insights": [...]},  # Optional insights
+    "analysis": {"insights": [...]},  # Optional insights (e.g. list_tasks)
     "metadata": {
         "fetched_at": "ISO timestamp",
-        "transaction_id": "...",       # For undo support (write ops only)
-        "transaction_undoable": True,  # Whether undo is possible (write ops only)
-        "timeline_id": "...",          # Session timeline ID (write ops only)
+        "transaction_id": "...",       # Write ops only — for undo
+        "transaction_undoable": True,  # Write ops only
+        "timeline_id": "...",          # Write ops only
     }
 }
 ```
 
-### RTM Client
+### HTTP Transport
 
-Async client with automatic:
-- MD5 request signing
-- Timeline creation for writes
-- Token bucket rate limiting (burst to 3 RPS, sustain ~0.9 RPS with safety margin)
-- HTTP 503 retry with escalating backoff (2s → 5s, max 2 retries)
-- Error code mapping to exceptions
+Reads use GET with query parameters. Writes (`require_timeline=True`) use POST with form data — RTM silently ignores some parameters (e.g. `note_title`) on GET.
 
 ```python
 client = RTMClient(config)
 result = await client.call("rtm.tasks.add", require_timeline=True, name="Task")
 ```
 
-### Rate Limiting
+The client provides:
+- **MD5 request signing** via `sign_request()` (shared by `RTMClient` and `RTMAuthFlow`)
+- **Timeline management** for write operations
+- **Token bucket rate limiting** (burst to 3 RPS, sustain ~0.9 RPS)
+- **HTTP 503 retry** with escalating backoff (2s → 5s, max 2 retries)
+- **Connection retry** for transient errors (timeout, DNS, TCP reset) with configurable backoff
+- **Timezone caching** via `client.get_timezone()` — fetches once per session
+- **Error code mapping** to typed exceptions with recovery hints
+
+### Rate Limiting and Connection Retry
 
 Uses a **token bucket** (`rate_limiter.py`) matching RTM's stated limits:
 
@@ -76,8 +94,18 @@ Uses a **token bucket** (`rate_limiter.py`) matching RTM's stated limits:
 | Safety margin | 10% | `RTM_SAFETY_MARGIN` |
 | Refill rate | 0.9 tokens/sec (= 1.0 - margin) | Derived |
 | Max 503 retries | 2 | `RTM_MAX_RETRIES` |
-| First retry delay | 2s | `RTM_RETRY_DELAY_FIRST` |
-| Subsequent retry delay | 5s | `RTM_RETRY_DELAY_SUBSEQUENT` |
+| First 503 retry delay | 2s | `RTM_RETRY_DELAY_FIRST` |
+| Subsequent 503 retry delay | 5s | `RTM_RETRY_DELAY_SUBSEQUENT` |
+| Max connection retries | 3 | `RTM_CONN_MAX_RETRIES` |
+| First connection retry delay | 1s | `RTM_CONN_RETRY_DELAY_FIRST` |
+| Subsequent connection retry delay | 3s | `RTM_CONN_RETRY_DELAY_SUBSEQUENT` |
+
+**Connection retries** are handled by `_attempt_http()` which wraps the HTTP dispatch:
+- `ConnectError` (TCP, DNS) — retried for both reads and writes (connection never established)
+- `TimeoutException` on reads — retried (safe to replay)
+- `TimeoutException` on writes — **not retried** (request may have been processed, risking duplication)
+- TLS certificate errors — never retried
+- Connection retries do **not** consume additional rate limit tokens
 
 Request classification uses `require_timeline` as a proxy: `True` = write, `False` = read. This correlates 100% with actual read/write status across all tools.
 
@@ -104,23 +132,24 @@ def raise_for_error(code: int, message: str) -> None:
     raise error_class(full_message, code)
 ```
 
-**Application-level errors** — `_resolve_task_ids` helpers (in both `tasks.py` and `notes.py`) and tool functions return actionable error messages via `build_response(data={"error": ...})` that guide agents to the correct next step:
+**Application-level errors** — `resolve_task_ids` and `resolve_list_id` (in `lookup.py`) and tool functions return actionable error messages via `build_response(data={"error": ...})` that guide agents to the correct next step:
 
 ```python
-# Example: suggests the tool to call next
 {"error": "Task not found: 'Buy milk'. Use list_tasks to search by filter or check spelling."}
 {"error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."}
 {"error": "List 'Projects' not found. Use get_lists to see available list names."}
 ```
 
-### Task Identification
+### Task and List Identification
 
 RTM uses three IDs for task operations:
 - `list_id`: Which list the task is in
 - `taskseries_id`: The task series (for recurring tasks)
 - `task_id`: The specific task instance
 
-Tools accept either `task_name` (fuzzy search) or all three IDs.
+Tools accept either `task_name` (fuzzy search) or all three IDs. **Fuzzy matching** (`lookup.py:find_task`) searches incomplete tasks, preferring exact matches over substrings and more recently modified tasks over stale ones. All tool docstrings include a caution that fuzzy matching may hit unintended tasks.
+
+List tools accept `list_name` which is resolved to `list_id` via `lookup.py:resolve_list_id`.
 
 ### Subtask Hierarchy
 
@@ -137,6 +166,28 @@ RTM supports parent/child task relationships (Pro required, max 3 levels):
 - `isSubtask:true` is an **undocumented** RTM filter — client-side filtering by `parent_task_id` is the reliable fallback
 - RTM error codes: 4040 = Pro required, 4050 = invalid parent, 4060 = max nesting exceeded, 4070 = repeating task conflict, 4080 = due date before start date, 4090 = self-parenting
 
+## RTM API Quirks
+
+### Response Normalization
+
+RTM returns single items as dicts and multiple items as arrays. Use `ensure_list()` from `parsers.py`:
+
+```python
+from rtm_mcp.parsers import ensure_list
+
+data = ensure_list(result.get("locations", {}).get("location", []))
+# Always returns a list, even for single-item or empty responses
+```
+
+RTM also wraps arrays in dict containers (e.g. `{"tag": ["a", "b"]}`). Use `parse_nested_list()`:
+
+```python
+from rtm_mcp.parsers import parse_nested_list
+
+tags = parse_nested_list(ts.get("tags", []), "tag")
+# Handles: {"tag": "single"}, {"tag": ["a","b"]}, [], None
+```
+
 ### Write Response Format
 
 RTM returns different JSON structures for reads vs writes:
@@ -150,18 +201,6 @@ if not task_lists and "list" in result:
     task_lists = result["list"]
 ```
 
-## RTM API Quirks
-
-### Response Normalization
-
-RTM returns inconsistent structures. Always normalize:
-
-```python
-lists = result.get("lists", {}).get("list", [])
-if isinstance(lists, dict):  # Single item comes as dict, not list
-    lists = [lists]
-```
-
 ### Timeline Requirement
 
 All write operations require a timeline:
@@ -172,7 +211,7 @@ await client.call("rtm.tasks.complete", require_timeline=True, ...)
 
 ### Transaction Log and Undo
 
-All write tools record their transaction in an in-memory log on `RTMClient` via `record_and_build_response()`. This helper extracts the transaction ID and undoable flag, records the entry, and builds the response with `transaction_id`, `transaction_undoable`, and `timeline_id` metadata in one call:
+All write tools record their transaction in an in-memory log on `RTMClient` via `record_and_build_response()`. This helper extracts the transaction ID and undoable flag, records the entry, and builds the response envelope in one call:
 
 ```python
 return record_and_build_response(client, result, data={...}, tool_name="add_task")
@@ -187,12 +226,21 @@ Key classes:
 - `TransactionEntry` (dataclass in `client.py`): `transaction_id`, `method`, `undoable`, `undone`, `summary`
 - `record_and_build_response` (in `response_builder.py`): combines `get_transaction_info` + `client.record_transaction` + `build_response`
 
+### Note Body Extraction
+
+RTM stores note body text in `$t` (XML text node) or `body` depending on context. Use `extract_note_body()`:
+
+```python
+from rtm_mcp.parsers import extract_note_body
+body = extract_note_body(note)  # Handles both "$t" and "body" keys
+```
+
 ## Testing
 
 ### Unit Tests
 
 ```bash
-make test
+uv run pytest
 ```
 
 Tests use respx for HTTP mocking and a FakeMCP pattern for tool-level tests:
@@ -216,14 +264,15 @@ class FakeMCP:
         return decorator
 ```
 
-Test files (249 tests total):
-- `tests/test_client.py` — client signing, API calls, timeline caching, transaction log, 503 retry (25 tests)
+Test files (275 tests total):
+- `tests/test_client.py` — client signing, API calls, timeline caching, transaction log, 503 retry, connection retry, POST/GET split (35 tests)
 - `tests/test_config.py` — config load/save, file fallback, corrupt JSON (10 tests)
 - `tests/test_exceptions.py` — error code mapping including subtask codes 4040-4090 (16 tests)
 - `tests/test_rate_limiter.py` — token bucket acquire/refill/pause, rate limit stats (14 tests)
-- `tests/test_response_builder.py` — parser, formatter, get_transaction_info, record_and_build_response (40 tests)
+- `tests/test_response_builder.py` — envelope builder, transaction info, record_and_build_response, parsers (40 tests)
+- `tests/test_lookup.py` — find_task disambiguation, resolve_task_ids, resolve_list_id (16 tests)
 - `tests/test_tools/test_task_tools.py` — all 19 task tools via FakeMCP (60 tests)
-- `tests/test_tools/test_tasks.py` — `_apply_subtask_counts` and `_analyze_tasks` helpers (17 tests)
+- `tests/test_tools/test_tasks.py` — `_apply_subtask_counts` and `analyze_tasks` helpers (17 tests)
 - `tests/test_tools/test_list_tools.py` — all 7 list tools via FakeMCP (16 tests)
 - `tests/test_tools/test_note_tools.py` — all 4 note tools via FakeMCP (14 tests)
 - `tests/test_tools/test_utility_tools.py` — all 12 utility tools via FakeMCP (34 tests)
@@ -262,16 +311,20 @@ asyncio.run(test())
 ## Adding New Tools
 
 1. Identify RTM API method from [docs](https://www.rememberthemilk.com/services/api/)
-2. Add tool function in appropriate tools/*.py file
+2. Add tool function in appropriate `tools/*.py` file
 3. Write an enriched docstring following Anthropic's best practices: opening sentence (what + when), parameter semantics, return shape, examples, and edge cases
 4. Use `require_timeline=True` for write operations
 5. Return via `record_and_build_response()` for write tools (records transaction + builds response)
-6. Use actionable error messages that suggest the next tool to call
-7. Add tests (unit tests for helpers, FakeMCP tests for tool functions)
+6. Use `resolve_task_ids()` from `lookup.py` for task identification, `resolve_list_id()` for list lookup
+7. Use actionable error messages that suggest the next tool to call
+8. Add tests (unit tests for helpers, FakeMCP tests for tool functions)
 
 Example:
 
 ```python
+from ..lookup import resolve_task_ids
+from ..response_builder import build_response, record_and_build_response
+
 @mcp.tool()
 async def set_task_location(
     ctx: Context,
@@ -286,11 +339,15 @@ async def set_task_location(
 
     Identify the task by either task_name or all three IDs.
 
+    Caution: task_name uses fuzzy matching across all tasks. For common names,
+    prefer passing task_id + taskseries_id + list_id to avoid matching an
+    unintended task.
+
     Returns:
         {"message": "Location set"} with transaction_id for undo.
     """
     client: RTMClient = await get_client()
-    ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+    ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
     if "error" in ids:
         return build_response(data=ids)
 
@@ -333,6 +390,10 @@ Run `rtm-setup` or set environment variables.
 ### Rate Limiting
 
 Client uses a token bucket (burst to 3, sustain ~0.9 RPS). HTTP 503 responses trigger automatic retry with backoff. Use `get_rate_limit_status` to diagnose. If 503s occur regularly, increase `RTM_SAFETY_MARGIN` (default 0.1).
+
+### Connection Failures
+
+Transient connection errors (TCP timeout, DNS, connection reset) are retried automatically up to `RTM_CONN_MAX_RETRIES` (default 3). Write timeouts are **not** retried to avoid duplicates. Check `connection_retries_last_60s` in `get_rate_limit_status` output.
 
 ### Token Expiry
 

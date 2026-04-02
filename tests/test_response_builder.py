@@ -2,14 +2,16 @@
 
 from unittest.mock import MagicMock, PropertyMock
 
-from rtm_mcp.response_builder import (
-    build_response,
+from rtm_mcp.parsers import (
     format_list,
     format_task,
-    get_transaction_info,
     parse_lists_response,
     parse_tasks_response,
     priority_to_code,
+)
+from rtm_mcp.response_builder import (
+    build_response,
+    get_transaction_info,
     record_and_build_response,
 )
 

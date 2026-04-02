@@ -6,7 +6,7 @@ class TestListFiltering:
 
     def test_filter_archived_lists(self, sample_lists_response: dict) -> None:
         """Test filtering out archived lists."""
-        from rtm_mcp.response_builder import parse_lists_response
+        from rtm_mcp.parsers import parse_lists_response
 
         lists = parse_lists_response(sample_lists_response)
 
@@ -16,7 +16,7 @@ class TestListFiltering:
 
     def test_filter_smart_lists(self, sample_lists_response: dict) -> None:
         """Test filtering smart lists."""
-        from rtm_mcp.response_builder import parse_lists_response
+        from rtm_mcp.parsers import parse_lists_response
 
         lists = parse_lists_response(sample_lists_response)
 
@@ -26,7 +26,7 @@ class TestListFiltering:
 
     def test_list_sorting(self, sample_lists_response: dict) -> None:
         """Test list sorting by position."""
-        from rtm_mcp.response_builder import parse_lists_response
+        from rtm_mcp.parsers import parse_lists_response
 
         lists = parse_lists_response(sample_lists_response)
 

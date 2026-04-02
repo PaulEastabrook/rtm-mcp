@@ -1,18 +1,22 @@
 """Task management tools for RTM MCP."""
 
-import contextlib
 from typing import Any
 
 from fastmcp import Context
 
 from ..client import RTMClient
-from ..response_builder import (
-    build_response,
+from ..parsers import (
+    analyze_tasks,
     format_task,
+    parse_lists_response,
     parse_tasks_response,
     priority_to_code,
+)
+from ..response_builder import (
+    build_response,
     record_and_build_response,
 )
+from ..lookup import find_task, resolve_list_id, resolve_task_ids
 
 
 def _apply_subtask_counts(tasks: list[dict[str, Any]]) -> None:
@@ -30,13 +34,18 @@ def _apply_subtask_counts(tasks: list[dict[str, Any]]) -> None:
 def register_task_tools(mcp: Any, get_client: Any) -> None:
     """Register all task-related tools."""
 
-    async def _get_user_timezone(client: RTMClient) -> str | None:
-        """Fetch user's timezone from RTM settings."""
-        try:
-            settings_result = await client.call("rtm.settings.getList")
-            return settings_result.get("settings", {}).get("timezone")
-        except Exception:
-            return None
+    async def _task_write_response(
+        client: RTMClient, result: dict, message: str, tool_name: str,
+    ) -> dict[str, Any]:
+        """Common epilogue for task write operations: parse result, format, respond."""
+        tasks = parse_tasks_response(result)
+        task_data = tasks[0] if tasks else {}
+        timezone = await client.get_timezone()
+        return record_and_build_response(
+            client, result,
+            data={"task": format_task(task_data, timezone=timezone), "message": message},
+            tool_name=tool_name,
+        )
 
     @mcp.tool()
     async def list_tasks(
@@ -103,8 +112,6 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         list_id = None
         if list_name:
             lists_result = await client.call("rtm.lists.getList")
-            from ..response_builder import parse_lists_response
-
             lists = parse_lists_response(lists_result)
             for lst in lists:
                 if lst["name"].lower() == list_name.lower():
@@ -140,14 +147,14 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         _apply_subtask_counts(tasks)
 
         # Get user's timezone for accurate date display
-        timezone = await _get_user_timezone(client)
+        timezone = await client.get_timezone()
 
         return build_response(
             data={
                 "tasks": [format_task(t, timezone=timezone) for t in tasks],
                 "count": len(tasks),
             },
-            analysis=_analyze_tasks(tasks, timezone=timezone) if tasks else None,
+            analysis=analyze_tasks(tasks, timezone=timezone) if tasks else None,
         )
 
     @mcp.tool()
@@ -210,21 +217,16 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             params["external_id"] = external_id
 
         if list_name:
-            lists_result = await client.call("rtm.lists.getList")
-            from ..response_builder import parse_lists_response
-
-            lists = parse_lists_response(lists_result)
-            for lst in lists:
-                if lst["name"].lower() == list_name.lower():
-                    params["list_id"] = lst["id"]
-                    break
+            resolved = await resolve_list_id(client, list_name)
+            if "error" not in resolved:
+                params["list_id"] = resolved["list_id"]
 
         result = await client.call("rtm.tasks.add", require_timeline=True, **params)
 
         # Parse the created task
         tasks = parse_tasks_response(result)
         task = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
+        timezone = await client.get_timezone()
 
         return record_and_build_response(
             client,
@@ -252,6 +254,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         - task_name: searches incomplete tasks by name (fuzzy match), or
         - all three IDs: task_id + taskseries_id + list_id (from list_tasks output).
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"task": {...}, "message": "Completed: ..."} with transaction_id for undo.
         """
@@ -259,7 +265,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         # Find task if searching by name
         if task_name and not task_id:
-            task = await _find_task(client, task_name)
+            task = await find_task(client, task_name)
             if not task:
                 return build_response(
                     data={"error": f"Task not found: '{task_name}'. Use list_tasks to search by filter or check spelling."},
@@ -283,7 +289,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         tasks = parse_tasks_response(result)
         task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
+        timezone = await client.get_timezone()
 
         return record_and_build_response(
             client,
@@ -309,13 +315,17 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         Searches completed tasks when using task_name. Identify the task by either
         task_name or all three IDs (task_id + taskseries_id + list_id from list_tasks).
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"task": {...}, "message": "Reopened: ..."} with transaction_id for undo.
         """
         client: RTMClient = await get_client()
 
         if task_name and not task_id:
-            task = await _find_task(client, task_name, include_completed=True)
+            task = await find_task(client, task_name, include_completed=True)
             if not task:
                 return build_response(
                     data={"error": f"No completed task found matching '{task_name}'. Use list_tasks(include_completed=True) to find it."},
@@ -343,7 +353,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         tasks = parse_tasks_response(result)
         task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
+        timezone = await client.get_timezone()
 
         return record_and_build_response(
             client,
@@ -369,13 +379,17 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         Identify the task by either task_name or all three IDs (task_id +
         taskseries_id + list_id from list_tasks).
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"message": "Deleted: ..."} with transaction_id for undo.
         """
         client: RTMClient = await get_client()
 
         if task_name and not task_id:
-            task = await _find_task(client, task_name)
+            task = await find_task(client, task_name)
             if not task:
                 return build_response(
                     data={"error": f"Task not found: '{task_name}'. Use list_tasks to search by filter or check spelling."},
@@ -421,11 +435,15 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         Identify the task by either task_name (current name, fuzzy match) or all
         three IDs (task_id + taskseries_id + list_id from list_tasks).
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"task": {...}, "message": "Renamed to: ..."} with transaction_id for undo.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -436,19 +454,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": f"Renamed to: {new_name}",
-            },
-            tool_name="set_task_name",
-        )
+        return await _task_write_response(client, result, f"Renamed to: {new_name}", "set_task_name")
 
     @mcp.tool()
     async def set_task_due_date(
@@ -466,11 +472,15 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the task by either task_name or all three IDs.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"task": {...}, "message": "Due date set"} with transaction_id for undo.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -482,20 +492,8 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
         message = f"Due date set to: {due}" if due else "Due date cleared"
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": message,
-            },
-            tool_name="set_task_due_date",
-        )
+        return await _task_write_response(client, result, message, "set_task_due_date")
 
     @mcp.tool()
     async def set_task_priority(
@@ -512,11 +510,15 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the task by either task_name or all three IDs.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"task": {...}, "message": "Priority set to: ..."} with transaction_id.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -529,19 +531,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": f"Priority set to: {priority}",
-            },
-            tool_name="set_task_priority",
-        )
+        return await _task_write_response(client, result, f"Priority set to: {priority}", "set_task_priority")
 
     @mcp.tool()
     async def move_task_priority(
@@ -558,6 +548,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the task by either task_name or all three IDs.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"task": {...}, "message": "Priority moved up/down"} with transaction_id.
         """
@@ -567,7 +561,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             )
 
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -578,19 +572,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": f"Priority moved {direction}",
-            },
-            tool_name="move_task_priority",
-        )
+        return await _task_write_response(client, result, f"Priority moved {direction}", "move_task_priority")
 
     @mcp.tool()
     async def postpone_task(
@@ -606,11 +588,15 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the task by either task_name or all three IDs.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"task": {...}, "message": "Postponed: ..."} with transaction_id.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -620,19 +606,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": "Task postponed",
-            },
-            tool_name="postpone_task",
-        )
+        return await _task_write_response(client, result, "Task postponed", "postpone_task")
 
     @mcp.tool()
     async def move_task(
@@ -649,26 +623,22 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the task by either task_name or all three IDs.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"task": {...}, "message": "Moved to: ..."} with transaction_id.
         """
         client: RTMClient = await get_client()
 
         # Find destination list
-        lists_result = await client.call("rtm.lists.getList")
-        from ..response_builder import parse_lists_response
+        resolved = await resolve_list_id(client, to_list_name)
+        if "error" in resolved:
+            return build_response(data=resolved)
+        to_list_id = resolved["list_id"]
 
-        lists = parse_lists_response(lists_result)
-        to_list_id = None
-        for lst in lists:
-            if lst["name"].lower() == to_list_name.lower():
-                to_list_id = lst["id"]
-                break
-
-        if not to_list_id:
-            return build_response(data={"error": f"List '{to_list_name}' not found. Use get_lists to see available list names."})
-
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -681,19 +651,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             task_id=ids["task_id"],
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": f"Moved to: {to_list_name}",
-            },
-            tool_name="move_task",
-        )
+        return await _task_write_response(client, result, f"Moved to: {to_list_name}", "move_task")
 
     @mcp.tool()
     async def add_task_tags(
@@ -707,6 +665,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         """Add one or more tags to a task without removing existing tags. To replace
         all tags at once, use set_task_tags. To remove specific tags, use remove_task_tags.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Args:
             tags: Comma-separated tag names to add (e.g., "work,urgent"). No # prefix needed.
 
@@ -716,7 +678,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             {"task": {...}, "message": "Added tags: ..."} with transaction_id.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -727,19 +689,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": f"Added tags: {tags}",
-            },
-            tool_name="add_task_tags",
-        )
+        return await _task_write_response(client, result, f"Added tags: {tags}", "add_task_tags")
 
     @mcp.tool()
     async def remove_task_tags(
@@ -753,6 +703,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         """Remove one or more tags from a task. Tags not present on the task are
         silently ignored. To replace all tags at once, use set_task_tags.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Args:
             tags: Comma-separated tag names to remove (e.g., "work,urgent").
 
@@ -762,7 +716,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             {"task": {...}, "message": "Removed tags: ..."} with transaction_id.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -773,19 +727,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": f"Removed tags: {tags}",
-            },
-            tool_name="remove_task_tags",
-        )
+        return await _task_write_response(client, result, f"Removed tags: {tags}", "remove_task_tags")
 
     @mcp.tool()
     async def set_task_tags(
@@ -800,6 +742,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         new list are removed. Pass an empty string to clear all tags. For incremental
         changes, use add_task_tags or remove_task_tags instead.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Args:
             tags: Comma-separated tag names (e.g., "work,review,urgent"). Empty string
                 to remove all tags. Use get_tags to see all existing tags in your account.
@@ -810,7 +756,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             {"task": {...}, "message": "Tags set to: ..."} with transaction_id.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -821,20 +767,8 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
         message = f"Tags set to: {tags}" if tags else "All tags cleared"
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": message,
-            },
-            tool_name="set_task_tags",
-        )
+        return await _task_write_response(client, result, message, "set_task_tags")
 
     @mcp.tool()
     async def set_task_recurrence(
@@ -850,6 +784,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         - "after ..." repeats relative to the completion date (new series each time)
         Pass an empty string to clear recurrence.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Args:
             repeat: Pattern string, e.g., "every day", "every 2 weeks", "every monday",
                 "every 1st of the month", "after 1 week". Empty string to clear.
@@ -860,7 +798,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             {"task": {...}, "message": "Recurrence set/cleared"} with transaction_id.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -871,20 +809,8 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
         message = f"Recurrence set: {repeat}" if repeat else "Recurrence cleared"
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": message,
-            },
-            tool_name="set_task_recurrence",
-        )
+        return await _task_write_response(client, result, message, "set_task_recurrence")
 
     @mcp.tool()
     async def set_task_start_date(
@@ -901,11 +827,15 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the task by either task_name or all three IDs.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"task": {...}, "message": "Start date set/cleared"} with transaction_id.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -917,20 +847,8 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
         message = f"Start date set: {start}" if start else "Start date cleared"
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": message,
-            },
-            tool_name="set_task_start_date",
-        )
+        return await _task_write_response(client, result, message, "set_task_start_date")
 
     @mcp.tool()
     async def set_task_estimate(
@@ -947,11 +865,15 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the task by either task_name or all three IDs.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"task": {...}, "message": "Estimate set/cleared"} with transaction_id.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -962,20 +884,8 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
         message = f"Estimate set: {estimate}" if estimate else "Estimate cleared"
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": message,
-            },
-            tool_name="set_task_estimate",
-        )
+        return await _task_write_response(client, result, message, "set_task_estimate")
 
     @mcp.tool()
     async def set_task_url(
@@ -991,11 +901,15 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the task by either task_name or all three IDs.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Returns:
             {"task": {...}, "message": "URL set/cleared"} with transaction_id.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -1006,20 +920,8 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
         message = f"URL set: {url}" if url else "URL cleared"
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": message,
-            },
-            tool_name="set_task_url",
-        )
+        return await _task_write_response(client, result, message, "set_task_url")
 
     @mcp.tool()
     async def set_parent_task(
@@ -1038,6 +940,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         - Repeating tasks cannot be parents or children of other repeating tasks.
         - A task cannot be its own parent.
 
+        Caution: task_name uses fuzzy matching across all tasks. For common names,
+        prefer passing task_id + taskseries_id + list_id to avoid matching an
+        unintended task.
+
         Args:
             parent_task_id: The parent's task ID (from list_tasks). Omit or pass None
                 to promote a subtask back to top-level.
@@ -1052,7 +958,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             4090=self-parenting.
         """
         client: RTMClient = await get_client()
-        ids = await _resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
+        ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
 
@@ -1066,223 +972,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **call_params,
         )
 
-        tasks = parse_tasks_response(result)
-        task_data = tasks[0] if tasks else {}
-        timezone = await _get_user_timezone(client)
-
         if parent_task_id:
             message = f"Moved under parent task {parent_task_id}"
         else:
             message = "Promoted to top-level task"
 
-        return record_and_build_response(
-            client,
-            result,
-            data={
-                "task": format_task(task_data, timezone=timezone),
-                "message": message,
-            },
-            tool_name="set_parent_task",
-        )
-
-
-# Helper functions
-
-
-async def _find_task(
-    client: RTMClient,
-    name: str,
-    include_completed: bool = False,
-) -> dict[str, Any] | None:
-    """Find a task by name (fuzzy match)."""
-    filter_str = "status:incomplete" if not include_completed else None
-
-    if filter_str:
-        result = await client.call("rtm.tasks.getList", filter=filter_str)
-    else:
-        result = await client.call("rtm.tasks.getList")
-    tasks = parse_tasks_response(result)
-
-    name_lower = name.lower()
-
-    # Exact match first
-    for task in tasks:
-        if task["name"].lower() == name_lower:
-            return task
-
-    # Partial match
-    for task in tasks:
-        if name_lower in task["name"].lower():
-            return task
-
-    return None
-
-
-async def _resolve_task_ids(
-    client: RTMClient,
-    task_name: str | None,
-    task_id: str | None,
-    taskseries_id: str | None,
-    list_id: str | None,
-) -> dict[str, Any]:
-    """Resolve task identifiers, searching by name if needed."""
-    if task_name and not task_id:
-        task = await _find_task(client, task_name)
-        if not task:
-            return {"error": f"Task not found: '{task_name}'. Use list_tasks to search by filter or check spelling."}
-        return {
-            "task_id": task["id"],
-            "taskseries_id": task["taskseries_id"],
-            "list_id": task["list_id"],
-        }
-
-    if not all([task_id, taskseries_id, list_id]):
-        return {"error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."}
-
-    return {
-        "task_id": task_id,
-        "taskseries_id": taskseries_id,
-        "list_id": list_id,
-    }
-
-
-def _parse_estimate_minutes(estimate: str | None) -> int | None:
-    """Parse RTM estimate string to minutes. Returns None if unparseable.
-
-    Handles both ISO 8601 durations (PT1H30M) and human-readable strings (1 hour 30 minutes).
-    """
-    if not estimate:
-        return None
-    import re
-
-    total = 0
-    matched = False
-
-    # ISO 8601 duration: PT1H, PT30M, PT1H30M, PT2H15M
-    iso = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?$", estimate)
-    if iso:
-        if iso.group(1):
-            total += int(iso.group(1)) * 60
-            matched = True
-        if iso.group(2):
-            total += int(iso.group(2))
-            matched = True
-        return total if matched else None
-
-    # Human-readable: "1 hour", "30 minutes", "2 hours 30 minutes"
-    hours = re.search(r"(\d+)\s*hour", estimate)
-    minutes = re.search(r"(\d+)\s*min", estimate)
-    if hours:
-        total += int(hours.group(1)) * 60
-    if minutes:
-        total += int(minutes.group(1))
-    return total if (hours or minutes) else None
-
-
-def _analyze_tasks(tasks: list[dict[str, Any]], timezone: str | None = None) -> dict[str, Any]:
-    """Generate analysis insights for tasks.
-
-    Args:
-        tasks: List of task dictionaries
-        timezone: User's IANA timezone (e.g., 'Europe/Warsaw'). If not provided,
-                  falls back to UTC which may cause incorrect date comparisons.
-    """
-    if not tasks:
-        return {}
-
-    priority_counts = {"high": 0, "medium": 0, "low": 0, "none": 0}
-    overdue_count = 0
-    due_today_count = 0
-    total_estimate_minutes = 0
-    without_estimate = 0
-    tags_used: set[str] = set()
-
-    from datetime import UTC, datetime
-    from zoneinfo import ZoneInfo
-
-    # Get current date in user's timezone for accurate comparison
-    # RTM due dates are relative to the user's timezone
-    user_tz = None
-    if timezone:
-        with contextlib.suppress(Exception):
-            user_tz = ZoneInfo(timezone)
-
-    now = datetime.now(user_tz) if user_tz else datetime.now(UTC)
-    today = now.date()
-
-    for task in tasks:
-        # Count priorities
-        priority = task.get("priority", "N")
-        if priority == "1":
-            priority_counts["high"] += 1
-        elif priority == "2":
-            priority_counts["medium"] += 1
-        elif priority == "3":
-            priority_counts["low"] += 1
-        else:
-            priority_counts["none"] += 1
-
-        # Check due dates
-        due = task.get("due")
-        if due:
-            try:
-                # Parse the due date from RTM
-                # RTM returns dates in UTC with 'Z' suffix
-                due_dt = datetime.fromisoformat(due.replace("Z", "+00:00"))
-
-                # Convert to user's timezone for comparison
-                if user_tz:
-                    due_dt = due_dt.astimezone(user_tz)
-
-                due_date = due_dt.date()
-                if due_date < today:
-                    overdue_count += 1
-                elif due_date == today:
-                    due_today_count += 1
-            except ValueError:
-                pass
-
-        # Collect tags
-        tags_used.update(task.get("tags", []))
-
-        # Accumulate estimates
-        est = task.get("estimate")
-        est_minutes = _parse_estimate_minutes(est)
-        if est_minutes is not None:
-            total_estimate_minutes += est_minutes
-        else:
-            without_estimate += 1
-
-    insights = []
-    if overdue_count:
-        insights.append(f"{overdue_count} overdue task(s)")
-    if due_today_count:
-        insights.append(f"{due_today_count} due today")
-    if priority_counts["high"]:
-        insights.append(f"{priority_counts['high']} high priority")
-    if total_estimate_minutes:
-        hours, mins = divmod(total_estimate_minutes, 60)
-        if hours and mins:
-            insights.append(f"{hours}h {mins}min total estimated")
-        elif hours:
-            insights.append(f"{hours}h total estimated")
-        else:
-            insights.append(f"{mins}min total estimated")
-    if without_estimate:
-        insights.append(f"{without_estimate} task(s) without estimate")
-
-    return {
-        "summary": {
-            "total": len(tasks),
-            "by_priority": priority_counts,
-            "overdue": overdue_count,
-            "due_today": due_today_count,
-            "estimates": {
-                "total_minutes": total_estimate_minutes,
-                "total_display": f"{total_estimate_minutes // 60}h {total_estimate_minutes % 60}min",
-                "without_estimate": without_estimate,
-            },
-        },
-        "insights": insights,
-        "tags_used": sorted(tags_used),
-    }
+        return await _task_write_response(client, result, message, "set_parent_task")

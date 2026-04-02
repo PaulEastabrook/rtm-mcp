@@ -13,6 +13,7 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Timeline Introspection**: Session transaction log with `get_timeline_info` for reviewing write history
 - **Token Bucket Rate Limiting**: Burst to 3 RPS, sustain ~0.9 RPS with configurable safety margin
 - **Automatic 503 Retry**: Escalating backoff (2s → 5s) with configurable retry budget
+- **Connection Resilience**: Automatic retry on transient network errors (timeout, DNS, TCP reset) with write-safety — timeouts on writes surface ambiguity rather than risk duplication
 - **Async Performance**: Built on httpx with connection pooling
 - **Type Safety**: Full Pydantic models and type hints
 

@@ -1,7 +1,10 @@
-"""Async RTM API Client."""
+"""Async RTM API client with signing, rate limiting, retry, and timezone caching."""
 
+import asyncio
 import hashlib
 import logging
+import ssl
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -13,6 +16,23 @@ from .exceptions import RTMError, RTMNetworkError, RTMRateLimitError, raise_for_
 from .rate_limiter import RateLimitStats, TokenBucket
 
 logger = logging.getLogger(__name__)
+
+
+def _is_tls_cert_error(exc: Exception) -> bool:
+    """Check whether *exc* wraps a TLS certificate verification failure."""
+    cause = exc.__cause__
+    while cause is not None:
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            return True
+        cause = getattr(cause, "__cause__", None)
+    return False
+
+
+def sign_request(shared_secret: str, params: dict[str, str]) -> str:
+    """Generate MD5 API signature for RTM request parameters."""
+    sorted_params = sorted(params.items())
+    param_string = "".join(f"{k}{v}" for k, v in sorted_params)
+    return hashlib.md5((shared_secret + param_string).encode()).hexdigest()
 
 
 @dataclass
@@ -30,9 +50,13 @@ class RTMClient:
     """Async Remember The Milk API client.
 
     Features:
-    - MD5 request signing
+    - MD5 request signing (via module-level ``sign_request()``)
+    - POST for writes, GET for reads
     - Timeline management for write operations
-    - Token bucket rate limiting with 503 retry
+    - Token bucket rate limiting with HTTP 503 retry
+    - Connection-level retry for transient network errors
+    - Timezone caching (one API call per session)
+    - Transaction log for undo / batch_undo
     - Connection pooling via httpx
     """
 
@@ -51,6 +75,9 @@ class RTMClient:
         # Transaction log
         self._transaction_log: list[TransactionEntry] = []
         self._transaction_index: dict[str, TransactionEntry] = {}
+        # Cached settings
+        self._cached_timezone: str | None = None
+        self._timezone_fetched: bool = False
 
     async def _get_http(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
@@ -69,10 +96,7 @@ class RTMClient:
 
     def _sign(self, params: dict[str, str]) -> str:
         """Generate MD5 API signature."""
-        sorted_params = sorted(params.items())
-        param_string = "".join(f"{k}{v}" for k, v in sorted_params)
-        sig_input = self.config.shared_secret + param_string
-        return hashlib.md5(sig_input.encode()).hexdigest()
+        return sign_request(self.config.shared_secret, params)
 
     @property
     def bucket(self) -> TokenBucket:
@@ -103,7 +127,7 @@ class RTMClient:
 
         Raises:
             RTMError: On API errors
-            RTMNetworkError: On connection errors
+            RTMNetworkError: On connection errors (after retries exhausted)
             RTMRateLimitError: After exhausting retries on HTTP 503
         """
         # Build request params once (deterministic, safe to retry)
@@ -125,6 +149,7 @@ class RTMClient:
         request_params["api_sig"] = self._sign(request_params)
 
         request_type = "write" if require_timeline else "read"
+        is_write = require_timeline
         max_attempts = self.config.max_retries + 1
 
         for attempt in range(max_attempts):
@@ -132,8 +157,9 @@ class RTMClient:
             self._rate_limit_stats.record_request(request_type)
 
             try:
-                http = await self._get_http()
-                response = await http.get(RTM_API_URL, params=request_params)
+                response = await self._attempt_http(
+                    method, request_params, is_write,
+                )
 
                 # Handle 503 (rate limit drop tier) before raise_for_status
                 if response.status_code == 503:
@@ -170,10 +196,6 @@ class RTMClient:
 
                 return rsp
 
-            except httpx.TimeoutException as e:
-                raise RTMNetworkError("Request timed out") from e
-            except httpx.ConnectError as e:
-                raise RTMNetworkError("Failed to connect to RTM API") from e
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
                     raise RTMRateLimitError("Rate limit exceeded") from e
@@ -181,6 +203,78 @@ class RTMClient:
 
         # Should not reach here, but safety net
         raise RTMNetworkError(f"RTM API call failed after {max_attempts} attempts")
+
+    async def _attempt_http(
+        self,
+        method: str,
+        request_params: dict[str, str],
+        is_write: bool,
+    ) -> httpx.Response:
+        """Dispatch an HTTP request with connection-level retry.
+
+        Retries on transient connection errors (ConnectError, and
+        TimeoutException for reads).  Does NOT consume additional rate
+        limit tokens on retry — the request never reached the server.
+
+        Write operations that time out are NOT retried because the
+        request may have been sent and processed, risking duplication.
+        TLS certificate validation errors are never retried.
+        """
+        conn_max = self.config.conn_max_retries
+        start = time.monotonic()
+        last_exc: Exception | None = None
+
+        for conn_attempt in range(conn_max + 1):
+            try:
+                http = await self._get_http()
+                if is_write:
+                    return await http.post(RTM_API_URL, data=request_params)
+                else:
+                    return await http.get(RTM_API_URL, params=request_params)
+
+            except httpx.TimeoutException as e:
+                if is_write:
+                    # Write may have been sent — don't retry
+                    elapsed = time.monotonic() - start
+                    raise RTMNetworkError(
+                        f"Write request timed out (ambiguous — request may have "
+                        f"been processed). Error: timeout, retries: 0, "
+                        f"elapsed: {elapsed:.1f}s"
+                    ) from e
+                last_exc = e
+
+            except httpx.ConnectError as e:
+                # Don't retry TLS certificate validation failures
+                if _is_tls_cert_error(e):
+                    raise RTMNetworkError(
+                        "TLS certificate verification failed"
+                    ) from e
+                last_exc = e
+
+            # If we get here, the request failed with a retryable error
+            if conn_attempt < conn_max:
+                delay = (
+                    self.config.conn_retry_delay_first
+                    if conn_attempt == 0
+                    else self.config.conn_retry_delay_subsequent
+                )
+                logger.warning(
+                    "RTM API %s connection error (attempt %d/%d): %s, "
+                    "retrying in %.1fs",
+                    method, conn_attempt + 1, conn_max + 1,
+                    type(last_exc).__name__, delay,
+                )
+                self._rate_limit_stats.record_conn_retry()
+                await asyncio.sleep(delay)
+
+        # All connection retries exhausted
+        elapsed = time.monotonic() - start
+        error_type = type(last_exc).__name__ if last_exc else "Unknown"
+        raise RTMNetworkError(
+            f"Connection failed after {conn_max + 1} attempts. "
+            f"Error: {error_type}, retries: {conn_max}, "
+            f"elapsed: {elapsed:.1f}s"
+        ) from last_exc
 
     async def get_timeline(self) -> str:
         """Get or create a timeline for write operations.
@@ -193,6 +287,21 @@ class RTMClient:
             self._timeline = str(result["timeline"])
             self._timeline_created_at = datetime.now().isoformat()
         return self._timeline
+
+    async def get_timezone(self) -> str | None:
+        """Get the user's timezone (cached after first fetch).
+
+        Returns the IANA timezone string (e.g. 'Europe/London') or None
+        if the settings call fails.
+        """
+        if not self._timezone_fetched:
+            try:
+                result = await self.call("rtm.settings.getList")
+                self._cached_timezone = result.get("settings", {}).get("timezone")
+            except Exception:
+                pass
+            self._timezone_fetched = True
+        return self._cached_timezone
 
     @property
     def timeline_id(self) -> str | None:
@@ -249,9 +358,7 @@ class RTMAuthFlow:
 
     def _sign(self, params: dict[str, str]) -> str:
         """Generate MD5 signature."""
-        sorted_params = sorted(params.items())
-        param_string = "".join(f"{k}{v}" for k, v in sorted_params)
-        return hashlib.md5((self.shared_secret + param_string).encode()).hexdigest()
+        return sign_request(self.shared_secret, params)
 
     async def get_frob(self) -> str:
         """Get a frob for authentication."""

@@ -64,6 +64,7 @@ class RateLimitStats:
     def __init__(self) -> None:
         self._request_timestamps: deque[float] = deque()
         self._retry_timestamps: deque[float] = deque()
+        self._conn_retry_timestamps: deque[float] = deque()
         self._http_503_count: int = 0
 
     def record_request(self, request_type: str = "read") -> None:
@@ -73,6 +74,10 @@ class RateLimitStats:
     def record_retry(self) -> None:
         """Record a retry attempt."""
         self._retry_timestamps.append(time.monotonic())
+
+    def record_conn_retry(self) -> None:
+        """Record a connection retry attempt."""
+        self._conn_retry_timestamps.append(time.monotonic())
 
     def record_503(self) -> None:
         """Record an HTTP 503 response."""
@@ -85,6 +90,10 @@ class RateLimitStats:
     def retries_last_60s(self) -> int:
         """Number of retries in the last 60 seconds."""
         return self._count_in_window(self._retry_timestamps)
+
+    def conn_retries_last_60s(self) -> int:
+        """Number of connection retries in the last 60 seconds."""
+        return self._count_in_window(self._conn_retry_timestamps)
 
     @property
     def http_503_count_session(self) -> int:

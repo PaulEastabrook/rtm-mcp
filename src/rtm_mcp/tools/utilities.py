@@ -4,6 +4,7 @@ from typing import Any
 
 from fastmcp import Context
 
+from ..parsers import ensure_list
 from ..response_builder import build_response
 
 
@@ -135,9 +136,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
         result = await client.call("rtm.locations.getList")
 
-        locations_data = result.get("locations", {}).get("location", [])
-        if isinstance(locations_data, dict):
-            locations_data = [locations_data]
+        locations_data = ensure_list(result.get("locations", {}).get("location", []))
 
         locations = []
         for loc in locations_data:
@@ -417,9 +416,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
         result = await client.call("rtm.contacts.getList")
 
-        contacts_data = result.get("contacts", {}).get("contact", [])
-        if isinstance(contacts_data, dict):
-            contacts_data = [contacts_data]
+        contacts_data = ensure_list(result.get("contacts", {}).get("contact", []))
 
         contacts = []
         for contact in contacts_data:
@@ -450,15 +447,11 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
         result = await client.call("rtm.groups.getList")
 
-        groups_data = result.get("groups", {}).get("group", [])
-        if isinstance(groups_data, dict):
-            groups_data = [groups_data]
+        groups_data = ensure_list(result.get("groups", {}).get("group", []))
 
         groups = []
         for group in groups_data:
-            contacts = group.get("contacts", {}).get("contact", [])
-            if isinstance(contacts, dict):
-                contacts = [contacts]
+            contacts = ensure_list(group.get("contacts", {}).get("contact", []))
 
             groups.append({
                 "id": group.get("id"),
@@ -484,7 +477,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"tokens_available": 2.3, "bucket_capacity": 3, "refill_rate": 0.9,
             "safety_margin": 0.1, "requests_last_60s": 14, "retries_last_60s": 0,
-            "http_503_count_session": 0}.
+            "http_503_count_session": 0, "connection_retries_last_60s": 0}.
 
             Key fields:
             - tokens_available: approximate burst capacity remaining right now
@@ -492,6 +485,8 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             - requests_last_60s: rolling window of all API requests
             - http_503_count_session: total 503s this session (increase safety_margin
               if non-zero)
+            - connection_retries_last_60s: connection-level retries (timeout, DNS,
+              TCP reset) in the last 60 seconds
         """
         from ..client import RTMClient
 
@@ -510,5 +505,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
                 "requests_last_60s": stats.requests_last_60s(),
                 "retries_last_60s": stats.retries_last_60s(),
                 "http_503_count_session": stats.http_503_count_session,
+                "connection_retries_last_60s": stats.conn_retries_last_60s(),
             },
         )

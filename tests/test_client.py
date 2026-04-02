@@ -332,6 +332,228 @@ class TestRetry503:
         await retry_client.close()
 
 
+class TestConnectionRetry:
+    """Test connection-level retry behavior."""
+
+    @pytest.fixture
+    def conn_client(self) -> RTMClient:
+        """Client with fast connection retry delays."""
+        config = RTMConfig(
+            api_key="k", shared_secret="s", auth_token="t",
+            bucket_capacity=100,
+            conn_max_retries=3,
+            conn_retry_delay_first=0.01,
+            conn_retry_delay_subsequent=0.01,
+        )
+        return RTMClient(config)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_connect_error_retries_then_succeeds(self, conn_client: RTMClient) -> None:
+        """ConnectError followed by success should work."""
+        route = respx.get(RTM_API_URL)
+        route.side_effect = [
+            httpx.ConnectError("Connection refused"),
+            httpx.Response(200, json={"rsp": {"stat": "ok", "data": "ok"}}),
+        ]
+
+        result = await conn_client.call("rtm.test.echo")
+        assert result["stat"] == "ok"
+        assert conn_client.rate_limit_stats.conn_retries_last_60s() == 1
+
+        await conn_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_connect_error_exhausts_retries(self, conn_client: RTMClient) -> None:
+        """Four consecutive ConnectErrors should raise RTMNetworkError."""
+        route = respx.get(RTM_API_URL)
+        route.side_effect = [
+            httpx.ConnectError("refused"),
+            httpx.ConnectError("refused"),
+            httpx.ConnectError("refused"),
+            httpx.ConnectError("refused"),
+        ]
+
+        with pytest.raises(RTMNetworkError, match="Connection failed after 4 attempts"):
+            await conn_client.call("rtm.test.echo")
+
+        assert conn_client.rate_limit_stats.conn_retries_last_60s() == 3
+
+        await conn_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_timeout_on_read_retries(self, conn_client: RTMClient) -> None:
+        """TimeoutException on a read operation should retry."""
+        route = respx.get(RTM_API_URL)
+        route.side_effect = [
+            httpx.ReadTimeout("timed out"),
+            httpx.Response(200, json={"rsp": {"stat": "ok"}}),
+        ]
+
+        result = await conn_client.call("rtm.test.echo")
+        assert result["stat"] == "ok"
+        assert conn_client.rate_limit_stats.conn_retries_last_60s() == 1
+
+        await conn_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_timeout_on_write_raises_immediately(self, conn_client: RTMClient) -> None:
+        """TimeoutException on a write operation should NOT retry."""
+        # First: timeline creation succeeds (GET)
+        get_route = respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(
+                200, json={"rsp": {"stat": "ok", "timeline": "12345"}},
+            )
+        )
+        # Then: the write times out (POST)
+        respx.post(RTM_API_URL).mock(side_effect=httpx.ReadTimeout("timed out"))
+
+        with pytest.raises(RTMNetworkError, match="ambiguous"):
+            await conn_client.call("rtm.tasks.add", require_timeline=True, name="Test")
+
+        # No connection retries should have been recorded
+        assert conn_client.rate_limit_stats.conn_retries_last_60s() == 0
+
+        await conn_client.close()
+
+    @pytest.mark.asyncio
+    async def test_tls_cert_error_not_retried(self, conn_client: RTMClient) -> None:
+        """TLS certificate error should fail immediately without retry."""
+        import ssl as _ssl
+        from unittest.mock import AsyncMock, patch
+
+        cert_err = _ssl.SSLCertVerificationError("certificate verify failed")
+        connect_err = httpx.ConnectError("TLS error")
+        connect_err.__cause__ = cert_err
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(side_effect=connect_err)
+        mock_http.is_closed = False
+
+        with patch.object(conn_client, "_get_http", return_value=mock_http):
+            with pytest.raises(RTMNetworkError, match="TLS certificate"):
+                await conn_client.call("rtm.test.echo")
+
+        assert conn_client.rate_limit_stats.conn_retries_last_60s() == 0
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_connection_retry_does_not_consume_extra_tokens(self, conn_client: RTMClient) -> None:
+        """Connection retries should not consume additional rate limit tokens."""
+        route = respx.get(RTM_API_URL)
+        route.side_effect = [
+            httpx.ConnectError("refused"),
+            httpx.ConnectError("refused"),
+            httpx.Response(200, json={"rsp": {"stat": "ok"}}),
+        ]
+
+        await conn_client.call("rtm.test.echo")
+        # Only 1 request should be recorded (the outer loop ran once)
+        assert conn_client.rate_limit_stats.requests_last_60s() == 1
+
+        await conn_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_final_error_includes_details(self, conn_client: RTMClient) -> None:
+        """Exhausted retries should include error type, count, and elapsed time."""
+        route = respx.get(RTM_API_URL)
+        route.side_effect = [
+            httpx.ConnectError("refused"),
+            httpx.ConnectError("refused"),
+            httpx.ConnectError("refused"),
+            httpx.ConnectError("refused"),
+        ]
+
+        with pytest.raises(RTMNetworkError) as exc_info:
+            await conn_client.call("rtm.test.echo")
+
+        msg = str(exc_info.value)
+        assert "ConnectError" in msg
+        assert "retries: 3" in msg
+        assert "elapsed:" in msg
+
+        await conn_client.close()
+
+
+class TestPostGetSplit:
+    """Test that reads use GET and writes use POST."""
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_read_uses_get(self, client: RTMClient) -> None:
+        """Read operations (require_timeline=False) should use GET."""
+        route = respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(
+                200, json={"rsp": {"stat": "ok", "test": "hello"}},
+            )
+        )
+
+        await client.call("rtm.test.echo", test="hello")
+        assert route.called
+
+        await client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_write_uses_post(self, client: RTMClient) -> None:
+        """Write operations (require_timeline=True) should use POST."""
+        # First call: get_timeline (GET)
+        # Second call: the actual write (POST)
+        get_route = respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(
+                200, json={"rsp": {"stat": "ok", "timeline": "12345"}},
+            )
+        )
+        post_route = respx.post(RTM_API_URL).mock(
+            return_value=httpx.Response(
+                200, json={"rsp": {"stat": "ok", "list": {}}},
+            )
+        )
+
+        await client.call("rtm.tasks.add", require_timeline=True, name="Test")
+        assert get_route.called  # timeline creation uses GET
+        assert post_route.called  # write operation uses POST
+
+        await client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_write_sends_params_as_form_data(self, client: RTMClient) -> None:
+        """Write operations should send params as POST form data, not query params."""
+        # Timeline creation (GET)
+        respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(
+                200, json={"rsp": {"stat": "ok", "timeline": "12345"}},
+            )
+        )
+        # Capture the POST request
+        post_route = respx.post(RTM_API_URL).mock(
+            return_value=httpx.Response(
+                200, json={"rsp": {"stat": "ok", "note": {"id": "1", "title": "My Title", "$t": "Body"}}},
+            )
+        )
+
+        await client.call(
+            "rtm.tasks.notes.add",
+            require_timeline=True,
+            note_title="My Title",
+            note_text="Body text",
+        )
+
+        # Verify the POST request was made
+        assert post_route.called
+        request = post_route.calls[0].request
+        # POST form data should be in the body, not the URL
+        body = request.content.decode()
+        assert "note_title=My+Title" in body or "note_title=My%20Title" in body
+
+        await client.close()
+
+
 class TestRTMConfig:
     """Test configuration loading."""
 

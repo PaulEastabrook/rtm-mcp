@@ -4,12 +4,9 @@ from typing import Any
 
 from fastmcp import Context
 
-from ..response_builder import (
-    build_response,
-    format_list,
-    parse_lists_response,
-    record_and_build_response,
-)
+from ..lookup import resolve_list_id
+from ..parsers import format_list, parse_lists_response
+from ..response_builder import build_response, record_and_build_response
 
 
 def register_list_tools(mcp: Any, get_client: Any) -> None:
@@ -110,23 +107,14 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
 
         client: RTMClient = await get_client()
 
-        # Find list by name
-        lists_result = await client.call("rtm.lists.getList")
-        lists = parse_lists_response(lists_result)
-
-        list_id = None
-        for lst in lists:
-            if lst["name"].lower() == list_name.lower():
-                list_id = lst["id"]
-                break
-
-        if not list_id:
-            return build_response(data={"error": f"List '{list_name}' not found. Use get_lists to see available list names."})
+        resolved = await resolve_list_id(client, list_name)
+        if "error" in resolved:
+            return build_response(data=resolved)
 
         result = await client.call(
             "rtm.lists.setName",
             require_timeline=True,
-            list_id=list_id,
+            list_id=resolved["list_id"],
             name=new_name,
         )
 
@@ -157,25 +145,19 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
 
         client: RTMClient = await get_client()
 
-        # Find list by name
-        lists_result = await client.call("rtm.lists.getList")
-        lists = parse_lists_response(lists_result)
+        resolved = await resolve_list_id(client, list_name)
+        if "error" in resolved:
+            return build_response(data=resolved)
 
-        list_id = None
-        for lst in lists:
-            if lst["name"].lower() == list_name.lower():
-                if lst["locked"]:
-                    return build_response(data={"error": f"Cannot delete '{list_name}' — it is a locked system list (e.g. Inbox, Sent)."})
-                list_id = lst["id"]
-                break
-
-        if not list_id:
-            return build_response(data={"error": f"List '{list_name}' not found. Use get_lists to see available list names."})
+        if resolved["list"]["locked"]:
+            return build_response(
+                data={"error": f"Cannot delete '{list_name}' — it is a locked system list (e.g. Inbox, Sent)."},
+            )
 
         result = await client.call(
             "rtm.lists.delete",
             require_timeline=True,
-            list_id=list_id,
+            list_id=resolved["list_id"],
         )
 
         return record_and_build_response(
@@ -199,22 +181,14 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
 
         client: RTMClient = await get_client()
 
-        lists_result = await client.call("rtm.lists.getList")
-        lists = parse_lists_response(lists_result)
-
-        list_id = None
-        for lst in lists:
-            if lst["name"].lower() == list_name.lower():
-                list_id = lst["id"]
-                break
-
-        if not list_id:
-            return build_response(data={"error": f"List '{list_name}' not found. Use get_lists to see available list names."})
+        resolved = await resolve_list_id(client, list_name)
+        if "error" in resolved:
+            return build_response(data=resolved)
 
         result = await client.call(
             "rtm.lists.archive",
             require_timeline=True,
-            list_id=list_id,
+            list_id=resolved["list_id"],
         )
 
         lst = result.get("list", {})
@@ -243,23 +217,14 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
 
         client: RTMClient = await get_client()
 
-        # Need to include archived lists in search
-        lists_result = await client.call("rtm.lists.getList")
-        lists = parse_lists_response(lists_result)
-
-        list_id = None
-        for lst in lists:
-            if lst["name"].lower() == list_name.lower():
-                list_id = lst["id"]
-                break
-
-        if not list_id:
-            return build_response(data={"error": f"List '{list_name}' not found. Use get_lists to see available list names."})
+        resolved = await resolve_list_id(client, list_name)
+        if "error" in resolved:
+            return build_response(data=resolved)
 
         result = await client.call(
             "rtm.lists.unarchive",
             require_timeline=True,
-            list_id=list_id,
+            list_id=resolved["list_id"],
         )
 
         lst = result.get("list", {})
@@ -288,22 +253,14 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
 
         client: RTMClient = await get_client()
 
-        lists_result = await client.call("rtm.lists.getList")
-        lists = parse_lists_response(lists_result)
-
-        list_id = None
-        for lst in lists:
-            if lst["name"].lower() == list_name.lower():
-                list_id = lst["id"]
-                break
-
-        if not list_id:
-            return build_response(data={"error": f"List '{list_name}' not found. Use get_lists to see available list names."})
+        resolved = await resolve_list_id(client, list_name)
+        if "error" in resolved:
+            return build_response(data=resolved)
 
         await client.call(
             "rtm.lists.setDefaultList",
             require_timeline=True,
-            list_id=list_id,
+            list_id=resolved["list_id"],
         )
 
         return build_response(
