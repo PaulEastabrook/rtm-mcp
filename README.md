@@ -249,6 +249,10 @@ Claude Desktop config for Docker:
 
 MIT License - see [LICENSE](LICENSE) for details.
 
+## Disclaimer
+
+This product uses the Remember The Milk API but is not endorsed or certified by Remember The Milk.
+
 ## Acknowledgments
 
 - [Remember The Milk](https://www.rememberthemilk.com/) for the excellent task management service

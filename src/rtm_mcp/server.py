@@ -56,6 +56,8 @@ mcp = FastMCP(
     instructions="""
 RTM MCP Server - Remember The Milk task management for Claude.
 
+This product uses the Remember The Milk API but is not endorsed or certified by Remember The Milk.
+
 This server provides full access to Remember The Milk's task management features:
 
 ## Task Operations
