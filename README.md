@@ -33,10 +33,12 @@ pip install rtm-mcp
 ### From Source
 
 ```bash
-git clone https://github.com/ljadach/rtm-mcp.git
+git clone https://github.com/PaulEastabrook/rtm-mcp.git
 cd rtm-mcp
 uv sync
 ```
+
+> **Upstream**: This is a fork of [ljadach/rtm-mcp](https://github.com/ljadach/rtm-mcp) with additional features including undo/batch undo, timeline introspection, token bucket rate limiting, and subtask hierarchy support.
 
 ## Setup
 
