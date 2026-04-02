@@ -6,7 +6,8 @@ import respx
 
 from rtm_mcp.client import RTMClient, TransactionEntry
 from rtm_mcp.config import RTM_API_URL, RTMConfig
-from rtm_mcp.exceptions import RTMAuthError, RTMError
+from rtm_mcp.exceptions import RTMAuthError, RTMError, RTMNetworkError, RTMRateLimitError
+from rtm_mcp.rate_limiter import RateLimitStats, TokenBucket
 
 
 @pytest.fixture
@@ -199,6 +200,136 @@ class TestTransactionLog:
         entry = TransactionEntry(transaction_id="tx1", method="test", undoable=True)
         assert entry.undone is False
         assert entry.summary == ""
+
+
+class TestTokenBucketIntegration:
+    """Test token bucket integration in RTMClient."""
+
+    def test_client_has_bucket(self, client: RTMClient) -> None:
+        assert isinstance(client.bucket, TokenBucket)
+        assert client.bucket.capacity == 100  # From mock_config
+
+    def test_client_has_stats(self, client: RTMClient) -> None:
+        assert isinstance(client.rate_limit_stats, RateLimitStats)
+
+    def test_refill_rate_uses_safety_margin(self) -> None:
+        config = RTMConfig(
+            api_key="k", shared_secret="s", auth_token="t",
+            safety_margin=0.2,
+        )
+        client = RTMClient(config)
+        assert client.bucket.refill_rate == pytest.approx(0.8)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_request_records_stats(self, client: RTMClient) -> None:
+        respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(
+                200, json={"rsp": {"stat": "ok", "test": "hello"}},
+            )
+        )
+
+        await client.call("rtm.test.echo", test="hello")
+        assert client.rate_limit_stats.requests_last_60s() >= 1
+
+        await client.close()
+
+
+class TestRetry503:
+    """Test HTTP 503 retry behavior."""
+
+    @pytest.fixture
+    def retry_client(self) -> RTMClient:
+        """Client with small retry delays for fast tests."""
+        config = RTMConfig(
+            api_key="k", shared_secret="s", auth_token="t",
+            bucket_capacity=100,
+            max_retries=2,
+            retry_delay_first=0.01,
+            retry_delay_subsequent=0.01,
+        )
+        return RTMClient(config)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_503_then_success(self, retry_client: RTMClient) -> None:
+        """First request returns 503, second succeeds."""
+        route = respx.get(RTM_API_URL)
+        route.side_effect = [
+            httpx.Response(503),
+            httpx.Response(200, json={"rsp": {"stat": "ok", "data": "ok"}}),
+        ]
+
+        result = await retry_client.call("rtm.test.echo")
+        assert result["stat"] == "ok"
+        assert retry_client.rate_limit_stats.http_503_count_session == 1
+        assert retry_client.rate_limit_stats.retries_last_60s() == 1
+
+        await retry_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_503_twice_then_success(self, retry_client: RTMClient) -> None:
+        """Two 503s followed by success."""
+        route = respx.get(RTM_API_URL)
+        route.side_effect = [
+            httpx.Response(503),
+            httpx.Response(503),
+            httpx.Response(200, json={"rsp": {"stat": "ok"}}),
+        ]
+
+        result = await retry_client.call("rtm.test.echo")
+        assert result["stat"] == "ok"
+        assert retry_client.rate_limit_stats.http_503_count_session == 2
+        assert retry_client.rate_limit_stats.retries_last_60s() == 2
+
+        await retry_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_503_exhausts_retries(self, retry_client: RTMClient) -> None:
+        """Three consecutive 503s should raise RTMRateLimitError."""
+        route = respx.get(RTM_API_URL)
+        route.side_effect = [
+            httpx.Response(503),
+            httpx.Response(503),
+            httpx.Response(503),
+        ]
+
+        with pytest.raises(RTMRateLimitError, match="503 after 3 attempts"):
+            await retry_client.call("rtm.test.echo")
+
+        assert retry_client.rate_limit_stats.http_503_count_session == 3
+
+        await retry_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_429_not_retried(self, retry_client: RTMClient) -> None:
+        """HTTP 429 should raise immediately, no retry."""
+        respx.get(RTM_API_URL).mock(return_value=httpx.Response(429))
+
+        with pytest.raises(RTMRateLimitError, match="Rate limit exceeded"):
+            await retry_client.call("rtm.test.echo")
+
+        # Only 1 request, no retries
+        assert retry_client.rate_limit_stats.requests_last_60s() == 1
+        assert retry_client.rate_limit_stats.retries_last_60s() == 0
+
+        await retry_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_500_not_retried(self, retry_client: RTMClient) -> None:
+        """HTTP 500 should raise immediately, no retry."""
+        respx.get(RTM_API_URL).mock(return_value=httpx.Response(500))
+
+        with pytest.raises(RTMNetworkError, match="HTTP error: 500"):
+            await retry_client.call("rtm.test.echo")
+
+        assert retry_client.rate_limit_stats.retries_last_60s() == 0
+
+        await retry_client.close()
 
 
 class TestRTMConfig:

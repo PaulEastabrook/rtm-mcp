@@ -571,3 +571,37 @@ class TestGetTimelineInfo:
         assert tx_list[0]["undone"] is False
         assert tx_list[1]["transaction_id"] == "tx2"
         assert tx_list[1]["undone"] is True
+
+
+# ---------------------------------------------------------------------------
+# get_rate_limit_status
+# ---------------------------------------------------------------------------
+
+class TestGetRateLimitStatus:
+    @pytest.mark.asyncio
+    async def test_returns_all_fields(self, util_tools):
+        tools, client = util_tools
+
+        mock_bucket = MagicMock()
+        mock_bucket.tokens_available = 2.5
+        mock_stats = MagicMock()
+        mock_stats.requests_last_60s = MagicMock(return_value=10)
+        mock_stats.retries_last_60s = MagicMock(return_value=1)
+        mock_stats.http_503_count_session = 2
+        mock_config = MagicMock()
+        mock_config.bucket_capacity = 3
+        mock_config.safety_margin = 0.1
+
+        client.bucket = mock_bucket
+        client.rate_limit_stats = mock_stats
+        client.config = mock_config
+
+        result = await tools["get_rate_limit_status"](FakeContext())
+        data = result["data"]
+        assert data["tokens_available"] == 2.5
+        assert data["bucket_capacity"] == 3
+        assert data["refill_rate"] == 0.9
+        assert data["safety_margin"] == 0.1
+        assert data["requests_last_60s"] == 10
+        assert data["retries_last_60s"] == 1
+        assert data["http_503_count_session"] == 2

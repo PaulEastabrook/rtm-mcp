@@ -1,6 +1,5 @@
 """Async RTM API Client."""
 
-import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ import httpx
 
 from .config import RTM_API_URL, RTMConfig
 from .exceptions import RTMError, RTMNetworkError, RTMRateLimitError, raise_for_error
+from .rate_limiter import RateLimitStats, TokenBucket
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class RTMClient:
     Features:
     - MD5 request signing
     - Timeline management for write operations
-    - Rate limiting (1 RPS with burst)
+    - Token bucket rate limiting with 503 retry
     - Connection pooling via httpx
     """
 
@@ -41,8 +41,14 @@ class RTMClient:
         self._timeline: str | None = None
         self._timeline_created_at: str | None = None
         self._http: httpx.AsyncClient | None = None
-        self._rate_limit_lock = asyncio.Lock()
-        self._last_request_time: float = 0
+        # Rate limiting
+        refill_rate = 1.0 * (1.0 - config.safety_margin)
+        self._bucket = TokenBucket(
+            capacity=config.bucket_capacity,
+            refill_rate=refill_rate,
+        )
+        self._rate_limit_stats = RateLimitStats()
+        # Transaction log
         self._transaction_log: list[TransactionEntry] = []
         self._transaction_index: dict[str, TransactionEntry] = {}
 
@@ -68,14 +74,15 @@ class RTMClient:
         sig_input = self.config.shared_secret + param_string
         return hashlib.md5(sig_input.encode()).hexdigest()
 
-    async def _rate_limit(self) -> None:
-        """Enforce rate limiting (1 RPS)."""
-        async with self._rate_limit_lock:
-            now = asyncio.get_event_loop().time()
-            elapsed = now - self._last_request_time
-            if elapsed < 1.0:
-                await asyncio.sleep(1.0 - elapsed)
-            self._last_request_time = asyncio.get_event_loop().time()
+    @property
+    def bucket(self) -> TokenBucket:
+        """The token bucket rate limiter."""
+        return self._bucket
+
+    @property
+    def rate_limit_stats(self) -> RateLimitStats:
+        """Request statistics for diagnostics."""
+        return self._rate_limit_stats
 
     async def call(
         self,
@@ -97,10 +104,9 @@ class RTMClient:
         Raises:
             RTMError: On API errors
             RTMNetworkError: On connection errors
+            RTMRateLimitError: After exhausting retries on HTTP 503
         """
-        await self._rate_limit()
-
-        # Build request params
+        # Build request params once (deterministic, safe to retry)
         request_params: dict[str, str] = {
             "method": method,
             "api_key": self.config.api_key,
@@ -109,44 +115,72 @@ class RTMClient:
             "v": "2",
         }
 
-        # Add timeline for write operations
         if require_timeline:
             request_params["timeline"] = await self.get_timeline()
 
-        # Add caller params (converting to string)
         for key, value in params.items():
             if value is not None:
                 request_params[key] = str(value)
 
-        # Sign the request
         request_params["api_sig"] = self._sign(request_params)
 
-        try:
-            http = await self._get_http()
-            response = await http.get(RTM_API_URL, params=request_params)
-            response.raise_for_status()
+        request_type = "write" if require_timeline else "read"
+        max_attempts = self.config.max_retries + 1
 
-            result = response.json()
-            rsp = result.get("rsp", {})
+        for attempt in range(max_attempts):
+            await self._bucket.acquire()
+            self._rate_limit_stats.record_request(request_type)
 
-            logger.debug("RTM API %s raw response: %s", method, rsp)
+            try:
+                http = await self._get_http()
+                response = await http.get(RTM_API_URL, params=request_params)
 
-            if rsp.get("stat") != "ok":
-                err = rsp.get("err", {})
-                code = int(err.get("code", 0))
-                msg = err.get("msg", "Unknown error")
-                raise_for_error(code, msg)
+                # Handle 503 (rate limit drop tier) before raise_for_status
+                if response.status_code == 503:
+                    self._rate_limit_stats.record_503()
+                    if attempt < max_attempts - 1:
+                        delay = (
+                            self.config.retry_delay_first
+                            if attempt == 0
+                            else self.config.retry_delay_subsequent
+                        )
+                        logger.warning(
+                            "RTM API %s returned 503 (attempt %d/%d), pausing %.1fs",
+                            method, attempt + 1, max_attempts, delay,
+                        )
+                        self._bucket.pause(delay)
+                        self._rate_limit_stats.record_retry()
+                        continue
+                    raise RTMRateLimitError(
+                        f"RTM API returned 503 after {max_attempts} attempts"
+                    )
 
-            return rsp
+                response.raise_for_status()
 
-        except httpx.TimeoutException as e:
-            raise RTMNetworkError("Request timed out") from e
-        except httpx.ConnectError as e:
-            raise RTMNetworkError("Failed to connect to RTM API") from e
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                raise RTMRateLimitError("Rate limit exceeded") from e
-            raise RTMNetworkError(f"HTTP error: {e.response.status_code}") from e
+                result = response.json()
+                rsp = result.get("rsp", {})
+
+                logger.debug("RTM API %s raw response: %s", method, rsp)
+
+                if rsp.get("stat") != "ok":
+                    err = rsp.get("err", {})
+                    code = int(err.get("code", 0))
+                    msg = err.get("msg", "Unknown error")
+                    raise_for_error(code, msg)
+
+                return rsp
+
+            except httpx.TimeoutException as e:
+                raise RTMNetworkError("Request timed out") from e
+            except httpx.ConnectError as e:
+                raise RTMNetworkError("Failed to connect to RTM API") from e
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    raise RTMRateLimitError("Rate limit exceeded") from e
+                raise RTMNetworkError(f"HTTP error: {e.response.status_code}") from e
+
+        # Should not reach here, but safety net
+        raise RTMNetworkError(f"RTM API call failed after {max_attempts} attempts")
 
     async def get_timeline(self) -> str:
         """Get or create a timeline for write operations.

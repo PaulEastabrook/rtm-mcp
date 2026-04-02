@@ -89,6 +89,7 @@ This server provides full access to Remember The Milk's task management features
 - undo: Undo previous operation using transaction_id
 - batch_undo: Undo multiple operations in reverse order
 - get_timeline_info: View session timeline and transaction history
+- get_rate_limit_status: View rate limiter status and request statistics
 
 ## Smart Add Syntax
 When adding tasks, use Smart Add for quick entry:

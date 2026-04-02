@@ -5,8 +5,9 @@
 ```
 src/rtm_mcp/
 ├── server.py           # FastMCP server, lifespan, tool registration
-├── client.py           # Async RTM API client with signing
-├── config.py           # Pydantic settings (env + file)
+├── client.py           # Async RTM API client with signing + retry
+├── config.py           # Pydantic settings (env + file + rate limits)
+├── rate_limiter.py     # Token bucket rate limiter + diagnostics stats
 ├── types.py            # Pydantic models for type safety
 ├── exceptions.py       # RTMError hierarchy + ERROR_GUIDANCE recovery hints
 ├── response_builder.py # Consistent response formatting
@@ -14,7 +15,7 @@ src/rtm_mcp/
 │   ├── tasks.py        # Task CRUD + metadata + hierarchy (19 tools)
 │   ├── lists.py        # List management (7 tools)
 │   ├── notes.py        # Note operations (4 tools)
-│   └── utilities.py    # Tags, locations, settings, undo, timeline (11 tools)
+│   └── utilities.py    # Tags, locations, settings, undo, timeline, diagnostics (12 tools)
 └── scripts/
     └── setup_auth.py   # Interactive auth setup CLI
 ```
@@ -56,13 +57,29 @@ All tools return consistent structure:
 Async client with automatic:
 - MD5 request signing
 - Timeline creation for writes
-- Rate limiting (1 RPS)
+- Token bucket rate limiting (burst to 3 RPS, sustain ~0.9 RPS with safety margin)
+- HTTP 503 retry with escalating backoff (2s → 5s, max 2 retries)
 - Error code mapping to exceptions
 
 ```python
 client = RTMClient(config)
 result = await client.call("rtm.tasks.add", require_timeline=True, name="Task")
 ```
+
+### Rate Limiting
+
+Uses a **token bucket** (`rate_limiter.py`) matching RTM's stated limits:
+
+| Parameter | Default | Env var |
+|-----------|---------|---------|
+| Bucket capacity | 3 tokens | `RTM_BUCKET_CAPACITY` |
+| Safety margin | 10% | `RTM_SAFETY_MARGIN` |
+| Refill rate | 0.9 tokens/sec (= 1.0 - margin) | Derived |
+| Max 503 retries | 2 | `RTM_MAX_RETRIES` |
+| First retry delay | 2s | `RTM_RETRY_DELAY_FIRST` |
+| Subsequent retry delay | 5s | `RTM_RETRY_DELAY_SUBSEQUENT` |
+
+Request classification uses `require_timeline` as a proxy: `True` = write, `False` = read. This correlates 100% with actual read/write status across all tools.
 
 ### Error Handling
 
@@ -199,16 +216,17 @@ class FakeMCP:
         return decorator
 ```
 
-Test files (225 tests total):
-- `tests/test_client.py` — client signing, API calls, timeline caching, transaction log (16 tests)
+Test files (249 tests total):
+- `tests/test_client.py` — client signing, API calls, timeline caching, transaction log, 503 retry (25 tests)
 - `tests/test_config.py` — config load/save, file fallback, corrupt JSON (10 tests)
 - `tests/test_exceptions.py` — error code mapping including subtask codes 4040-4090 (16 tests)
+- `tests/test_rate_limiter.py` — token bucket acquire/refill/pause, rate limit stats (14 tests)
 - `tests/test_response_builder.py` — parser, formatter, get_transaction_info, record_and_build_response (40 tests)
 - `tests/test_tools/test_task_tools.py` — all 19 task tools via FakeMCP (60 tests)
 - `tests/test_tools/test_tasks.py` — `_apply_subtask_counts` and `_analyze_tasks` helpers (17 tests)
 - `tests/test_tools/test_list_tools.py` — all 7 list tools via FakeMCP (16 tests)
 - `tests/test_tools/test_note_tools.py` — all 4 note tools via FakeMCP (14 tests)
-- `tests/test_tools/test_utility_tools.py` — all 11 utility tools via FakeMCP (33 tests)
+- `tests/test_tools/test_utility_tools.py` — all 12 utility tools via FakeMCP (34 tests)
 - `tests/test_tools/test_lists.py` — list response filtering and sorting (3 tests)
 
 ### Integration Testing
@@ -314,7 +332,7 @@ Run `rtm-setup` or set environment variables.
 
 ### Rate Limiting
 
-Client enforces 1 RPS. For bulk operations, results will be slower.
+Client uses a token bucket (burst to 3, sustain ~0.9 RPS). HTTP 503 responses trigger automatic retry with backoff. Use `get_rate_limit_status` to diagnose. If 503s occur regularly, increase `RTM_SAFETY_MARGIN` (default 0.1).
 
 ### Token Expiry
 

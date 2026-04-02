@@ -27,6 +27,13 @@ class RTMConfig(BaseSettings):
     shared_secret: str = Field(default="", description="RTM shared secret")
     auth_token: str = Field(default="", alias="token", description="RTM auth token")
 
+    # Rate limiting configuration
+    bucket_capacity: int = Field(default=3, description="Token bucket capacity (max burst)")
+    safety_margin: float = Field(default=0.1, description="Safety margin (0.0-1.0) reducing effective rate from 1 RPS")
+    max_retries: int = Field(default=2, description="Max retries on HTTP 503 (total attempts = max_retries + 1)")
+    retry_delay_first: float = Field(default=2.0, description="Seconds to pause before first 503 retry")
+    retry_delay_subsequent: float = Field(default=5.0, description="Seconds to pause before 2nd+ 503 retry")
+
     @classmethod
     def load(cls) -> "RTMConfig":
         """Load config from environment and/or config files."""

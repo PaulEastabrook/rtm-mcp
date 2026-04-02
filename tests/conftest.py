@@ -12,6 +12,7 @@ def mock_config() -> RTMConfig:
         api_key="test_api_key",
         shared_secret="test_shared_secret",
         auth_token="test_auth_token",
+        bucket_capacity=100,  # Large capacity to prevent waits in tests
     )
 
 

@@ -472,3 +472,43 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
                 "count": len(groups),
             },
         )
+
+    @mcp.tool()
+    async def get_rate_limit_status(ctx: Context) -> dict[str, Any]:
+        """View current rate limiter state and request statistics. No API call
+        is made — reads in-memory state only. Use this to diagnose unexpected
+        slowness, check remaining burst capacity before a batch operation, or
+        detect whether HTTP 503 errors are occurring (suggesting the safety
+        margin needs increasing).
+
+        Returns:
+            {"tokens_available": 2.3, "bucket_capacity": 3, "refill_rate": 0.9,
+            "safety_margin": 0.1, "requests_last_60s": 14, "retries_last_60s": 0,
+            "http_503_count_session": 0}.
+
+            Key fields:
+            - tokens_available: approximate burst capacity remaining right now
+            - refill_rate: effective tokens/sec (1.0 minus safety_margin)
+            - requests_last_60s: rolling window of all API requests
+            - http_503_count_session: total 503s this session (increase safety_margin
+              if non-zero)
+        """
+        from ..client import RTMClient
+
+        client: RTMClient = await get_client()
+
+        bucket = client.bucket
+        stats = client.rate_limit_stats
+        config = client.config
+
+        return build_response(
+            data={
+                "tokens_available": round(bucket.tokens_available, 2),
+                "bucket_capacity": config.bucket_capacity,
+                "refill_rate": round(1.0 * (1.0 - config.safety_margin), 2),
+                "safety_margin": config.safety_margin,
+                "requests_last_60s": stats.requests_last_60s(),
+                "retries_last_60s": stats.retries_last_60s(),
+                "http_503_count_session": stats.http_503_count_session,
+            },
+        )
