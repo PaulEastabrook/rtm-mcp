@@ -10,6 +10,7 @@ src/rtm_mcp/
 ├── parsers.py          # RTM response parsing, formatting, normalization, analysis
 ├── response_builder.py # MCP response envelope + transaction recording
 ├── lookup.py           # Shared name-to-ID resolution for tasks and lists
+├── urls.py             # Web UI URL construction + task hierarchy walking
 ├── rate_limiter.py     # Token bucket rate limiter + diagnostics stats
 ├── types.py            # Pydantic models for type safety
 ├── exceptions.py       # RTMError hierarchy + ERROR_GUIDANCE recovery hints
@@ -17,7 +18,7 @@ src/rtm_mcp/
 │   ├── tasks.py        # Task CRUD + metadata + hierarchy (19 tools)
 │   ├── lists.py        # List management (7 tools)
 │   ├── notes.py        # Note operations (4 tools)
-│   └── utilities.py    # Tags, locations, settings, undo, timeline, diagnostics (12 tools)
+│   └── utilities.py    # Tags, locations, settings, undo, timeline, diagnostics, URLs (14 tools)
 └── scripts/
     └── setup_auth.py   # Interactive auth setup CLI
 ```
@@ -31,6 +32,7 @@ src/rtm_mcp/
 | `response_builder.py` | Wrap tool output in the standard MCP response envelope |
 | `lookup.py` | Resolve human-readable names (task name, list name) to RTM IDs |
 | `exceptions.py` | Map RTM error codes to typed exceptions with recovery hints |
+| `urls.py` | Build RTM web UI deep-link URLs; walk parent_task_id chain for hierarchy |
 | `rate_limiter.py` | Token bucket pacing + rolling-window diagnostics |
 | `tools/*.py` | Register MCP tools — thin glue between `client`, `parsers`, and `response_builder` |
 
@@ -264,7 +266,7 @@ class FakeMCP:
         return decorator
 ```
 
-Test files (275 tests total):
+Test files (297 tests total):
 - `tests/test_client.py` — client signing, API calls, timeline caching, transaction log, 503 retry, connection retry, POST/GET split (35 tests)
 - `tests/test_config.py` — config load/save, file fallback, corrupt JSON (10 tests)
 - `tests/test_exceptions.py` — error code mapping including subtask codes 4040-4090 (16 tests)
@@ -275,7 +277,8 @@ Test files (275 tests total):
 - `tests/test_tools/test_tasks.py` — `_apply_subtask_counts` and `analyze_tasks` helpers (17 tests)
 - `tests/test_tools/test_list_tools.py` — all 7 list tools via FakeMCP (16 tests)
 - `tests/test_tools/test_note_tools.py` — all 4 note tools via FakeMCP (14 tests)
-- `tests/test_tools/test_utility_tools.py` — all 12 utility tools via FakeMCP (34 tests)
+- `tests/test_urls.py` — URL builders and parent chain walking (15 tests)
+- `tests/test_tools/test_utility_tools.py` — all 14 utility tools via FakeMCP (41 tests)
 - `tests/test_tools/test_lists.py` — list response filtering and sorting (3 tests)
 
 ### Integration Testing

@@ -605,3 +605,173 @@ class TestGetRateLimitStatus:
         assert data["requests_last_60s"] == 10
         assert data["retries_last_60s"] == 1
         assert data["http_503_count_session"] == 2
+
+
+# ---------------------------------------------------------------------------
+# get_task_url
+# ---------------------------------------------------------------------------
+
+class TestGetTaskUrl:
+    @pytest.mark.asyncio
+    async def test_by_name_with_hierarchy(self, util_tools):
+        """Task found by name, with 3-level hierarchy → full URL."""
+        tools, client = util_tools
+
+        # find_task fetches all incomplete tasks
+        all_tasks_response = {"tasks": {"list": [
+            {"id": "1", "taskseries": [
+                {"id": "ts_100", "name": "Focus area", "parent_task_id": "",
+                 "tags": [], "notes": [], "url": "", "location_id": "",
+                 "created": "", "modified": "2026-01-01T00:00:00Z",
+                 "task": [{"id": "100", "due": "", "has_due_time": "0",
+                           "start": "", "has_start_time": "0",
+                           "completed": "", "deleted": "", "priority": "N",
+                           "postponed": "0", "estimate": ""}]},
+                {"id": "ts_200", "name": "Project X", "parent_task_id": "100",
+                 "tags": [], "notes": [], "url": "", "location_id": "",
+                 "created": "", "modified": "2026-01-02T00:00:00Z",
+                 "task": [{"id": "200", "due": "", "has_due_time": "0",
+                           "start": "", "has_start_time": "0",
+                           "completed": "", "deleted": "", "priority": "N",
+                           "postponed": "0", "estimate": ""}]},
+                {"id": "ts_300", "name": "Do the thing", "parent_task_id": "200",
+                 "tags": [], "notes": [], "url": "", "location_id": "",
+                 "created": "", "modified": "2026-01-03T00:00:00Z",
+                 "task": [{"id": "300", "due": "", "has_due_time": "0",
+                           "start": "", "has_start_time": "0",
+                           "completed": "", "deleted": "", "priority": "N",
+                           "postponed": "0", "estimate": ""}]},
+            ]},
+        ]}}
+
+        lists_response = {"lists": {"list": [
+            {"id": "1", "name": "Processed", "deleted": "0",
+             "locked": "0", "archived": "0", "position": "0", "smart": "0"},
+        ]}}
+
+        async def mock_call(method, **kwargs):
+            if method == "rtm.tasks.getList":
+                return all_tasks_response
+            if method == "rtm.lists.getList":
+                return lists_response
+            return {}
+
+        client.call = AsyncMock(side_effect=mock_call)
+
+        result = await tools["get_task_url"](
+            FakeContext(), task_name="Do the thing",
+        )
+        data = result["data"]
+        assert data["url"] == "https://www.rememberthemilk.com/app/#list/1/100/200/300"
+        assert data["task_name"] == "Do the thing"
+        assert data["list_name"] == "Processed"
+        assert len(data["hierarchy"]) == 3
+        assert data["hierarchy"][0]["name"] == "Focus area"
+        assert data["hierarchy"][2]["name"] == "Do the thing"
+
+    @pytest.mark.asyncio
+    async def test_by_ids_top_level(self, util_tools):
+        """Explicit IDs, no parents → short URL."""
+        tools, client = util_tools
+
+        task_response = {"tasks": {"list": [
+            {"id": "5", "taskseries": [
+                {"id": "ts_10", "name": "Solo", "parent_task_id": "",
+                 "tags": [], "notes": [], "url": "", "location_id": "",
+                 "created": "", "modified": "",
+                 "task": [{"id": "10", "due": "", "has_due_time": "0",
+                           "start": "", "has_start_time": "0",
+                           "completed": "", "deleted": "", "priority": "N",
+                           "postponed": "0", "estimate": ""}]},
+            ]},
+        ]}}
+
+        lists_response = {"lists": {"list": [
+            {"id": "5", "name": "Inbox", "deleted": "0",
+             "locked": "1", "archived": "0", "position": "0", "smart": "0"},
+        ]}}
+
+        async def mock_call(method, **kwargs):
+            if method == "rtm.tasks.getList":
+                return task_response
+            if method == "rtm.lists.getList":
+                return lists_response
+            return {}
+
+        client.call = AsyncMock(side_effect=mock_call)
+
+        result = await tools["get_task_url"](
+            FakeContext(),
+            task_id="10", taskseries_id="ts_10", list_id="5",
+        )
+        data = result["data"]
+        assert data["url"] == "https://www.rememberthemilk.com/app/#list/5/10"
+        assert data["task_name"] == "Solo"
+        assert len(data["hierarchy"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_task_not_found(self, util_tools):
+        tools, client = util_tools
+        client.call = AsyncMock(return_value={"tasks": {"list": []}})
+
+        result = await tools["get_task_url"](
+            FakeContext(), task_name="nonexistent",
+        )
+        assert "error" in result["data"]
+
+
+# ---------------------------------------------------------------------------
+# get_list_url
+# ---------------------------------------------------------------------------
+
+class TestGetListUrl:
+    @pytest.mark.asyncio
+    async def test_by_name(self, util_tools):
+        tools, client = util_tools
+        client.call = AsyncMock(return_value={"lists": {"list": [
+            {"id": "42", "name": "Processed", "deleted": "0",
+             "locked": "0", "archived": "0", "position": "0", "smart": "0"},
+        ]}})
+
+        result = await tools["get_list_url"](
+            FakeContext(), list_name="Processed",
+        )
+        data = result["data"]
+        assert data["url"] == "https://www.rememberthemilk.com/app/#list/42"
+        assert data["list_name"] == "Processed"
+        assert data["list_id"] == "42"
+
+    @pytest.mark.asyncio
+    async def test_by_id(self, util_tools):
+        tools, client = util_tools
+        client.call = AsyncMock(return_value={"lists": {"list": [
+            {"id": "42", "name": "Processed", "deleted": "0",
+             "locked": "0", "archived": "0", "position": "0", "smart": "0"},
+        ]}})
+
+        result = await tools["get_list_url"](
+            FakeContext(), list_id="42",
+        )
+        data = result["data"]
+        assert data["url"] == "https://www.rememberthemilk.com/app/#list/42"
+        assert data["list_name"] == "Processed"
+
+    @pytest.mark.asyncio
+    async def test_list_not_found(self, util_tools):
+        tools, client = util_tools
+        client.call = AsyncMock(return_value={"lists": {"list": [
+            {"id": "1", "name": "Inbox", "deleted": "0",
+             "locked": "1", "archived": "0", "position": "0", "smart": "0"},
+        ]}})
+
+        result = await tools["get_list_url"](
+            FakeContext(), list_name="NonExistent",
+        )
+        assert "error" in result["data"]
+
+    @pytest.mark.asyncio
+    async def test_neither_name_nor_id(self, util_tools):
+        tools, client = util_tools
+
+        result = await tools["get_list_url"](FakeContext())
+        assert "error" in result["data"]

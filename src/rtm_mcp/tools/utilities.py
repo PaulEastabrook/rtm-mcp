@@ -4,8 +4,10 @@ from typing import Any
 
 from fastmcp import Context
 
+from ..lookup import resolve_list_id, resolve_task_ids
 from ..parsers import ensure_list
 from ..response_builder import build_response
+from ..urls import build_list_url, resolve_task_url
 
 
 def register_utility_tools(mcp: Any, get_client: Any) -> None:
@@ -508,3 +510,114 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
                 "connection_retries_last_60s": stats.conn_retries_last_60s(),
             },
         )
+
+    @mcp.tool()
+    async def get_task_url(
+        ctx: Context,
+        task_name: str | None = None,
+        task_id: str | None = None,
+        taskseries_id: str | None = None,
+        list_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Get the Remember The Milk web UI URL for a task, including its full
+        hierarchy path. Use this to give the user a clickable link that opens
+        the task directly in the RTM web app.
+
+        The URL encodes the task's ancestor chain (e.g. focus area → project →
+        action), so clicking it navigates straight to the task in context.
+
+        Identify the task by either task_name or all three IDs.
+
+        Caution: task_name uses fuzzy matching across incomplete tasks. For
+        common names, prefer passing task_id + taskseries_id + list_id to
+        avoid matching an unintended task.
+
+        Args:
+            task_name: Task name to search for (case-insensitive fuzzy match).
+            task_id: The task's ID (from list_tasks output).
+            taskseries_id: The task series ID (from list_tasks output).
+            list_id: The list ID containing the task (from list_tasks output).
+
+        Returns:
+            {"url": "https://...", "task_name": "...", "list_name": "...",
+            "list_id": "...", "hierarchy": [{name, level}]}.
+            Optionally includes "warning" if a parent task could not be found.
+
+        Examples:
+            - get_task_url(task_name="Buy groceries") → URL with hierarchy
+            - get_task_url(task_id="123", taskseries_id="456", list_id="789")
+        """
+        from ..client import RTMClient
+
+        client: RTMClient = await get_client()
+        ids = await resolve_task_ids(
+            client, task_name, task_id, taskseries_id, list_id,
+            include_completed=True,
+        )
+        if "error" in ids:
+            return build_response(data=ids)
+
+        result = await resolve_task_url(
+            client, ids["task_id"], ids["taskseries_id"], ids["list_id"],
+        )
+        return build_response(data=result)
+
+    @mcp.tool()
+    async def get_list_url(
+        ctx: Context,
+        list_name: str | None = None,
+        list_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Get the Remember The Milk web UI URL for a list. Use this to give
+        the user a clickable link that opens the list in the RTM web app.
+
+        Provide either list_name or list_id. Use get_lists to see available
+        list names and IDs.
+
+        Args:
+            list_name: List name to look up (case-insensitive exact match).
+            list_id: The list's ID (from get_lists output).
+
+        Returns:
+            {"url": "https://...", "list_name": "...", "list_id": "..."}.
+
+        Examples:
+            - get_list_url(list_name="Inbox") → URL for Inbox list
+            - get_list_url(list_id="49657585") → URL for that list
+        """
+        from ..client import RTMClient
+
+        client: RTMClient = await get_client()
+
+        resolved_name: str | None = list_name
+        resolved_id: str | None = list_id
+
+        if list_name and not list_id:
+            result = await resolve_list_id(client, list_name)
+            if "error" in result:
+                return build_response(data=result)
+            resolved_id = result["list_id"]
+            resolved_name = result["list"]["name"]
+        elif list_id and not list_name:
+            # Fetch list name for the response
+            from ..parsers import parse_lists_response
+
+            lists_result = await client.call("rtm.lists.getList")
+            lists = parse_lists_response(lists_result)
+            for lst in lists:
+                if lst["id"] == list_id:
+                    resolved_name = lst["name"]
+                    break
+
+        if not resolved_id:
+            return build_response(data={
+                "error": "Provide either list_name or list_id. "
+                "Use get_lists to see available list names."
+            })
+
+        url = build_list_url(resolved_id)
+        return build_response(data={
+            "url": url,
+            "list_name": resolved_name,
+            "list_id": resolved_id,
+        })

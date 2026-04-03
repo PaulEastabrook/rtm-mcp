@@ -96,3 +96,4 @@ class RTMConfig(BaseSettings):
 # RTM API endpoints
 RTM_API_URL = "https://api.rememberthemilk.com/services/rest/"
 RTM_AUTH_URL = "https://www.rememberthemilk.com/services/auth/"
+RTM_WEB_BASE_URL = "https://www.rememberthemilk.com/app/"

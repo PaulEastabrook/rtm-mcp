@@ -84,6 +84,10 @@ This server provides full access to Remember The Milk's task management features
 - add_list / rename_list / delete_list: Manage lists
 - archive_list / unarchive_list: Archive management
 
+## URL Tools
+- get_task_url: Get RTM web UI URL for a task (includes full hierarchy path)
+- get_list_url: Get RTM web UI URL for a list
+
 ## Utilities
 - test_connection: Verify API connectivity
 - check_auth: Verify authentication
