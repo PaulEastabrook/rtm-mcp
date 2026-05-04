@@ -54,3 +54,6 @@ config.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code worktree state (never tracked — session-local)
+.claude/worktrees/
