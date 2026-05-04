@@ -87,6 +87,24 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             list_id (needed by write tools), name, due, priority, tags, parent_task_id,
             and subtask_count (number of children in the current result set).
 
+        Caveat — task order is NOT user-visible display order:
+            The order returned by RTM's `rtm.tasks.getList` API is not the order
+            the user sees in RTM's web/mobile UI. Manual reorders done via drag-
+            and-drop in the UI are stored somewhere RTM does not expose via the
+            public API — task records carry `id`, `priority`, `due`, `created`,
+            `modified`, etc., but no `position` / `rank` / `sort_order` field.
+            (The field exists for *lists* but not for *tasks*.)
+
+            Implication for callers (especially AI agents): do not present the
+            returned order as the user's intended sequence. If the user has
+            manually re-sequenced a project's subtasks, the API order will not
+            reflect that. Surface the limitation explicitly when rendering task
+            lists, and ask the user to confirm order from their RTM view if
+            sequence matters.
+
+            This is an RTM API limitation, not a bug in this MCP server.
+            Verified against RTM API behaviour 2026-05-04.
+
         Examples:
             - list_tasks() → all incomplete tasks
             - list_tasks(filter="dueBefore:tomorrow AND priority:1") → urgent tasks due soon
