@@ -1,6 +1,7 @@
 """RTM MCP Configuration management."""
 
 import json
+import os
 from pathlib import Path
 
 from pydantic import Field
@@ -14,6 +15,20 @@ class RTMConfig(BaseSettings):
     1. Environment variables (RTM_API_KEY, RTM_SHARED_SECRET, RTM_AUTH_TOKEN)
     2. Config file (~/.config/rtm-mcp/config.json)
     3. Legacy config file (~/.config/rtm/config.json)
+
+    Profile support (added in v1.0.1):
+        The RTM_PROFILE environment variable selects which credential set the
+        server uses. Two profiles:
+
+        - production (default) — uses RTM_API_KEY, RTM_SHARED_SECRET,
+          RTM_AUTH_TOKEN env vars OR ~/.config/rtm-mcp/config.json
+        - sandpit — uses RTM_SANDPIT_API_KEY, RTM_SANDPIT_SHARED_SECRET,
+          RTM_SANDPIT_AUTH_TOKEN env vars OR
+          ~/.config/rtm-mcp/config.sandpit.json
+
+        The sandpit profile is intended for fixture-based testing of
+        RTM-touching capabilities — see the gtd plugin's test-fixture
+        pattern for the full convention.
     """
 
     model_config = SettingsConfigDict(
@@ -26,6 +41,9 @@ class RTMConfig(BaseSettings):
     api_key: str = Field(default="", description="RTM API key")
     shared_secret: str = Field(default="", description="RTM shared secret")
     auth_token: str = Field(default="", alias="token", description="RTM auth token")
+
+    # Active profile — populated at load time from RTM_PROFILE env var
+    profile: str = Field(default="production", description="Active credential profile")
 
     # Rate limiting configuration
     bucket_capacity: int = Field(default=3, description="Token bucket capacity (max burst)")
@@ -41,23 +59,71 @@ class RTMConfig(BaseSettings):
 
     @classmethod
     def load(cls) -> "RTMConfig":
-        """Load config from environment and/or config files."""
-        # Try loading from environment first
+        """Load config from environment and/or config files.
+
+        Profile-aware: respects RTM_PROFILE env var. Sandpit profile loads
+        from RTM_SANDPIT_* env vars or ~/.config/rtm-mcp/config.sandpit.json.
+        """
+        profile = os.environ.get("RTM_PROFILE", "production").lower()
+
+        if profile == "sandpit":
+            return cls._load_sandpit()
+        elif profile == "production":
+            return cls._load_production()
+        else:
+            raise ValueError(
+                f"RTM_PROFILE must be 'production' or 'sandpit', got '{profile}'"
+            )
+
+    @classmethod
+    def _load_production(cls) -> "RTMConfig":
+        """Load production credentials (default behaviour pre-1.0.1)."""
         config = cls()
 
-        # If not fully configured, try config files
         if not config.is_configured():
-            config = cls._load_from_file(config)
+            config = cls._load_from_file(config, profile="production")
 
+        config.profile = "production"
         return config
 
     @classmethod
-    def _load_from_file(cls, base_config: "RTMConfig") -> "RTMConfig":
-        """Load config from JSON file."""
-        config_paths = [
-            Path.home() / ".config" / "rtm-mcp" / "config.json",
-            Path.home() / ".config" / "rtm" / "config.json",  # Legacy location
-        ]
+    def _load_sandpit(cls) -> "RTMConfig":
+        """Load sandpit credentials. Refuses to start if not configured."""
+        # Read sandpit env vars explicitly (pydantic doesn't natively support
+        # per-profile env prefixes; we read them directly here)
+        api_key = os.environ.get("RTM_SANDPIT_API_KEY", "")
+        shared_secret = os.environ.get("RTM_SANDPIT_SHARED_SECRET", "")
+        auth_token = os.environ.get("RTM_SANDPIT_AUTH_TOKEN", "")
+
+        config = cls(api_key=api_key, shared_secret=shared_secret, token=auth_token)
+
+        if not config.is_configured():
+            config = cls._load_from_file(config, profile="sandpit")
+
+        if not config.is_configured():
+            raise RuntimeError(
+                "RTM_PROFILE=sandpit but sandpit credentials are not configured. "
+                "Set RTM_SANDPIT_API_KEY, RTM_SANDPIT_SHARED_SECRET, "
+                "RTM_SANDPIT_AUTH_TOKEN env vars OR create "
+                "~/.config/rtm-mcp/config.sandpit.json with {api_key, shared_secret, token}. "
+                "See the gtd plugin's testing-policy.md for setup guidance."
+            )
+
+        config.profile = "sandpit"
+        return config
+
+    @classmethod
+    def _load_from_file(cls, base_config: "RTMConfig", profile: str = "production") -> "RTMConfig":
+        """Load config from JSON file. Profile-aware filename selection."""
+        if profile == "sandpit":
+            config_paths = [
+                Path.home() / ".config" / "rtm-mcp" / "config.sandpit.json",
+            ]
+        else:
+            config_paths = [
+                Path.home() / ".config" / "rtm-mcp" / "config.json",
+                Path.home() / ".config" / "rtm" / "config.json",  # Legacy location
+            ]
 
         for config_path in config_paths:
             if config_path.exists():
@@ -78,9 +144,10 @@ class RTMConfig(BaseSettings):
         return bool(self.api_key and self.shared_secret and self.auth_token)
 
     def save(self, path: Path | None = None) -> None:
-        """Save config to file."""
+        """Save config to file. Profile-aware default path."""
         if path is None:
-            path = Path.home() / ".config" / "rtm-mcp" / "config.json"
+            filename = "config.sandpit.json" if self.profile == "sandpit" else "config.json"
+            path = Path.home() / ".config" / "rtm-mcp" / filename
 
         path.parent.mkdir(parents=True, exist_ok=True)
 
