@@ -199,9 +199,11 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         Args:
             name: Task name, optionally including Smart Add tokens.
                 Example: "Call mom ^tomorrow !1 #family =15min"
-            list_name: Target list name (case-insensitive). Defaults to the user's
-                default list (usually Inbox). Cannot add to Smart Lists (read-only).
-                If parent_task_id is set, the parent's list overrides this value.
+            list_name: Target list name (case-insensitive). When omitted, the task
+                is placed in the user's configured default list (settings.defaultlist),
+                falling back to RTM's built-in Inbox if no default is set. Cannot add
+                to Smart Lists (read-only). If parent_task_id is set, the parent's list
+                overrides this value.
             parse: Parse Smart Add syntax in the name (default: True). Set to False
                 to use the literal name string.
             parent_task_id: Create as a subtask under this parent task ID. Requires
@@ -238,6 +240,14 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             resolved = await resolve_list_id(client, list_name)
             if "error" not in resolved:
                 params["list_id"] = resolved["list_id"]
+        elif not parent_task_id:
+            # No list given: honor the user's configured default list. RTM's
+            # tasks.add defaults to the built-in Inbox when list_id is omitted,
+            # ignoring settings.defaultlist — so resolve it explicitly. Subtasks
+            # are skipped here since the parent's list governs their placement.
+            default_list_id = await client.get_default_list_id()
+            if default_list_id:
+                params["list_id"] = default_list_id
 
         result = await client.call("rtm.tasks.add", require_timeline=True, **params)
 

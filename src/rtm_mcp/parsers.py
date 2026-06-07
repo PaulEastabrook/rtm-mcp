@@ -164,14 +164,25 @@ def format_task(
     return formatted
 
 
+def _is_true(val: Any) -> bool:
+    """Coerce an RTM boolean flag to a Python bool.
+
+    RTM flags reach this code in two shapes: the raw API string (``"1"``/``"0"``)
+    on write responses, and an already-parsed bool when the value has passed
+    through ``parse_lists_response``. Handle both so ``format_list`` is correct
+    regardless of which caller feeds it.
+    """
+    return val is True or val == "1"
+
+
 def format_list(lst: dict[str, Any]) -> dict[str, Any]:
     """Format a list for response."""
     return {
         "id": lst.get("id"),
         "name": lst.get("name"),
-        "smart": lst.get("smart") == "1",
-        "archived": lst.get("archived") == "1",
-        "locked": lst.get("locked") == "1",
+        "smart": _is_true(lst.get("smart")),
+        "archived": _is_true(lst.get("archived")),
+        "locked": _is_true(lst.get("locked")),
     }
 
 

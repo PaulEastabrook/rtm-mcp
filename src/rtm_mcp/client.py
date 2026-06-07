@@ -75,9 +75,9 @@ class RTMClient:
         # Transaction log
         self._transaction_log: list[TransactionEntry] = []
         self._transaction_index: dict[str, TransactionEntry] = {}
-        # Cached settings
-        self._cached_timezone: str | None = None
-        self._timezone_fetched: bool = False
+        # Cached settings (fetched once per session via rtm.settings.getList)
+        self._cached_settings: dict[str, Any] | None = None
+        self._settings_fetched: bool = False
 
     async def _get_http(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
@@ -288,20 +288,38 @@ class RTMClient:
             self._timeline_created_at = datetime.now().isoformat()
         return self._timeline
 
+    async def _get_settings(self) -> dict[str, Any]:
+        """Fetch the user's RTM settings once per session and cache them.
+
+        Returns the parsed ``settings`` dict (timezone, defaultlist, dateformat,
+        etc.), or an empty dict if the call fails. Shared by ``get_timezone``
+        and ``get_default_list_id`` so a single ``rtm.settings.getList`` request
+        serves both.
+        """
+        if not self._settings_fetched:
+            try:
+                result = await self.call("rtm.settings.getList")
+                self._cached_settings = result.get("settings", {})
+            except Exception:
+                self._cached_settings = {}
+            self._settings_fetched = True
+        return self._cached_settings or {}
+
     async def get_timezone(self) -> str | None:
         """Get the user's timezone (cached after first fetch).
 
         Returns the IANA timezone string (e.g. 'Europe/London') or None
         if the settings call fails.
         """
-        if not self._timezone_fetched:
-            try:
-                result = await self.call("rtm.settings.getList")
-                self._cached_timezone = result.get("settings", {}).get("timezone")
-            except Exception:
-                pass
-            self._timezone_fetched = True
-        return self._cached_timezone
+        return (await self._get_settings()).get("timezone") or None
+
+    async def get_default_list_id(self) -> str | None:
+        """Get the user's configured default list ID (cached after first fetch).
+
+        Returns the list ID (e.g. '51526642') that the RTM web UI uses for
+        quick-add, or None if no default is set or the settings call fails.
+        """
+        return (await self._get_settings()).get("defaultlist") or None
 
     @property
     def timeline_id(self) -> str | None:

@@ -323,11 +323,13 @@ class TestAddTask:
     @pytest.mark.asyncio
     async def test_basic_add(self, task_tools):
         tools, client = task_tools
-        settings_resp = {"stat": "ok", "settings": {"timezone": "UTC"}}
         add_resp = _make_write_response(
             _ts(name="New Task"), transaction_id="tx123",
         )
-        _setup_calls(client, [add_resp, settings_resp])
+        _setup_call_map(client, {
+            "rtm.settings.getList": {"stat": "ok", "settings": {"timezone": "UTC"}},
+            "rtm.tasks.add": add_resp,
+        })
 
         result = await tools["add_task"](FakeContext(), name="New Task")
         assert result["data"]["task"]["name"] == "New Task"
@@ -354,9 +356,11 @@ class TestAddTask:
     @pytest.mark.asyncio
     async def test_add_with_external_id(self, task_tools):
         tools, client = task_tools
-        settings_resp = {"stat": "ok", "settings": {"timezone": "UTC"}}
         add_resp = _make_write_response(_ts(name="Linked Task"))
-        _setup_calls(client, [add_resp, settings_resp])
+        _setup_call_map(client, {
+            "rtm.settings.getList": {"stat": "ok", "settings": {"timezone": "UTC"}},
+            "rtm.tasks.add": add_resp,
+        })
 
         result = await tools["add_task"](
             FakeContext(), name="Linked Task", external_id="JIRA-1234",
@@ -364,8 +368,9 @@ class TestAddTask:
         assert result["data"]["task"]["name"] == "Linked Task"
 
         # Verify external_id was passed to API
-        call_kw = client.call.call_args_list[0].kwargs
-        assert call_kw["external_id"] == "JIRA-1234"
+        add_call = next(c for c in client.call.call_args_list
+                        if c.args[0] == "rtm.tasks.add")
+        assert add_call.kwargs["external_id"] == "JIRA-1234"
 
     @pytest.mark.asyncio
     async def test_add_with_list_name(self, task_tools):
@@ -398,14 +403,64 @@ class TestAddTask:
     @pytest.mark.asyncio
     async def test_add_without_parse(self, task_tools):
         tools, client = task_tools
-        settings_resp = {"stat": "ok", "settings": {"timezone": "UTC"}}
         add_resp = _make_write_response(_ts(name="Literal #tag"))
-        _setup_calls(client, [add_resp, settings_resp])
+        _setup_call_map(client, {
+            "rtm.settings.getList": {"stat": "ok", "settings": {"timezone": "UTC"}},
+            "rtm.tasks.add": add_resp,
+        })
 
         await tools["add_task"](FakeContext(), name="Literal #tag", parse=False)
 
-        call_kw = client.call.call_args_list[0].kwargs
-        assert call_kw["parse"] == "0"
+        add_call = next(c for c in client.call.call_args_list
+                        if c.args[0] == "rtm.tasks.add")
+        assert add_call.kwargs["parse"] == "0"
+
+    @pytest.mark.asyncio
+    async def test_add_without_list_name_uses_default(self, task_tools):
+        """No list_name → add_task wires the resolved default list into list_id."""
+        tools, client = task_tools
+        client.get_default_list_id = AsyncMock(return_value="51526642")
+        add_resp = _make_write_response(_ts(name="Captured"), list_id="51526642")
+        client.call = AsyncMock(return_value=add_resp)
+
+        result = await tools["add_task"](FakeContext(), name="Captured")
+        assert result["data"]["task"]["name"] == "Captured"
+
+        client.get_default_list_id.assert_awaited_once()
+        add_call = next(c for c in client.call.call_args_list
+                        if c.args[0] == "rtm.tasks.add")
+        assert add_call.kwargs.get("list_id") == "51526642"
+
+    @pytest.mark.asyncio
+    async def test_add_without_list_name_no_default(self, task_tools):
+        """No list_name and no configured default → list_id is omitted (RTM Inbox)."""
+        tools, client = task_tools
+        client.get_default_list_id = AsyncMock(return_value=None)
+        add_resp = _make_write_response(_ts(name="Loose"))
+        client.call = AsyncMock(return_value=add_resp)
+
+        await tools["add_task"](FakeContext(), name="Loose")
+
+        add_call = next(c for c in client.call.call_args_list
+                        if c.args[0] == "rtm.tasks.add")
+        assert "list_id" not in add_call.kwargs
+
+    @pytest.mark.asyncio
+    async def test_add_subtask_skips_default_list(self, task_tools):
+        """A subtask (parent_task_id) follows the parent's list, not the default."""
+        tools, client = task_tools
+        client.get_default_list_id = AsyncMock(return_value="51526642")
+        add_resp = _make_write_response(_ts(name="Child", parent_task_id="100"))
+        client.call = AsyncMock(return_value=add_resp)
+
+        await tools["add_task"](FakeContext(), name="Child", parent_task_id="100")
+
+        # Default-list resolution is skipped entirely for subtasks.
+        client.get_default_list_id.assert_not_called()
+        add_call = next(c for c in client.call.call_args_list
+                        if c.args[0] == "rtm.tasks.add")
+        assert "list_id" not in add_call.kwargs
+        assert add_call.kwargs["parent_task_id"] == "100"
 
 
 # ---------------------------------------------------------------------------
