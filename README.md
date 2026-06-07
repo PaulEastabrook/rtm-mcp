@@ -9,6 +9,7 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Full RTM API Coverage**: 42 tools covering tasks, lists, tags, notes, and more
 - **Subtask Hierarchy**: Full parent/child task support with `parent_task_id`, subtask counts, and nesting up to 3 levels
 - **Smart Add Syntax**: Natural language task creation (`"Call mom ^tomorrow !1 #family"`)
+- **Default-List Aware**: `add_task` without a list routes to your configured RTM default list (not the built-in Inbox); `get_lists` surfaces the `smart`/`locked`/`archived` flags so callers can pick a writable target
 - **Undo and Batch Undo**: All write operations return transaction IDs; undo one or many operations with `batch_undo`
 - **Timeline Introspection**: Session transaction log with `get_timeline_info` for reviewing write history
 - **Token Bucket Rate Limiting**: Burst to 3 RPS, sustain ~0.9 RPS with configurable safety margin
@@ -122,11 +123,34 @@ Tasks support parent/child relationships up to 3 levels deep (RTM Pro required):
 - **Reparent or promote** tasks with `set_parent_task` (pass empty `parent_task_id` to promote to top-level)
 - **Filter by parent** using the `parent_task_id` parameter on `list_tasks`
 
+## Lists and the Default List
+
+### Default list resolution
+
+When `add_task` is called **without** a `list_name`, the task goes to your account's
+configured default list (RTM **Settings → General → Default List**), surfaced as
+`default_list_id` by `get_settings`.
+
+> **Why this matters:** RTM's raw `tasks.add` API ignores your default-list setting
+> when no list is given and drops the task in the built-in **Inbox**. This server
+> instead reads `settings.defaultlist` and passes it explicitly, so captures land
+> where you expect. It falls back to the built-in Inbox only if no default is set.
+
+**Setup tip:** to make no-list captures land in a specific list, set that list as your
+Default List in RTM's web settings. Pass an explicit `list_name` to override per call.
+
+### Smart lists are read-only
+
+`get_lists` returns a `smart` flag per list. Smart lists are saved-search **views**,
+not containers — you **cannot** `add_task` or `move_task` into one. Use a regular list
+(`smart=false`), or call `get_lists(include_smart=false)` to see only writable lists.
+The `locked` flag marks system lists (Inbox, Sent) that cannot be renamed or deleted.
+
 ## Available Tools
 
 ### Tasks
 - `list_tasks` - List tasks with filters (supports `parent_task_id` to fetch subtasks of a specific parent)
-- `add_task` - Create a new task (supports `parent_task_id` to create as subtask, `external_id` for external tracking)
+- `add_task` - Create a new task (omit `list_name` to use your RTM default list; supports `parent_task_id` to create as subtask, `external_id` for external tracking)
 - `complete_task` / `uncomplete_task` - Mark done or reopen
 - `delete_task` - Remove a task
 - `postpone_task` - Move due date by one day
@@ -150,7 +174,7 @@ Tasks support parent/child relationships up to 3 levels deep (RTM Pro required):
 - `get_task_notes` - View all notes
 
 ### Lists
-- `get_lists` - List all lists
+- `get_lists` - List all lists (each entry reports `smart`/`locked`/`archived`; smart lists are read-only views)
 - `add_list` - Create new list
 - `rename_list` - Rename list
 - `delete_list` - Delete list

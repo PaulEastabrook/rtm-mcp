@@ -97,6 +97,18 @@ This server provides full access to Remember The Milk's task management features
 - get_timeline_info: View session timeline and transaction history
 - get_rate_limit_status: View rate limiter status and request statistics
 
+## Behavior Notes
+- Default list: add_task WITHOUT a list_name routes to the user's configured
+  default list (RTM Settings > General > Default List, also exposed as
+  get_settings.default_list_id) — NOT the built-in "Inbox". RTM's raw API would
+  use the built-in Inbox; this server resolves the user's default instead. Pass
+  list_name to target a specific list. Falls back to the built-in Inbox only if
+  no default is configured.
+- Smart lists are read-only: get_lists reports "smart": true for smart lists
+  (saved-search views). You cannot add_task or move_task into a smart list —
+  use a regular (smart=false) list. The "locked" flag marks system lists
+  (e.g. Inbox, Sent) that cannot be renamed or deleted.
+
 ## Smart Add Syntax
 When adding tasks, use Smart Add for quick entry:
 - ^date: Due date (^tomorrow, ^next friday, ^dec 25)
