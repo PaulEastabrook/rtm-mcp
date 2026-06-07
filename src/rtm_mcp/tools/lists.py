@@ -27,7 +27,16 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             include_smart: Include smart lists — saved search filters (default: true).
 
         Returns:
-            {"lists": [{id, name, smart, locked, archived, position}], "count": N}.
+            {"lists": [{id, name, smart, locked, archived}], "count": N}.
+
+            Flag meanings (important for choosing a write target):
+            - smart=true  → a smart list (saved-search view). READ-ONLY: cannot
+              add_task or move_task into it. Pass include_smart=false to list only
+              writable lists.
+            - locked=true → a system list (e.g. Inbox, Sent) that cannot be
+              renamed or deleted.
+            - archived=true → hidden from default views (only shown when
+              include_archived=true).
         """
         from ..client import RTMClient
 

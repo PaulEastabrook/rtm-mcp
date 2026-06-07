@@ -5,7 +5,7 @@
 ```
 src/rtm_mcp/
 ├── server.py           # FastMCP server, lifespan, tool registration
-├── client.py           # Async RTM API client with signing, retry, timezone caching
+├── client.py           # Async RTM API client with signing, retry, settings caching (timezone + default list)
 ├── config.py           # Pydantic settings (env + file + rate limits + connection retry)
 ├── parsers.py          # RTM response parsing, formatting, normalization, analysis
 ├── response_builder.py # MCP response envelope + transaction recording
@@ -27,7 +27,7 @@ src/rtm_mcp/
 
 | Module | Single Responsibility |
 |--------|----------------------|
-| `client.py` | HTTP transport: signing, connection pooling, rate limiting, retry, timezone caching |
+| `client.py` | HTTP transport: signing, connection pooling, rate limiting, retry, settings caching (timezone + default list) |
 | `parsers.py` | Translate RTM's quirky API responses into clean Python dicts |
 | `response_builder.py` | Wrap tool output in the standard MCP response envelope |
 | `lookup.py` | Resolve human-readable names (task name, list name) to RTM IDs |
@@ -83,7 +83,9 @@ The client provides:
 - **Token bucket rate limiting** (burst to 3 RPS, sustain ~0.9 RPS)
 - **HTTP 503 retry** with escalating backoff (2s → 5s, max 2 retries)
 - **Connection retry** for transient errors (timeout, DNS, TCP reset) with configurable backoff
-- **Timezone caching** via `client.get_timezone()` — fetches once per session
+- **Settings caching** via `client._get_settings()` — fetches `rtm.settings.getList`
+  once per session; `get_timezone()` and `get_default_list_id()` both read from this
+  single cached dict (one API call serves both)
 - **Error code mapping** to typed exceptions with recovery hints
 
 ### Rate Limiting and Connection Retry
@@ -202,6 +204,25 @@ task_lists = result.get("tasks", {}).get("list", [])
 if not task_lists and "list" in result:
     task_lists = result["list"]
 ```
+
+### Default List Resolution (tasks.add ignores settings.defaultlist)
+
+RTM's `rtm.tasks.add` ignores the account's default-list setting when called without a
+`list_id` — the task lands in the built-in Inbox (`7271150`), **not** `settings.defaultlist`
+(the web UI's quick-add honors it; the API does not). `add_task` compensates: when no
+`list_name` is given **and** the task is not a subtask, it calls `client.get_default_list_id()`
+and passes the result as `list_id`. Subtasks are skipped (the parent's list governs). Falls
+back to RTM's built-in Inbox only when no default is configured. The default is read from the
+user's RTM settings, never hardcoded.
+
+### List Flag Coercion (smart / locked / archived)
+
+RTM returns list flags as the strings `"1"`/`"0"`. `parse_lists_response` coerces them to
+bools, but `format_list` is **also** called directly on *raw* write responses (`add_list`,
+`rename_list`, `archive_list`, `unarchive_list`). It therefore uses `_is_true()`, which accepts
+both the raw string and an already-parsed bool — so the formatter is correct whether fed parsed
+dicts (the `get_lists` path) or raw RTM dicts (the write-tool path). A naive `== "1"` check broke
+the `get_lists` path because the value was already a bool there.
 
 ### Timeline Requirement
 
