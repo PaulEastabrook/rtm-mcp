@@ -711,7 +711,7 @@ class TestFormatList:
     """Test list formatting."""
 
     def test_format_list(self) -> None:
-        """Test list formatting."""
+        """Test list formatting from raw RTM strings (write-response path)."""
         lst = {
             "id": "123",
             "name": "Test List",
@@ -725,4 +725,26 @@ class TestFormatList:
         assert formatted["id"] == "123"
         assert formatted["name"] == "Test List"
         assert formatted["smart"] is False
+        assert formatted["locked"] is True
+
+    def test_format_list_raw_smart_string(self) -> None:
+        """Raw RTM smart='1' string is surfaced as True (write-response path)."""
+        formatted = format_list(
+            {"id": "9", "name": "Due Today", "smart": "1",
+             "archived": "0", "locked": "0"},
+        )
+        assert formatted["smart"] is True
+
+    def test_format_list_parsed_booleans(self) -> None:
+        """Already-parsed booleans (get_lists path) must survive formatting.
+
+        Regression for the double-conversion bug where format_list re-checked
+        ``== "1"`` against an already-parsed bool, yielding False for every flag.
+        """
+        formatted = format_list(
+            {"id": "9", "name": "Due Today", "smart": True,
+             "archived": True, "locked": True},
+        )
+        assert formatted["smart"] is True
+        assert formatted["archived"] is True
         assert formatted["locked"] is True

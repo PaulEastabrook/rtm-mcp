@@ -58,6 +58,45 @@ class TestRTMClient:
 
     @respx.mock
     @pytest.mark.asyncio
+    async def test_settings_cache_shared(self, client: RTMClient) -> None:
+        """get_timezone and get_default_list_id share one cached settings fetch."""
+        route = respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={"rsp": {"stat": "ok", "settings": {
+                    "timezone": "Europe/London",
+                    "defaultlist": "51526642",
+                }}},
+            )
+        )
+
+        assert await client.get_default_list_id() == "51526642"
+        assert await client.get_timezone() == "Europe/London"
+        # Repeated access is served from cache.
+        assert await client.get_default_list_id() == "51526642"
+
+        # A single rtm.settings.getList request serves both accessors.
+        assert route.call_count == 1
+
+        await client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_default_list_id_absent(self, client: RTMClient) -> None:
+        """No defaultlist configured → get_default_list_id returns None."""
+        respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={"rsp": {"stat": "ok", "settings": {"timezone": "UTC"}}},
+            )
+        )
+
+        assert await client.get_default_list_id() is None
+
+        await client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
     async def test_call_auth_error(self, client: RTMClient) -> None:
         """Test auth error handling."""
         respx.get(RTM_API_URL).mock(

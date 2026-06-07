@@ -118,6 +118,26 @@ class TestGetLists:
         assert result["data"]["count"] == 1
         assert result["data"]["lists"][0]["name"] == "Normal"
 
+    @pytest.mark.asyncio
+    async def test_smart_and_locked_flags_surfaced(self, list_tools):
+        """Regression: get_lists must report smart/locked as True, not always False.
+
+        The raw RTM '1' string is parsed to a bool by parse_lists_response, then
+        re-formatted by format_list. The earlier double-conversion silently turned
+        every flag into False.
+        """
+        tools, client = list_tools
+        client.call = AsyncMock(return_value=_lists_response([
+            _list_entry(id="1", name="Inbox", position="0", locked="1"),
+            _list_entry(id="2", name="Due Today", position="1", smart="1"),
+        ]))
+
+        result = await tools["get_lists"](FakeContext())
+        by_name = {lst["name"]: lst for lst in result["data"]["lists"]}
+        assert by_name["Due Today"]["smart"] is True
+        assert by_name["Inbox"]["locked"] is True
+        assert by_name["Inbox"]["smart"] is False
+
 
 # ---------------------------------------------------------------------------
 # add_list
