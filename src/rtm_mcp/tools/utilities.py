@@ -5,7 +5,7 @@ from typing import Any
 from fastmcp import Context
 
 from ..lookup import resolve_list_id, resolve_task_ids
-from ..parsers import ensure_list
+from ..parsers import ensure_list, parse_tags_response
 from ..response_builder import build_response
 from ..urls import build_list_url, resolve_task_url
 
@@ -102,20 +102,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
         result = await client.call("rtm.tags.getList")
 
-        tags_data = result.get("tags", {}).get("tag", [])
-        if isinstance(tags_data, dict):
-            tags_data = [tags_data]
-        if isinstance(tags_data, str):
-            tags_data = [{"name": tags_data}]
-
-        tags = []
-        for tag in tags_data:
-            if isinstance(tag, str):
-                tags.append({"name": tag})
-            else:
-                tags.append({
-                    "name": tag.get("name", tag.get("$t", "")),
-                })
+        tags = [{"name": name} for name in parse_tags_response(result)]
 
         return build_response(
             data={

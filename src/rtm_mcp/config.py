@@ -57,6 +57,15 @@ class RTMConfig(BaseSettings):
     conn_retry_delay_first: float = Field(default=1.0, description="Seconds before first connection retry")
     conn_retry_delay_subsequent: float = Field(default=3.0, description="Seconds before 2nd+ connection retry")
 
+    # Strict-tag mode (existence gate)
+    strict_tags: bool = Field(
+        default=False,
+        description=(
+            "Reject tag writes that would introduce a tag not already present in "
+            "the RTM account. Env var RTM_STRICT_TAGS (1/true/yes). Off by default."
+        ),
+    )
+
     @classmethod
     def load(cls) -> "RTMConfig":
         """Load config from environment and/or config files.

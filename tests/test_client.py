@@ -1,10 +1,12 @@
 """Tests for RTM client."""
 
+import time
+
 import httpx
 import pytest
 import respx
 
-from rtm_mcp.client import RTMClient, TransactionEntry
+from rtm_mcp.client import ACCOUNT_TAGS_TTL_SECONDS, RTMClient, TransactionEntry
 from rtm_mcp.config import RTM_API_URL, RTMConfig
 from rtm_mcp.exceptions import RTMAuthError, RTMError, RTMNetworkError, RTMRateLimitError
 from rtm_mcp.rate_limiter import RateLimitStats, TokenBucket
@@ -93,6 +95,45 @@ class TestRTMClient:
 
         assert await client.get_default_list_id() is None
 
+        await client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_account_tags_cache_ttl_and_normalize(self, client: RTMClient) -> None:
+        """Account tags are normalized + cached with a TTL; force_refresh bypasses."""
+        route = respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(200, json={"rsp": {"stat": "ok", "tags": {
+                "tag": [{"name": "Work"}, {"name": "PERSONAL"}, {"name": "waiting_for"}],
+            }}})
+        )
+
+        tags = await client.get_account_tags()
+        assert tags == {"work", "personal", "waiting_for"}  # trimmed + lower-cased
+        assert route.call_count == 1
+
+        # Within TTL → served from cache.
+        await client.get_account_tags()
+        assert route.call_count == 1
+
+        # force_refresh bypasses the cache.
+        await client.get_account_tags(force_refresh=True)
+        assert route.call_count == 2
+
+        # Expire the TTL → next call refetches.
+        client._account_tags_fetched_at = time.monotonic() - (ACCOUNT_TAGS_TTL_SECONDS + 1)
+        await client.get_account_tags()
+        assert route.call_count == 3
+
+        await client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_account_tags_empty(self, client: RTMClient) -> None:
+        """An account with no tags yields an empty set."""
+        respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(200, json={"rsp": {"stat": "ok", "tags": {}}})
+        )
+        assert await client.get_account_tags() == set()
         await client.close()
 
     @respx.mock

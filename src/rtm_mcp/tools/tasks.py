@@ -17,6 +17,7 @@ from ..response_builder import (
     record_and_build_response,
 )
 from ..lookup import find_task, resolve_list_id, resolve_task_ids
+from ..strict_tags import enforce_strict_tags, extract_smartadd_tags, split_tags
 
 
 def _apply_subtask_counts(tasks: list[dict[str, Any]]) -> None:
@@ -205,7 +206,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
                 to Smart Lists (read-only). If parent_task_id is set, the parent's list
                 overrides this value.
             parse: Parse Smart Add syntax in the name (default: True). Set to False
-                to use the literal name string.
+                to use the literal name string. When strict-tag mode is enabled
+                (RTM_STRICT_TAGS), a #tag token that names a tag not already in the
+                account is rejected with a guided error (re-issue with parse=False or
+                fix the name); parse=False skips tag parsing entirely.
             parent_task_id: Create as a subtask under this parent task ID. Requires
                 RTM Pro. Max 3 nesting levels. Repeating tasks cannot be nested under
                 repeating parents. Get the parent's task ID from list_tasks.
@@ -248,6 +252,14 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             default_list_id = await client.get_default_list_id()
             if default_list_id:
                 params["list_id"] = default_list_id
+
+        # Strict-tag mode: when SmartAdd is active, reject minting new tags via #tokens.
+        if parse:
+            err = await enforce_strict_tags(
+                client, extract_smartadd_tags(name), tool="add_task"
+            )
+            if err:
+                return build_response(data=err)
 
         result = await client.call("rtm.tasks.add", require_timeline=True, **params)
 
@@ -702,6 +714,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the task by either task_name or all three IDs.
 
+        Note: if strict-tag mode is enabled (RTM_STRICT_TAGS), a tag not already
+        present in the account is rejected with a guided error rather than created.
+
         Returns:
             {"task": {...}, "message": "Added tags: ..."} with transaction_id.
         """
@@ -709,6 +724,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
+
+        err = await enforce_strict_tags(client, split_tags(tags), tool="add_task_tags")
+        if err:
+            return build_response(data=err)
 
         result = await client.call(
             "rtm.tasks.addTags",
@@ -780,6 +799,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the task by either task_name or all three IDs.
 
+        Note: if strict-tag mode is enabled (RTM_STRICT_TAGS), the complete resulting
+        tag set is validated; any tag not already present in the account is rejected
+        with a guided error rather than created. Clearing tags is always allowed.
+
         Returns:
             {"task": {...}, "message": "Tags set to: ..."} with transaction_id.
         """
@@ -787,6 +810,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
+
+        err = await enforce_strict_tags(client, split_tags(tags), tool="set_task_tags")
+        if err:
+            return build_response(data=err)
 
         result = await client.call(
             "rtm.tasks.setTags",

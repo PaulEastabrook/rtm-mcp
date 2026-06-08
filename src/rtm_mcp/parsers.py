@@ -263,6 +263,33 @@ def parse_lists_response(result: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def parse_tags_response(result: dict[str, Any]) -> list[str]:
+    """Parse ``rtm.tags.getList`` into a flat list of tag-name strings.
+
+    RTM wraps tags as ``result["tags"]["tag"]`` which may be a single dict, a
+    list, or a bare string; each entry may itself be a string or a dict carrying
+    ``name`` or the XML text node ``$t``. Names are returned verbatim (no
+    normalization) — callers normalize as needed.
+    """
+    raw = result.get("tags", {})
+    if isinstance(raw, dict):
+        raw = raw.get("tag", [])
+    if isinstance(raw, str):
+        raw = [raw] if raw else []
+
+    names: list[str] = []
+    for entry in ensure_list(raw):
+        if isinstance(entry, str):
+            name = entry
+        elif isinstance(entry, dict):
+            name = entry.get("name") or entry.get("$t") or ""
+        else:
+            name = ""
+        if name:
+            names.append(name)
+    return names
+
+
 # ---------------------------------------------------------------------------
 # Task analysis
 # ---------------------------------------------------------------------------

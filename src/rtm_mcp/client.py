@@ -17,6 +17,9 @@ from .rate_limiter import RateLimitStats, TokenBucket
 
 logger = logging.getLogger(__name__)
 
+# Strict-tag mode: how long the account tag set is cached before a refetch.
+ACCOUNT_TAGS_TTL_SECONDS = 300
+
 
 def _is_tls_cert_error(exc: Exception) -> bool:
     """Check whether *exc* wraps a TLS certificate verification failure."""
@@ -78,6 +81,9 @@ class RTMClient:
         # Cached settings (fetched once per session via rtm.settings.getList)
         self._cached_settings: dict[str, Any] | None = None
         self._settings_fetched: bool = False
+        # Cached account tag set for strict-tag mode (short TTL; see get_account_tags)
+        self._cached_account_tags: set[str] | None = None
+        self._account_tags_fetched_at: float = 0.0
 
     async def _get_http(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
@@ -320,6 +326,36 @@ class RTMClient:
         quick-add, or None if no default is set or the settings call fails.
         """
         return (await self._get_settings()).get("defaultlist") or None
+
+    async def get_account_tags(self, *, force_refresh: bool = False) -> set[str]:
+        """Return the set of tags that exist in the RTM account (normalized).
+
+        Used by strict-tag mode as the runtime allow-list. Names are normalized
+        (trimmed + lower-cased) to match RTM's own case-insensitive tag handling.
+        Cached for ``ACCOUNT_TAGS_TTL_SECONDS`` to avoid a lookup per write; pass
+        ``force_refresh=True`` to bypass the cache (e.g. a live re-check before
+        rejecting, so a tag just created out-of-band isn't falsely blocked).
+
+        On API failure, returns the previously cached set if any, else an empty
+        set (which, in strict mode, would reject everything — fail closed).
+        """
+        from .parsers import parse_tags_response
+
+        now = time.monotonic()
+        expired = now - self._account_tags_fetched_at > ACCOUNT_TAGS_TTL_SECONDS
+        if force_refresh or self._cached_account_tags is None or expired:
+            try:
+                result = await self.call("rtm.tags.getList")
+                self._cached_account_tags = {
+                    name.strip().lower()
+                    for name in parse_tags_response(result)
+                    if name and name.strip()
+                }
+                self._account_tags_fetched_at = now
+            except Exception:
+                if self._cached_account_tags is None:
+                    self._cached_account_tags = set()
+        return self._cached_account_tags
 
     @property
     def timeline_id(self) -> str | None:
