@@ -10,7 +10,7 @@ src/rtm_mcp/
 ├── parsers.py          # RTM response parsing, formatting, normalization, analysis
 ├── response_builder.py # MCP response envelope + transaction recording
 ├── lookup.py           # Shared name-to-ID resolution for tasks and lists
-├── strict_tags.py      # Strict-tag mode: existence gate for tag writes (opt-in)
+├── strict_tags.py      # Strict-tag mode: existence gate for tag writes (on by default)
 ├── urls.py             # Web UI URL construction + task hierarchy walking
 ├── rate_limiter.py     # Token bucket rate limiter + diagnostics stats
 ├── types.py            # Pydantic models for type safety
@@ -178,10 +178,10 @@ RTM supports parent/child task relationships (Pro required, max 3 levels):
 
 ### Strict-Tag Mode (existence gate)
 
-An **opt-in** control (`config.strict_tags`, env `RTM_STRICT_TAGS`, default off) that
-refuses any tag write which would introduce a tag not already present in the RTM account.
-RTM auto-creates a tag on first use, so this is the chokepoint that stops accidental tag
-minting via the MCP.
+A control (`config.strict_tags`, env `RTM_STRICT_TAGS`, **on by default**; set
+`RTM_STRICT_TAGS=0` to disable) that refuses any tag write which would introduce a tag not
+already present in the RTM account. RTM auto-creates a tag on first use, so this is the
+chokepoint that stops accidental tag minting via the MCP.
 
 **Design — deliberately decoupled.** The runtime allow-list is simply the account's
 current tag set (`client.get_account_tags()`), read live from RTM. The server has **no

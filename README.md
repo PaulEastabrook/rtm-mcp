@@ -10,7 +10,7 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Subtask Hierarchy**: Full parent/child task support with `parent_task_id`, subtask counts, and nesting up to 3 levels
 - **Smart Add Syntax**: Natural language task creation (`"Call mom ^tomorrow !1 #family"`)
 - **Default-List Aware**: `add_task` without a list routes to your configured RTM default list (not the built-in Inbox); `get_lists` surfaces the `smart`/`locked`/`archived` flags so callers can pick a writable target
-- **Strict-Tag Mode** (opt-in): with `RTM_STRICT_TAGS=1`, the server refuses to apply any tag that doesn't already exist in your account — stopping accidental tag creation at the source, with a guided error that tells the caller how to recover
+- **Strict-Tag Mode** (on by default): the server refuses to apply any tag that doesn't already exist in your account — stopping accidental tag creation at the source, with a guided error that tells the caller how to recover. Set `RTM_STRICT_TAGS=0` to disable.
 - **Undo and Batch Undo**: All write operations return transaction IDs; undo one or many operations with `batch_undo`
 - **Timeline Introspection**: Session transaction log with `get_timeline_info` for reviewing write history
 - **Token Bucket Rate Limiting**: Burst to 3 RPS, sustain ~0.9 RPS with configurable safety margin
@@ -149,7 +149,7 @@ The `locked` flag marks system lists (Inbox, Sent) that cannot be renamed or del
 
 ## Strict-Tag Mode
 
-An opt-in **existence gate** that stops the server from ever creating a new RTM tag.
+An **existence gate** that stops the server from ever creating a new RTM tag.
 RTM auto-creates a tag the first time it's used, so undisciplined callers (or a stray
 SmartAdd `#token`) can quietly grow tag entropy. Strict mode closes that door at the
 one chokepoint every tag write flows through.
@@ -159,21 +159,23 @@ your RTM account**. The allow-list is simply your current account tag set, read 
 from RTM — the server has no knowledge of any "canonical" tag list and needs no external
 config or sync. It just refuses to mint new tags.
 
-### Enabling it
+### Toggling it
 
-Off by default. Set the env var (and restart the server):
+**On by default.** Re-applying tags that already exist (canonical or legacy) keeps
+working; only the creation of *new* tags through the MCP is blocked. To disable it (and
+allow new tags again), set the env var to a falsey value and restart the server:
 
 ```bash
-RTM_STRICT_TAGS=1
+RTM_STRICT_TAGS=0
 ```
 
-In a Claude Desktop MCP entry, add it under `env`:
+In a Claude Desktop MCP entry, control it under `env`:
 
 ```json
 "rtm": {
   "command": "uv",
   "args": ["run", "--project", "/path/to/rtm-mcp", "rtm-mcp"],
-  "env": { "RTM_STRICT_TAGS": "1" }
+  "env": { "RTM_STRICT_TAGS": "0" }
 }
 ```
 
@@ -282,8 +284,8 @@ RTM_MAX_RETRIES=2              # Retries on HTTP 503
 RTM_RETRY_DELAY_FIRST=2.0      # Seconds before first retry
 RTM_RETRY_DELAY_SUBSEQUENT=5.0 # Seconds before 2nd+ retry
 
-# Tag discipline (optional, off by default)
-RTM_STRICT_TAGS=0              # 1/true to reject tags not already in the account (see Strict-Tag Mode)
+# Tag discipline (on by default)
+RTM_STRICT_TAGS=1              # default on; set 0/false to allow tags not already in the account (see Strict-Tag Mode)
 ```
 
 ### Config File

@@ -59,10 +59,11 @@ class RTMConfig(BaseSettings):
 
     # Strict-tag mode (existence gate)
     strict_tags: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Reject tag writes that would introduce a tag not already present in "
-            "the RTM account. Env var RTM_STRICT_TAGS (1/true/yes). Off by default."
+            "the RTM account. Env var RTM_STRICT_TAGS. On by default; set "
+            "RTM_STRICT_TAGS=0 (or false/no) to allow new tags."
         ),
     )
 
