@@ -108,6 +108,12 @@ This server provides full access to Remember The Milk's task management features
   (saved-search views). You cannot add_task or move_task into a smart list —
   use a regular (smart=false) list. The "locked" flag marks system lists
   (e.g. Inbox, Sent) that cannot be renamed or deleted.
+- Strict-tag mode (optional, off by default; env RTM_STRICT_TAGS): when enabled,
+  the server refuses to apply a tag that does not already exist in the account —
+  add_task (SmartAdd #tokens), add_task_tags, and set_task_tags reject unknown
+  tags with a guided error (remove_task_tags is never blocked). Call get_tags to
+  see the existing set; a genuinely new tag must be created out-of-band in RTM
+  first. This stops accidental tag creation via the MCP.
 
 ## Smart Add Syntax
 When adding tasks, use Smart Add for quick entry:

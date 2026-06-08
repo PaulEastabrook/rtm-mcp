@@ -98,6 +98,9 @@ def mock_client():
     client.record_transaction = MagicMock()
     client.mark_undone = MagicMock()
     type(client).timeline_id = PropertyMock(return_value="tl_test")
+    # Strict-tag mode off by default so tag-write tools behave as today; strict
+    # tests flip this True and stub client.get_account_tags.
+    client.config = MagicMock(strict_tags=False)
     return client
 
 
@@ -757,6 +760,134 @@ class TestTagTools:
             FakeContext(), tags="", task_name="Task",
         )
         assert "cleared" in result["data"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# strict-tag mode
+# ---------------------------------------------------------------------------
+
+def _strict(client, existing: set[str]) -> None:
+    """Enable strict-tag mode on the mock client with a fixed account tag set."""
+    client.config = MagicMock(strict_tags=True)
+    client.get_account_tags = AsyncMock(return_value=existing)
+
+
+def _called_methods(client) -> list[str]:
+    return [c.args[0] for c in client.call.call_args_list if c.args]
+
+
+class TestStrictTagMode:
+    """Existence-gate behaviour when RTM_STRICT_TAGS is on (config.strict_tags=True)."""
+
+    @pytest.mark.asyncio
+    async def test_add_task_tags_rejects_unknown_tag(self, task_tools):
+        tools, client = task_tools
+        _strict(client, {"work", "personal"})
+
+        result = await tools["add_task_tags"](
+            FakeContext(), tags="waitingfor",
+            task_id="1", taskseries_id="2", list_id="3",
+        )
+        assert result["data"]["strict_tag_mode"] is True
+        assert result["data"]["rejected_tags"] == ["waitingfor"]
+        # The write was not performed.
+        assert "rtm.tasks.addTags" not in _called_methods(client)
+
+    @pytest.mark.asyncio
+    async def test_add_task_tags_accepts_existing_tag(self, task_tools):
+        tools, client = task_tools
+        _strict(client, {"work", "personal"})
+        client.call = AsyncMock(return_value=_make_write_response(_ts(name="T", tags=["work"])))
+
+        result = await tools["add_task_tags"](
+            FakeContext(), tags="work", task_id="1", taskseries_id="2", list_id="3",
+        )
+        assert "Added tags" in result["data"]["message"]
+        assert "rtm.tasks.addTags" in _called_methods(client)
+
+    @pytest.mark.asyncio
+    async def test_set_task_tags_rejects_resulting_set(self, task_tools):
+        tools, client = task_tools
+        _strict(client, {"work"})
+
+        result = await tools["set_task_tags"](
+            FakeContext(), tags="work,unknowntag",
+            task_id="1", taskseries_id="2", list_id="3",
+        )
+        assert result["data"]["rejected_tags"] == ["unknowntag"]
+        assert "rtm.tasks.setTags" not in _called_methods(client)
+
+    @pytest.mark.asyncio
+    async def test_set_task_tags_accepts_all_existing(self, task_tools):
+        tools, client = task_tools
+        _strict(client, {"work", "review"})
+        client.call = AsyncMock(
+            return_value=_make_write_response(_ts(name="T", tags=["work", "review"]))
+        )
+
+        result = await tools["set_task_tags"](
+            FakeContext(), tags="work,review", task_id="1", taskseries_id="2", list_id="3",
+        )
+        assert "Tags set to" in result["data"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_remove_task_tags_never_blocked(self, task_tools):
+        tools, client = task_tools
+        _strict(client, set())  # nothing exists in the account
+        client.call = AsyncMock(return_value=_make_write_response(_ts(name="T")))
+
+        result = await tools["remove_task_tags"](
+            FakeContext(), tags="anything", task_id="1", taskseries_id="2", list_id="3",
+        )
+        assert "Removed tags" in result["data"]["message"]
+        client.get_account_tags.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_task_smartadd_rejects_new_tag(self, task_tools):
+        tools, client = task_tools
+        _strict(client, {"family"})
+
+        result = await tools["add_task"](
+            FakeContext(), name="Do thing #brandnewword", parse=True,
+        )
+        assert result["data"]["rejected_tags"] == ["brandnewword"]
+        assert "rtm.tasks.add" not in _called_methods(client)
+
+    @pytest.mark.asyncio
+    async def test_add_task_smartadd_bypassed_when_parse_false(self, task_tools):
+        tools, client = task_tools
+        _strict(client, set())
+        client.call = AsyncMock(return_value=_make_write_response(_ts(name="Literal #brandnewword")))
+
+        result = await tools["add_task"](
+            FakeContext(), name="Literal #brandnewword", parse=False,
+        )
+        assert "Created task" in result["data"]["message"]
+        client.get_account_tags.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_task_smartadd_accepts_existing_tag(self, task_tools):
+        tools, client = task_tools
+        _strict(client, {"family"})
+        client.call = AsyncMock(
+            return_value=_make_write_response(_ts(name="Call mom", tags=["family"]))
+        )
+
+        result = await tools["add_task"](
+            FakeContext(), name="Call mom #family", parse=True,
+        )
+        assert "Created task" in result["data"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_strict_off_allows_unknown_tag(self, task_tools):
+        """Default (strict off): unknown tags pass through unchanged."""
+        tools, client = task_tools  # fixture sets config.strict_tags=False
+        client.call = AsyncMock(return_value=_make_write_response(_ts(name="T", tags=["brandnew"])))
+
+        result = await tools["add_task_tags"](
+            FakeContext(), tags="brandnew", task_id="1", taskseries_id="2", list_id="3",
+        )
+        assert "Added tags" in result["data"]["message"]
 
 
 # ---------------------------------------------------------------------------

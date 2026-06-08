@@ -101,3 +101,14 @@ class TestLoadFromFile:
 
         config = RTMConfig.load()
         assert not config.is_configured()
+
+
+class TestStrictTagsConfig:
+    def test_default_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("RTM_STRICT_TAGS", raising=False)
+        config = RTMConfig(api_key="k", shared_secret="s", token="t")
+        assert config.strict_tags is False
+
+    def test_enabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RTM_STRICT_TAGS", "1")
+        assert RTMConfig().strict_tags is True
