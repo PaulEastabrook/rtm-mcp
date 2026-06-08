@@ -104,10 +104,14 @@ class TestLoadFromFile:
 
 
 class TestStrictTagsConfig:
-    def test_default_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_default_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("RTM_STRICT_TAGS", raising=False)
         config = RTMConfig(api_key="k", shared_secret="s", token="t")
-        assert config.strict_tags is False
+        assert config.strict_tags is True
+
+    def test_disabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RTM_STRICT_TAGS", "0")
+        assert RTMConfig().strict_tags is False
 
     def test_enabled_via_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("RTM_STRICT_TAGS", "1")
