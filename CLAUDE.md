@@ -10,6 +10,7 @@ src/rtm_mcp/
 ├── parsers.py          # RTM response parsing, formatting, normalization, analysis
 ├── response_builder.py # MCP response envelope + transaction recording
 ├── lookup.py           # Shared name-to-ID resolution for tasks and lists
+├── strict_tags.py      # Strict-tag mode: existence gate for tag writes (opt-in)
 ├── urls.py             # Web UI URL construction + task hierarchy walking
 ├── rate_limiter.py     # Token bucket rate limiter + diagnostics stats
 ├── types.py            # Pydantic models for type safety
@@ -31,6 +32,7 @@ src/rtm_mcp/
 | `parsers.py` | Translate RTM's quirky API responses into clean Python dicts |
 | `response_builder.py` | Wrap tool output in the standard MCP response envelope |
 | `lookup.py` | Resolve human-readable names (task name, list name) to RTM IDs |
+| `strict_tags.py` | Strict-tag mode policy: normalize/split tags, extract SmartAdd `#tokens`, and gate tag writes against the account's existing tag set |
 | `exceptions.py` | Map RTM error codes to typed exceptions with recovery hints |
 | `urls.py` | Build RTM web UI deep-link URLs; walk parent_task_id chain for hierarchy |
 | `rate_limiter.py` | Token bucket pacing + rolling-window diagnostics |
@@ -86,6 +88,10 @@ The client provides:
 - **Settings caching** via `client._get_settings()` — fetches `rtm.settings.getList`
   once per session; `get_timezone()` and `get_default_list_id()` both read from this
   single cached dict (one API call serves both)
+- **Account-tag caching** via `client.get_account_tags()` — normalized (trim + lower)
+  set of existing account tags from `rtm.tags.getList`, cached with a short TTL
+  (`ACCOUNT_TAGS_TTL_SECONDS`, 5 min); `force_refresh=True` bypasses the cache. Backs
+  strict-tag mode's allow-list (see below)
 - **Error code mapping** to typed exceptions with recovery hints
 
 ### Rate Limiting and Connection Retry
@@ -169,6 +175,47 @@ RTM supports parent/child task relationships (Pro required, max 3 levels):
 - Repeating tasks cannot be parents or children of other repeating tasks
 - `isSubtask:true` is an **undocumented** RTM filter — client-side filtering by `parent_task_id` is the reliable fallback
 - RTM error codes: 4040 = Pro required, 4050 = invalid parent, 4060 = max nesting exceeded, 4070 = repeating task conflict, 4080 = due date before start date, 4090 = self-parenting
+
+### Strict-Tag Mode (existence gate)
+
+An **opt-in** control (`config.strict_tags`, env `RTM_STRICT_TAGS`, default off) that
+refuses any tag write which would introduce a tag not already present in the RTM account.
+RTM auto-creates a tag on first use, so this is the chokepoint that stops accidental tag
+minting via the MCP.
+
+**Design — deliberately decoupled.** The runtime allow-list is simply the account's
+current tag set (`client.get_account_tags()`), read live from RTM. The server has **no
+knowledge of any canonical taxonomy and needs no sync** — "is this an *allowed* tag?"
+(canonical policing) stays plugin-side; the server only enforces "does this tag *exist*?".
+
+**Components:**
+- `strict_tags.py` — pure policy: `normalize_tag` (trim + lower), `split_tags`
+  (comma-split → normalized, de-duped), `extract_smartadd_tags` (regex `#tokens` from a
+  SmartAdd name), `guided_error` (the self-documenting rejection), and
+  `enforce_strict_tags(client, requested, *, tool)` → returns a guided-error dict to
+  reject or `None` to allow.
+- `client.get_account_tags()` — the TTL-cached, normalized allow-list (see HTTP Transport).
+
+**`enforce_strict_tags` flow:**
+1. `if not client.config.strict_tags: return None` — zero-cost when off (no API call).
+2. Drop empties; no tags → allow.
+3. Compare requested against `get_account_tags()`. On a miss, **re-fetch live**
+   (`force_refresh=True`) and recompare — cache-miss safety so a tag created moments ago
+   out-of-band isn't falsely rejected.
+4. Still offending → `logger.info(...)` and return `guided_error(offending)`; else allow.
+
+**Wiring (`tools/tasks.py`):** `add_task` (when `parse=True`, on `extract_smartadd_tags(name)`),
+`add_task_tags` and `set_task_tags` (on `split_tags(tags)` — for `setTags` the resulting set
+*is* the passed tags). `remove_task_tags` is **never** gated (removal reduces entropy).
+
+**Caveats:**
+- `extract_smartadd_tags` is a documented best-effort approximation of RTM's SmartAdd tag
+  tokenizer. Over-matching a stray `#word` is intentional (it's the accidental-minting case);
+  the guided error tells the caller to re-issue with `parse=False` or fix the name.
+- **Testing gotcha:** the `mock_client` is an `AsyncMock`, so `client.config.strict_tags`
+  is a *truthy Mock* unless set — the `test_task_tools.py` fixture sets
+  `client.config = MagicMock(strict_tags=False)` so tag-write tests behave as today; strict
+  tests flip it True and stub `client.get_account_tags`.
 
 ## RTM API Quirks
 
@@ -287,14 +334,15 @@ class FakeMCP:
         return decorator
 ```
 
-Test files (297 tests total):
-- `tests/test_client.py` — client signing, API calls, timeline caching, transaction log, 503 retry, connection retry, POST/GET split (35 tests)
-- `tests/test_config.py` — config load/save, file fallback, corrupt JSON (10 tests)
+Test files (330 tests total):
+- `tests/test_client.py` — client signing, API calls, settings + account-tag caching, transaction log, 503 retry, connection retry, POST/GET split (39 tests)
+- `tests/test_config.py` — config load/save, file fallback, corrupt JSON, strict-tag toggle (12 tests)
+- `tests/test_strict_tags.py` — strict-tag guard: normalize/split/SmartAdd-extract + enforce_strict_tags (off / reject / live-refetch) (12 tests)
 - `tests/test_exceptions.py` — error code mapping including subtask codes 4040-4090 (16 tests)
 - `tests/test_rate_limiter.py` — token bucket acquire/refill/pause, rate limit stats (14 tests)
 - `tests/test_response_builder.py` — envelope builder, transaction info, record_and_build_response, parsers (40 tests)
 - `tests/test_lookup.py` — find_task disambiguation, resolve_task_ids, resolve_list_id (16 tests)
-- `tests/test_tools/test_task_tools.py` — all 19 task tools via FakeMCP (60 tests)
+- `tests/test_tools/test_task_tools.py` — all 19 task tools via FakeMCP, incl. strict-tag-mode gating (72 tests)
 - `tests/test_tools/test_tasks.py` — `_apply_subtask_counts` and `analyze_tasks` helpers (17 tests)
 - `tests/test_tools/test_list_tools.py` — all 7 list tools via FakeMCP (16 tests)
 - `tests/test_tools/test_note_tools.py` — all 4 note tools via FakeMCP (14 tests)
@@ -341,7 +389,8 @@ asyncio.run(test())
 5. Return via `record_and_build_response()` for write tools (records transaction + builds response)
 6. Use `resolve_task_ids()` from `lookup.py` for task identification, `resolve_list_id()` for list lookup
 7. Use actionable error messages that suggest the next tool to call
-8. Add tests (unit tests for helpers, FakeMCP tests for tool functions)
+8. If the tool **adds/sets tags**, gate it with `enforce_strict_tags()` from `strict_tags.py` (see Strict-Tag Mode) — return `build_response(data=err)` on rejection. Tag *removal* must not be gated.
+9. Add tests (unit tests for helpers, FakeMCP tests for tool functions)
 
 Example:
 

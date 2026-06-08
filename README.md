@@ -10,6 +10,7 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Subtask Hierarchy**: Full parent/child task support with `parent_task_id`, subtask counts, and nesting up to 3 levels
 - **Smart Add Syntax**: Natural language task creation (`"Call mom ^tomorrow !1 #family"`)
 - **Default-List Aware**: `add_task` without a list routes to your configured RTM default list (not the built-in Inbox); `get_lists` surfaces the `smart`/`locked`/`archived` flags so callers can pick a writable target
+- **Strict-Tag Mode** (opt-in): with `RTM_STRICT_TAGS=1`, the server refuses to apply any tag that doesn't already exist in your account — stopping accidental tag creation at the source, with a guided error that tells the caller how to recover
 - **Undo and Batch Undo**: All write operations return transaction IDs; undo one or many operations with `batch_undo`
 - **Timeline Introspection**: Session transaction log with `get_timeline_info` for reviewing write history
 - **Token Bucket Rate Limiting**: Burst to 3 RPS, sustain ~0.9 RPS with configurable safety margin
@@ -146,6 +147,73 @@ not containers — you **cannot** `add_task` or `move_task` into one. Use a regu
 (`smart=false`), or call `get_lists(include_smart=false)` to see only writable lists.
 The `locked` flag marks system lists (Inbox, Sent) that cannot be renamed or deleted.
 
+## Strict-Tag Mode
+
+An opt-in **existence gate** that stops the server from ever creating a new RTM tag.
+RTM auto-creates a tag the first time it's used, so undisciplined callers (or a stray
+SmartAdd `#token`) can quietly grow tag entropy. Strict mode closes that door at the
+one chokepoint every tag write flows through.
+
+**The rule:** with strict mode on, you may only apply a tag that **already exists in
+your RTM account**. The allow-list is simply your current account tag set, read live
+from RTM — the server has no knowledge of any "canonical" tag list and needs no external
+config or sync. It just refuses to mint new tags.
+
+### Enabling it
+
+Off by default. Set the env var (and restart the server):
+
+```bash
+RTM_STRICT_TAGS=1
+```
+
+In a Claude Desktop MCP entry, add it under `env`:
+
+```json
+"rtm": {
+  "command": "uv",
+  "args": ["run", "--project", "/path/to/rtm-mcp", "rtm-mcp"],
+  "env": { "RTM_STRICT_TAGS": "1" }
+}
+```
+
+### What it gates
+
+| Tool | Strict-mode behaviour |
+|---|---|
+| `add_task` (`parse=True`) | SmartAdd `#tokens` in the name are validated; a `#token` naming a non-existent tag is rejected. |
+| `add_task_tags` | Rejected if any tag being added doesn't exist. |
+| `set_task_tags` | The **complete resulting** tag set is validated; rejected if any member doesn't exist. Clearing tags (empty string) is always allowed. |
+| `remove_task_tags` | **Never blocked** — removing tags only reduces entropy. |
+| `get_tags`, all reads | Unaffected. |
+
+Comparison is case-insensitive (tags are trimmed + lower-cased to match RTM). Re-applying
+an existing *legacy* (non-canonical) tag is allowed — the server judges only **existence**,
+not whether a tag is the "right" one (that's a separate, plugin-side concern).
+
+### The guided error
+
+On rejection the write is **not performed** and the tool returns a self-documenting error
+that teaches recovery:
+
+```json
+{
+  "error": "strict_tag_mode: write rejected — tag does not exist in the account",
+  "rejected_tags": ["waitingfor"],
+  "reason": "Strict mode blocks creating new tags via this server. Only tags that already exist in your RTM account may be applied.",
+  "how_to_proceed": "Use an existing tag (call get_tags to see the available set). If you genuinely need a NEW tag, create it deliberately and out-of-band (codify it, then create it in the RTM native client), then retry.",
+  "strict_tag_mode": true
+}
+```
+
+### Deliberate creation of a genuinely-new tag
+
+Strict mode blocks only *implicit* creation. To add a new tag: create it deliberately in
+the RTM **native client** (mobile/web) — the same place tags are renamed/deleted during
+housekeeping. Once it exists in the account, the server accepts it. The account tag set is
+cached for ~5 minutes; a rejection triggers a **live re-fetch before failing**, so a tag
+you just created elsewhere is picked up without waiting for the cache to expire.
+
 ## Available Tools
 
 ### Tasks
@@ -164,8 +232,8 @@ The `locked` flag marks system lists (Inbox, Sent) that cannot be renamed or del
 - `set_task_start_date` - Set start date
 - `set_task_estimate` - Set time estimate
 - `set_task_url` - Attach URL
-- `add_task_tags` / `remove_task_tags` - Manage tags incrementally
-- `set_task_tags` - Replace all tags on a task in one call
+- `add_task_tags` / `remove_task_tags` - Manage tags incrementally (adds are gated by Strict-Tag Mode when enabled; removes never are)
+- `set_task_tags` - Replace all tags on a task in one call (resulting set gated by Strict-Tag Mode when enabled)
 
 ### Notes
 - `add_note` - Add note to task
@@ -213,6 +281,9 @@ RTM_SAFETY_MARGIN=0.1          # 10% below RTM's 1 RPS limit
 RTM_MAX_RETRIES=2              # Retries on HTTP 503
 RTM_RETRY_DELAY_FIRST=2.0      # Seconds before first retry
 RTM_RETRY_DELAY_SUBSEQUENT=5.0 # Seconds before 2nd+ retry
+
+# Tag discipline (optional, off by default)
+RTM_STRICT_TAGS=0              # 1/true to reject tags not already in the account (see Strict-Tag Mode)
 ```
 
 ### Config File
