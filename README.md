@@ -11,6 +11,7 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Smart Add Syntax**: Natural language task creation (`"Call mom ^tomorrow !1 #family"`)
 - **Default-List Aware**: `add_task` without a list routes to your configured RTM default list (not the built-in Inbox); `get_lists` surfaces the `smart`/`locked`/`archived` flags so callers can pick a writable target
 - **Strict-Tag Mode** (on by default): the server refuses to apply any tag that doesn't already exist in your account — stopping accidental tag creation at the source, with a guided error that tells the caller how to recover. Set `RTM_STRICT_TAGS=0` to disable.
+- **Batched project read** (`gtd_project_plan`): a whole project plan — project, all descendant items, and every note — in one read-only call (vs `1+N`), as the `project-plan-seed` envelope the GTD canvas consumes. The first of the server's `gtd_`-prefixed domain compositions.
 - **Undo and Batch Undo**: All write operations return transaction IDs; undo one or many operations with `batch_undo`
 - **Timeline Introspection**: Session transaction log with `get_timeline_info` for reviewing write history
 - **Token Bucket Rate Limiting**: Burst to 3 RPS, sustain ~0.9 RPS with configurable safety margin
@@ -266,6 +267,21 @@ you just created elsewhere is picked up without waiting for the cache to expire.
 - `get_groups` - List contact groups with member counts
 - `parse_time` - Parse natural language time
 - `get_rate_limit_status` - View rate limiter state and request statistics
+
+### GTD (domain compositions)
+- `gtd_project_plan` - **Read-only.** Return a whole project plan — the project, all
+  descendant items, and every note (full bodies) — as the `project-plan-seed` envelope
+  consumed by the GTD canvas, in a **single** `rtm.tasks.getList`. Identify by `project_id`
+  or `project_name` (ambiguous names return a candidate list). See *Tool naming convention*.
+
+#### Tool naming convention
+Bare verbs (`add_task`, `list_tasks`, `get_task_notes`) are **generic RTM primitives** —
+each maps 1:1 to an RTM API method (RTM's own language). A **`gtd_` prefix** marks a
+**domain composition** — a GTD-shaped view over RTM data (e.g. a "project plan"), not an RTM
+primitive. Format: `<domain>_<concept-noun>` (reads are the default; use
+`<domain>_<verb>_<noun>` only when a domain needs an explicit verb). Reading the tool list,
+the split is instant — no prefix = RTM primitive, `gtd_` = GTD view — which also keeps a
+future lift of all `gtd_*` tools into a separate server a clean, mechanical move.
 
 ## Configuration
 
