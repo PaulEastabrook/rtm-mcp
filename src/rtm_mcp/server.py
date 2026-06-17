@@ -9,6 +9,7 @@ from .client import RTMClient
 from .config import RTMConfig
 from .exceptions import RTMAuthError
 from .tools import (
+    register_gtd_tools,
     register_list_tools,
     register_note_tools,
     register_task_tools,
@@ -97,6 +98,17 @@ This server provides full access to Remember The Milk's task management features
 - get_timeline_info: View session timeline and transaction history
 - get_rate_limit_status: View rate limiter status and request statistics
 
+## GTD Tools (domain compositions, gtd_ prefix)
+- gtd_project_plan: Read-only — returns a whole project plan (project + all
+  descendant items + every note, full bodies) as the project-plan-seed envelope
+  consumed by the GTD canvas, in ONE getList. Identify by project_id or project_name.
+
+## Tool naming convention
+- Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
+  mapping 1:1 to an RTM API method.
+- A `gtd_` prefix marks a GTD-shaped composition (a view over RTM data, not an RTM
+  primitive). New domain compositions follow `<domain>_<concept-noun>`.
+
 ## Behavior Notes
 - Default list: add_task WITHOUT a list_name routes to the user's configured
   default list (RTM Settings > General > Default List, also exposed as
@@ -134,6 +146,7 @@ register_task_tools(mcp, get_client)
 register_list_tools(mcp, get_client)
 register_note_tools(mcp, get_client)
 register_utility_tools(mcp, get_client)
+register_gtd_tools(mcp, get_client)
 
 
 def main() -> None:
