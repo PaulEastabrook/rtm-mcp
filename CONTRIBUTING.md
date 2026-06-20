@@ -215,10 +215,15 @@ re-run `make format` if a ruff bump changes formatting).
 5. Resolve ids via `resolve_task_ids()` / `resolve_list_id()` (§ 3).
 6. Return **actionable** error messages (§ 5).
 7. If the tool **adds/sets tags**, gate with `enforce_strict_tags()` (§ 6) — never gate removal.
-8. Add tests (pure-helper tests + FakeMCP tool tests), including the read-only call-surface
+8. For any **complex (array/object) parameter**, use the `tool_params` `Annotated` types
+   (`JsonObjArray` / `JsonStrArray` / `JsonObject` / `JsonStrArrayRequired`) instead of a bare
+   `list[...] | None` / `dict[...] | None`. They emit a clean single-typed JSON schema (no
+   `anyOf`/null union — which some MCP clients stringify) and coerce a stringified value; also
+   call `coerce_json()` on the param in-body as belt-and-braces.
+9. Add tests (pure-helper tests + FakeMCP tool tests), including the read-only call-surface
    assertion for read tools and every rejection path for write tools (§ 8).
-9. Update all four documentation touchpoints + the test-count inventory (§ 9).
-10. Bump the version (§ 10) and pass the quality gate (§ 11).
+10. Update all four documentation touchpoints + the test-count inventory (§ 9).
+11. Bump the version (§ 10) and pass the quality gate (§ 11).
 
 ## 13. Porting a plugin-side reference into the server (byte-compat pattern)
 

@@ -419,6 +419,33 @@ class TestGtdApplyCanvasCommit:
         assert any(c.kwargs.get("note_title") == "COMMIT" for c in notes)
 
     @pytest.mark.asyncio
+    async def test_accepts_json_string_ops(self, gtd_tools):
+        """Defensive path: complex ops arriving as JSON strings (the Cowork serialisation) are
+        coerced and applied — a populated add creates the child carrying #ai_conversation, and a
+        stringified destructive op applies under confirm_destructive."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            adds='[{"type": "action", "text": "New action", '
+            '"classifiers": {"context": "using_device"}}]',
+            completes='["c2"]',
+            confirm_destructive=True,
+        )
+        data = result["data"]
+        assert "rejected" not in data
+        assert any(op["op"].startswith("add:") for op in data["applied"])
+
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert "rtm.tasks.add" in methods  # adds string coerced and created
+        assert "rtm.tasks.complete" in methods  # completes string coerced and applied
+        # created item carries the journaling tag
+        settags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.setTags")
+        assert "ai_conversation" in settags.kwargs["tags"]
+
+    @pytest.mark.asyncio
     async def test_rejects_non_canonical_tag_without_writing(self, gtd_tools):
         tools, client = gtd_tools
         client.config = MagicMock(strict_tags=True)

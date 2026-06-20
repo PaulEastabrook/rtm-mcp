@@ -21,6 +21,7 @@ src/rtm_mcp/
 ├── plan_graph.py       # Pure deterministic plan-graph engine (port of gtd plan_graph.py)
 ├── canvas_overlay.py   # Pure seed+graph merge (apply_graph) + lean transform (lean_seed)
 ├── canvas_commit.py    # Pure closed tag-mapping + commit validators (backs gtd_apply_canvas_commit)
+├── tool_params.py      # Shared MCP complex-param coercion + clean-schema Annotated types
 ├── urls.py             # Web UI URL construction + task hierarchy walking
 ├── rate_limiter.py     # Token bucket rate limiter + diagnostics stats
 ├── types.py            # Pydantic models for type safety
@@ -49,6 +50,7 @@ src/rtm_mcp/
 | `plan_graph.py` | Pure deterministic plan-graph engine (DAG, blocked/quick judgement, tiered timeline order, cycles, fingerprint) — byte-compatible port of the gtd plugin's `plan_graph.py` |
 | `canvas_overlay.py` | Pure merge of the plan-graph overlay onto the seed (`apply_graph`) + the lean/inline transform (`lean_seed`) — port of the gtd plugin's `build_canvas.py` helpers |
 | `canvas_commit.py` | Pure closed canonical classifier→tag mapping + commit validators (`validate_commit`, `collect_commit_tags`) for `gtd_apply_canvas_commit` |
+| `tool_params.py` | Shared coercion for complex (array/object) MCP params: a `coerce_json` `BeforeValidator` + `Annotated` types presenting a clean single-typed JSON schema (no `anyOf`/null) so clients that stringify union-typed params still interoperate |
 | `exceptions.py` | Map RTM error codes to typed exceptions with recovery hints |
 | `urls.py` | Build RTM web UI deep-link URLs; walk parent_task_id chain for hierarchy |
 | `rate_limiter.py` | Token bucket pacing + rolling-window diagnostics |
@@ -298,6 +300,11 @@ canvas commit — safe by construction (artifacts call connectors without prompt
   the strict-tag existence gate — the server holds no taxonomy (see Strict-Tag Mode). `order` is
   accepted but a **v1 no-op** (RTM has no sibling-order field; the `manual_order` pin needs vault
   write access — a later DC). Created/edited items carry `#ai_conversation`.
+- *Complex-param contract:* the ops params (`order`/`edits`/`adds`/`completes`/`removes`/`execute`/
+  `notes`) use the `tool_params` `Annotated` types — a **clean single-typed JSON schema** (no
+  `anyOf`/null union, which some MCP clients serialise as a JSON string) plus a `coerce_json`
+  `BeforeValidator`, with an in-body `coerce_json` belt-and-braces for callers that bypass
+  pydantic. So the tool accepts both structured JSON and a JSON-string for any op.
 
 ## RTM API Quirks
 
@@ -397,7 +404,7 @@ call-surface assertion, strict-tag rejection setup) are canonical in
 
 This inventory is the canonical per-file test count (keep it in sync — CONTRIBUTING.md § 9).
 
-Test files (409 tests total):
+Test files (422 tests total):
 - `tests/test_client.py` — client signing, API calls, settings + account-tag caching, transaction log, 503 retry, connection retry, POST/GET split (39 tests)
 - `tests/test_config.py` — config load/save, file fallback, corrupt JSON, strict-tag toggle (12 tests)
 - `tests/test_strict_tags.py` — strict-tag guard: normalize/split/SmartAdd-extract + enforce_strict_tags (off / reject / live-refetch) (12 tests)
@@ -406,7 +413,8 @@ Test files (409 tests total):
 - `tests/test_plan_graph.py` — plan-graph engine: DEPENDS-ON edges + blocked, quick-from-tag (and blocked/waiting-for guards), tiered topological order, cycle fallback, fingerprint stability (11 tests)
 - `tests/test_canvas_overlay.py` — apply_graph (reorder + quick + sorted deps, no blocked/order field) and lean_seed (body-strip, cap, honest nc) (5 tests)
 - `tests/test_canvas_commit.py` — closed classifier→tag mapping, collect_commit_tags, validate_commit rejection paths (cross-project, destructive-confirm, unknown type, invalid execute, smart-list) (13 tests)
-- `tests/test_tools/test_gtd_tools.py` — gtd_project_plan + gtd_project_canvas (seed shape, read-only call surface, lean cap, name/ambiguity/not-found) + gtd_apply_canvas_commit (staged-commit apply, all four rejection-without-write paths) via FakeMCP (19 tests)
+- `tests/test_tool_params.py` — shared complex-param coercion: `coerce_json` (parse/passthrough/blank/invalid) + Annotated types (string→structured via BeforeValidator, clean single-typed schema, no `anyOf`) (11 tests)
+- `tests/test_tools/test_gtd_tools.py` — gtd_project_plan + gtd_project_canvas (seed shape, read-only call surface, lean cap, name/ambiguity/not-found) + gtd_apply_canvas_commit (staged-commit apply, JSON-string ops defensive path, all four rejection-without-write paths) via FakeMCP (20 tests)
 - `tests/test_exceptions.py` — error code mapping including subtask codes 4040-4090 (16 tests)
 - `tests/test_rate_limiter.py` — token bucket acquire/refill/pause, rate limit stats (14 tests)
 - `tests/test_response_builder.py` — envelope builder, transaction info, record_and_build_response, parsers (40 tests)
@@ -416,7 +424,7 @@ Test files (409 tests total):
 - `tests/test_tools/test_list_tools.py` — all 7 list tools via FakeMCP (16 tests)
 - `tests/test_tools/test_note_tools.py` — all 4 note tools via FakeMCP (14 tests)
 - `tests/test_urls.py` — URL builders and parent chain walking (15 tests)
-- `tests/test_tools/test_utility_tools.py` — all 14 utility tools via FakeMCP (41 tests)
+- `tests/test_tools/test_utility_tools.py` — all 14 utility tools via FakeMCP, incl. batch_undo JSON-string ids coercion (42 tests)
 - `tests/test_tools/test_lists.py` — list response filtering and sorting (3 tests)
 
 ### Integration Testing

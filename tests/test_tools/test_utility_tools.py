@@ -503,6 +503,25 @@ class TestBatchUndo:
         assert result["data"]["timeline_id"] == "tl1"
 
     @pytest.mark.asyncio
+    async def test_accepts_json_string_ids(self, util_tools):
+        """Defensive path: a JSON-string array of ids is coerced and undone normally."""
+        tools, client = util_tools
+        entries = [
+            TransactionEntry("tx1", "add_task", True, summary="First"),
+            TransactionEntry("tx2", "complete_task", True, summary="Second"),
+            TransactionEntry("tx3", "delete_task", True, summary="Third"),
+        ]
+        client.get_all_transactions = MagicMock(return_value=entries)
+        client.get_transaction = MagicMock(
+            side_effect=lambda tid: next((e for e in entries if e.transaction_id == tid), None)
+        )
+        client.call = AsyncMock(return_value={"stat": "ok"})
+        type(client).timeline_id = PropertyMock(return_value="tl1")
+
+        result = await tools["batch_undo"](FakeContext(), transaction_ids='["tx1", "tx3"]')
+        assert result["data"]["undone"] == ["tx3", "tx1"]
+
+    @pytest.mark.asyncio
     async def test_unknown_transaction_id(self, util_tools):
         tools, client = util_tools
         client.get_transaction = MagicMock(return_value=None)

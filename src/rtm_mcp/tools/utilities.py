@@ -7,6 +7,7 @@ from fastmcp import Context
 from ..lookup import resolve_list_id, resolve_task_ids
 from ..parsers import ensure_list, parse_tags_response
 from ..response_builder import build_response
+from ..tool_params import JsonStrArrayRequired, coerce_json
 from ..urls import build_list_url, resolve_task_url
 
 
@@ -276,7 +277,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
     @mcp.tool()
     async def batch_undo(
         ctx: Context,
-        transaction_ids: list[str],
+        transaction_ids: JsonStrArrayRequired,
     ) -> dict[str, Any]:
         """Undo multiple write operations in one call. Operations are undone in
         reverse chronological order (most recent first) to maintain data consistency.
@@ -303,6 +304,9 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         from ..client import RTMClient
 
         client: RTMClient = await get_client()
+
+        # Belt-and-braces: tolerate a JSON-string array from clients that bypass validation.
+        transaction_ids = coerce_json(transaction_ids)
 
         # Validate all IDs exist in the transaction log
         unknown = [tid for tid in transaction_ids if client.get_transaction(tid) is None]
