@@ -65,10 +65,15 @@ class TestRTMClient:
         route = respx.get(RTM_API_URL).mock(
             return_value=httpx.Response(
                 200,
-                json={"rsp": {"stat": "ok", "settings": {
-                    "timezone": "Europe/London",
-                    "defaultlist": "51526642",
-                }}},
+                json={
+                    "rsp": {
+                        "stat": "ok",
+                        "settings": {
+                            "timezone": "Europe/London",
+                            "defaultlist": "51526642",
+                        },
+                    }
+                },
             )
         )
 
@@ -102,9 +107,21 @@ class TestRTMClient:
     async def test_account_tags_cache_ttl_and_normalize(self, client: RTMClient) -> None:
         """Account tags are normalized + cached with a TTL; force_refresh bypasses."""
         route = respx.get(RTM_API_URL).mock(
-            return_value=httpx.Response(200, json={"rsp": {"stat": "ok", "tags": {
-                "tag": [{"name": "Work"}, {"name": "PERSONAL"}, {"name": "waiting_for"}],
-            }}})
+            return_value=httpx.Response(
+                200,
+                json={
+                    "rsp": {
+                        "stat": "ok",
+                        "tags": {
+                            "tag": [
+                                {"name": "Work"},
+                                {"name": "PERSONAL"},
+                                {"name": "waiting_for"},
+                            ],
+                        },
+                    }
+                },
+            )
         )
 
         tags = await client.get_account_tags()
@@ -294,7 +311,9 @@ class TestTokenBucketIntegration:
 
     def test_refill_rate_uses_safety_margin(self) -> None:
         config = RTMConfig(
-            api_key="k", shared_secret="s", auth_token="t",
+            api_key="k",
+            shared_secret="s",
+            auth_token="t",
             safety_margin=0.2,
         )
         client = RTMClient(config)
@@ -305,7 +324,8 @@ class TestTokenBucketIntegration:
     async def test_request_records_stats(self, client: RTMClient) -> None:
         respx.get(RTM_API_URL).mock(
             return_value=httpx.Response(
-                200, json={"rsp": {"stat": "ok", "test": "hello"}},
+                200,
+                json={"rsp": {"stat": "ok", "test": "hello"}},
             )
         )
 
@@ -322,7 +342,9 @@ class TestRetry503:
     def retry_client(self) -> RTMClient:
         """Client with small retry delays for fast tests."""
         config = RTMConfig(
-            api_key="k", shared_secret="s", auth_token="t",
+            api_key="k",
+            shared_secret="s",
+            auth_token="t",
             bucket_capacity=100,
             max_retries=2,
             retry_delay_first=0.01,
@@ -419,7 +441,9 @@ class TestConnectionRetry:
     def conn_client(self) -> RTMClient:
         """Client with fast connection retry delays."""
         config = RTMConfig(
-            api_key="k", shared_secret="s", auth_token="t",
+            api_key="k",
+            shared_secret="s",
+            auth_token="t",
             bucket_capacity=100,
             conn_max_retries=3,
             conn_retry_delay_first=0.01,
@@ -485,7 +509,8 @@ class TestConnectionRetry:
         # First: timeline creation succeeds (GET)
         respx.get(RTM_API_URL).mock(
             return_value=httpx.Response(
-                200, json={"rsp": {"stat": "ok", "timeline": "12345"}},
+                200,
+                json={"rsp": {"stat": "ok", "timeline": "12345"}},
             )
         )
         # Then: the write times out (POST)
@@ -523,7 +548,9 @@ class TestConnectionRetry:
 
     @respx.mock
     @pytest.mark.asyncio
-    async def test_connection_retry_does_not_consume_extra_tokens(self, conn_client: RTMClient) -> None:
+    async def test_connection_retry_does_not_consume_extra_tokens(
+        self, conn_client: RTMClient
+    ) -> None:
         """Connection retries should not consume additional rate limit tokens."""
         route = respx.get(RTM_API_URL)
         route.side_effect = [
@@ -570,7 +597,8 @@ class TestPostGetSplit:
         """Read operations (require_timeline=False) should use GET."""
         route = respx.get(RTM_API_URL).mock(
             return_value=httpx.Response(
-                200, json={"rsp": {"stat": "ok", "test": "hello"}},
+                200,
+                json={"rsp": {"stat": "ok", "test": "hello"}},
             )
         )
 
@@ -587,12 +615,14 @@ class TestPostGetSplit:
         # Second call: the actual write (POST)
         get_route = respx.get(RTM_API_URL).mock(
             return_value=httpx.Response(
-                200, json={"rsp": {"stat": "ok", "timeline": "12345"}},
+                200,
+                json={"rsp": {"stat": "ok", "timeline": "12345"}},
             )
         )
         post_route = respx.post(RTM_API_URL).mock(
             return_value=httpx.Response(
-                200, json={"rsp": {"stat": "ok", "list": {}}},
+                200,
+                json={"rsp": {"stat": "ok", "list": {}}},
             )
         )
 
@@ -609,13 +639,17 @@ class TestPostGetSplit:
         # Timeline creation (GET)
         respx.get(RTM_API_URL).mock(
             return_value=httpx.Response(
-                200, json={"rsp": {"stat": "ok", "timeline": "12345"}},
+                200,
+                json={"rsp": {"stat": "ok", "timeline": "12345"}},
             )
         )
         # Capture the POST request
         post_route = respx.post(RTM_API_URL).mock(
             return_value=httpx.Response(
-                200, json={"rsp": {"stat": "ok", "note": {"id": "1", "title": "My Title", "$t": "Body"}}},
+                200,
+                json={
+                    "rsp": {"stat": "ok", "note": {"id": "1", "title": "My Title", "$t": "Body"}}
+                },
             )
         )
 

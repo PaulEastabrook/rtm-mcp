@@ -73,9 +73,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         client: RTMClient = await get_client()
 
         if bool(project_id) == bool(project_name):
-            return build_response(data={
-                "error": "Provide exactly one of project_id or project_name."
-            })
+            return build_response(
+                data={"error": "Provide exactly one of project_id or project_name."}
+            )
 
         filter_str = (
             "status:incomplete OR status:completed" if include_completed else "status:incomplete"
@@ -95,11 +95,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         else:
             pid = str(project_id)
             if pid not in {t["id"] for t in parsed}:
-                return build_response(data={
-                    "error": f"Project {pid} not found in the fetched tasks. Check the id, or "
-                    "pass list_id and/or include_completed=true if it lives in a specific list "
-                    "or is completed."
-                })
+                return build_response(
+                    data={
+                        "error": f"Project {pid} not found in the fetched tasks. Check the id, or "
+                        "pass list_id and/or include_completed=true if it lives in a specific list "
+                        "or is completed."
+                    }
+                )
 
         return build_response(data=build_envelope(parsed, pid))
 
@@ -143,9 +145,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         client: RTMClient = await get_client()
 
         if bool(project_id) == bool(project_name):
-            return build_response(data={
-                "error": "Provide exactly one of project_id or project_name."
-            })
+            return build_response(
+                data={"error": "Provide exactly one of project_id or project_name."}
+            )
 
         filter_str = (
             "status:incomplete OR status:completed" if include_completed else "status:incomplete"
@@ -165,11 +167,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         else:
             pid = str(project_id)
             if pid not in {t["id"] for t in parsed}:
-                return build_response(data={
-                    "error": f"Project {pid} not found in the fetched tasks. Check the id, or "
-                    "pass list_id and/or include_completed=true if it lives in a specific list "
-                    "or is completed."
-                })
+                return build_response(
+                    data={
+                        "error": f"Project {pid} not found in the fetched tasks. Check the id, or "
+                        "pass list_id and/or include_completed=true if it lives in a specific list "
+                        "or is completed."
+                    }
+                )
 
         envelope = build_envelope(parsed, pid)
         seed = build_seed(envelope["header"], envelope["rows"], outputs_index=None)
@@ -181,10 +185,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         analysis = None
         cycles = graph.get("cycles") or []
         if cycles:
-            analysis = {"insights": [
-                f"{len(cycles)} dependency cycle(s) detected (advisory — the order is a "
-                "best-effort fallback; resolve in RTM when convenient)."
-            ]}
+            analysis = {
+                "insights": [
+                    f"{len(cycles)} dependency cycle(s) detected (advisory — the order is a "
+                    "best-effort fallback; resolve in RTM when convenient)."
+                ]
+            }
 
         return build_response(data=seed, analysis=analysis)
 
@@ -243,15 +249,18 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         by_id = {t["id"]: t for t in parsed}
         pid = str(project_id)
         if pid not in by_id:
-            return build_response(data={
-                "error": f"Project {pid} not found. Check the id (pass the project's task id)."
-            })
+            return build_response(
+                data={
+                    "error": f"Project {pid} not found. Check the id (pass the project's task id)."
+                }
+            )
 
         envelope = build_envelope(parsed, pid)
         plan_ids = {r["id"] for r in envelope["rows"]}
         graph = build_graph(envelope["header"], envelope["rows"])
-        blocked_by_id = {rid: bool(j.get("blocked"))
-                         for rid, j in graph.get("judgement", {}).items()}
+        blocked_by_id = {
+            rid: bool(j.get("blocked")) for rid, j in graph.get("judgement", {}).items()
+        }
 
         ops: dict[str, Any] = {
             "order": order or [],
@@ -269,7 +278,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         processed_list_id = processed.get("list_id") if "error" not in processed else None
 
         validation = validate_commit(
-            ops, plan_ids, pid,
+            ops,
+            plan_ids,
+            pid,
             processed_list_ok=processed_ok,
             confirm_destructive=confirm_destructive,
         )
@@ -282,20 +293,23 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             rejections.append({**gate, "reason": "non_canonical_tag"})
 
         if rejections:
-            return build_response(data={
-                "project_id": pid,
-                "applied": [],
-                "rejected": rejections,
-                "order_persisted": False,
-                "message": "Commit rejected; nothing was written.",
-            })
+            return build_response(
+                data={
+                    "project_id": pid,
+                    "applied": [],
+                    "rejected": rejections,
+                    "order_persisted": False,
+                    "message": "Commit rejected; nothing was written.",
+                }
+            )
 
         # ── Phase 2: apply (durable-first), recording transactions ────────
         applied: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
 
-        async def _write(method: str, label: str, _id: str | None = None,
-                         **kwargs: Any) -> dict[str, Any] | None:
+        async def _write(
+            method: str, label: str, _id: str | None = None, **kwargs: Any
+        ) -> dict[str, Any] | None:
             try:
                 res = await client.call(method, require_timeline=True, **kwargs)
                 tx_id, undoable = get_transaction_info(res)
@@ -309,8 +323,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         def _ids(rid: str) -> dict[str, Any]:
             t = by_id.get(rid, {})
-            return {"task_id": t.get("id"), "taskseries_id": t.get("taskseries_id"),
-                    "list_id": t.get("list_id")}
+            return {
+                "task_id": t.get("id"),
+                "taskseries_id": t.get("taskseries_id"),
+                "list_id": t.get("list_id"),
+            }
 
         def _date_of(d: dict[str, Any]) -> str | None:
             return d.get("calendar_date") or d.get("chase") or d.get("due")
@@ -318,8 +335,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # adds: create on Processed → tags → priority → due → reparent (last, may move lists)
         for add in ops["adds"]:
             text = add.get("text") or ""
-            res = await _write("rtm.tasks.add", f"add:{text[:40]}",
-                               name=text, parse="0", list_id=processed_list_id)
+            res = await _write(
+                "rtm.tasks.add", f"add:{text[:40]}", name=text, parse="0", list_id=processed_list_id
+            )
             if res is None:
                 continue
             created = parse_tasks_response(res)
@@ -328,19 +346,26 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             if not new_id:
                 errors.append({"op": "add", "id": None, "error": "created task id not returned"})
                 continue
-            nid = {"task_id": new_id, "taskseries_id": new.get("taskseries_id"),
-                   "list_id": new.get("list_id")}
+            nid = {
+                "task_id": new_id,
+                "taskseries_id": new.get("taskseries_id"),
+                "list_id": new.get("list_id"),
+            }
             tags = classifiers_to_tags(add.get("type"), add.get("classifiers"))
             await _write("rtm.tasks.setTags", "add:tags", new_id, tags=",".join(tags), **nid)
             pr = (add.get("classifiers") or {}).get("priority")
             if pr:
-                await _write("rtm.tasks.setPriority", "add:priority", new_id,
-                             priority=priority_to_code(pr), **nid)
+                await _write(
+                    "rtm.tasks.setPriority",
+                    "add:priority",
+                    new_id,
+                    priority=priority_to_code(pr),
+                    **nid,
+                )
             dt = _date_of(add)
             if dt:
                 await _write("rtm.tasks.setDueDate", "add:due", new_id, due=dt, parse="1", **nid)
-            await _write("rtm.tasks.setParentTask", "add:parent", new_id,
-                         parent_task_id=pid, **nid)
+            await _write("rtm.tasks.setParentTask", "add:parent", new_id, parent_task_id=pid, **nid)
 
         # edits
         for rid, raw in ops["edits"].items():
@@ -349,8 +374,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             if e.get("text"):
                 await _write("rtm.tasks.setName", "edit:name", rid, name=e["text"], **ids)
             if e.get("priority"):
-                await _write("rtm.tasks.setPriority", "edit:priority", rid,
-                             priority=priority_to_code(e["priority"]), **ids)
+                await _write(
+                    "rtm.tasks.setPriority",
+                    "edit:priority",
+                    rid,
+                    priority=priority_to_code(e["priority"]),
+                    **ids,
+                )
             dt = _date_of(e)
             if dt:
                 await _write("rtm.tasks.setDueDate", "edit:due", rid, due=dt, parse="1", **ids)
@@ -364,22 +394,29 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 new_tags.add(e["comms"])
             new_tags.add(AI_CONVERSATION)
             if new_tags != existing:
-                await _write("rtm.tasks.setTags", "edit:tags", rid,
-                             tags=",".join(sorted(new_tags)), **ids)
+                await _write(
+                    "rtm.tasks.setTags", "edit:tags", rid, tags=",".join(sorted(new_tags)), **ids
+                )
 
         # execute → durable progression signal (no AI work here)
         for rid, mode in ops["execute"].items():
             tags = [AI_PROGRESS, AI_CONVERSATION]
             if blocked_by_id.get(rid):
                 tags.append(AI_DEFERRED)
-            await _write("rtm.tasks.addTags", f"execute:{mode}", rid,
-                         tags=",".join(tags), **_ids(rid))
+            await _write(
+                "rtm.tasks.addTags", f"execute:{mode}", rid, tags=",".join(tags), **_ids(rid)
+            )
 
         # notes
         for rid, n in ops["notes"].items():
-            await _write("rtm.tasks.notes.add", "note", rid,
-                         note_title=(n or {}).get("type") or "",
-                         note_text=(n or {}).get("text") or "", **_ids(rid))
+            await _write(
+                "rtm.tasks.notes.add",
+                "note",
+                rid,
+                note_title=(n or {}).get("type") or "",
+                note_text=(n or {}).get("text") or "",
+                **_ids(rid),
+            )
 
         # destructive (only reachable because confirm_destructive passed validation)
         for rid in ops["completes"]:
@@ -390,15 +427,24 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # COMMIT audit note on the project
         if applied:
             proj = by_id[pid]
-            counts = (f"adds:{len(ops['adds'])} edits:{len(ops['edits'])} "
-                      f"execute:{len(ops['execute'])} notes:{len(ops['notes'])} "
-                      f"completes:{len(ops['completes'])} removes:{len(ops['removes'])}")
-            body = (f"COMMIT (project-plan-canvas) — {counts}; "
-                    f"{len(applied)} write(s), {len(errors)} error(s). #ai_conversation")
-            await _write("rtm.tasks.notes.add", "commit-note",
-                         note_title="COMMIT", note_text=body,
-                         task_id=proj.get("id"), taskseries_id=proj.get("taskseries_id"),
-                         list_id=proj.get("list_id"))
+            counts = (
+                f"adds:{len(ops['adds'])} edits:{len(ops['edits'])} "
+                f"execute:{len(ops['execute'])} notes:{len(ops['notes'])} "
+                f"completes:{len(ops['completes'])} removes:{len(ops['removes'])}"
+            )
+            body = (
+                f"COMMIT (project-plan-canvas) — {counts}; "
+                f"{len(applied)} write(s), {len(errors)} error(s). #ai_conversation"
+            )
+            await _write(
+                "rtm.tasks.notes.add",
+                "commit-note",
+                note_title="COMMIT",
+                note_text=body,
+                task_id=proj.get("id"),
+                taskseries_id=proj.get("taskseries_id"),
+                list_id=proj.get("list_id"),
+            )
 
         return build_response(
             data={

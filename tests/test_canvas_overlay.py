@@ -30,7 +30,7 @@ class TestApplyGraph:
         by_id = {it["id"]: it for it in seed["seed"]}
         assert by_id["a"]["quick"] == 1
         assert "quick" not in by_id["b"]
-        assert by_id["b"]["deps"] == ["a"]   # sorted producer set
+        assert by_id["b"]["deps"] == ["a"]  # sorted producer set
         # the overlay must NOT add blocked / integer-order fields (template derives blocked)
         for it in seed["seed"]:
             assert "blocked" not in it
@@ -48,22 +48,24 @@ class TestLeanSeed:
     def test_strips_bodies_and_caps_notes(self):
         seed = {
             "frame": {"notes": [{"t": "NOTE", "d": "", "s": "g", "b": "full"}]},
-            "seed": [{
-                "id": "a",
-                "notes": [
-                    {"t": "A", "d": "", "s": "1", "b": "b1"},
-                    {"t": "B", "d": "", "s": "2", "b": "b2"},
-                    {"t": "C", "d": "", "s": "3", "b": "b3"},
-                    {"t": "D", "d": "", "s": "4", "b": "b4"},
-                ],
-            }],
+            "seed": [
+                {
+                    "id": "a",
+                    "notes": [
+                        {"t": "A", "d": "", "s": "1", "b": "b1"},
+                        {"t": "B", "d": "", "s": "2", "b": "b2"},
+                        {"t": "C", "d": "", "s": "3", "b": "b3"},
+                        {"t": "D", "d": "", "s": "4", "b": "b4"},
+                    ],
+                }
+            ],
         }
         out = lean_seed(seed, note_cap=3)
-        assert "b" not in out["frame"]["notes"][0]            # frame body dropped
+        assert "b" not in out["frame"]["notes"][0]  # frame body dropped
         item = out["seed"][0]
-        assert len(item["notes"]) == 3                        # capped
-        assert all("b" not in n for n in item["notes"])       # bodies dropped
-        assert item["nc"] == 4                                # honest true total
+        assert len(item["notes"]) == 3  # capped
+        assert all("b" not in n for n in item["notes"])  # bodies dropped
+        assert item["nc"] == 4  # honest true total
 
     def test_no_nc_when_under_cap(self):
         seed = {"frame": {}, "seed": [{"id": "a", "notes": [{"t": "A", "d": "", "s": "1"}]}]}

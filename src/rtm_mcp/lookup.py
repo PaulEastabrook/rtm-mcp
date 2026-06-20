@@ -76,16 +76,18 @@ def _format_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]
     """Format candidate tasks for an ambiguous-match error message."""
     formatted = []
     for t in candidates:
-        formatted.append({
-            "task_id": t.get("id"),
-            "taskseries_id": t.get("taskseries_id"),
-            "list_id": t.get("list_id"),
-            "name": t.get("name"),
-            "tags": t.get("tags", []),
-            "due": t.get("due"),
-            "modified": t.get("modified"),
-            "completed": t.get("completed"),
-        })
+        formatted.append(
+            {
+                "task_id": t.get("id"),
+                "taskseries_id": t.get("taskseries_id"),
+                "list_id": t.get("list_id"),
+                "name": t.get("name"),
+                "tags": t.get("tags", []),
+                "due": t.get("due"),
+                "modified": t.get("modified"),
+                "completed": t.get("completed"),
+            }
+        )
     return formatted
 
 
@@ -152,7 +154,4 @@ async def resolve_list_id(
         if lst["name"].lower() == name_lower:
             return {"list_id": lst["id"], "list": lst}
 
-    return {
-        "error": f"List '{list_name}' not found. "
-        "Use get_lists to see available list names."
-    }
+    return {"error": f"List '{list_name}' not found. Use get_lists to see available list names."}

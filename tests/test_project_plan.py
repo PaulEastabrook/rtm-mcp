@@ -13,15 +13,36 @@ AREA_ID = "957240854"  # the project's parent — deliberately NOT in the fetche
 
 
 def _t(
-    id, name="Task", parent="", list_id=LIST_ID, priority="N", completed=None,
-    due=None, start=None, estimate=None, url=None, tags=None, notes=None, deleted=None,
+    id,
+    name="Task",
+    parent="",
+    list_id=LIST_ID,
+    priority="N",
+    completed=None,
+    due=None,
+    start=None,
+    estimate=None,
+    url=None,
+    tags=None,
+    notes=None,
+    deleted=None,
 ):
     """Build a task dict in the shape parse_tasks_response emits."""
     return {
-        "id": id, "taskseries_id": "ts" + id, "list_id": list_id, "name": name,
-        "due": due, "start": start, "completed": completed, "deleted": deleted,
-        "priority": priority, "estimate": estimate, "tags": tags or [],
-        "notes": notes or [], "url": url, "parent_task_id": parent or None,
+        "id": id,
+        "taskseries_id": "ts" + id,
+        "list_id": list_id,
+        "name": name,
+        "due": due,
+        "start": start,
+        "completed": completed,
+        "deleted": deleted,
+        "priority": priority,
+        "estimate": estimate,
+        "tags": tags or [],
+        "notes": notes or [],
+        "url": url,
+        "parent_task_id": parent or None,
     }
 
 
@@ -32,9 +53,9 @@ def _note(body, created="2026-06-15T10:00:00Z"):
 
 def _sample_parsed():
     depends = _note(
-        '2026-06-15 — DEPENDS-ON — needs upstream\n'
+        "2026-06-15 — DEPENDS-ON — needs upstream\n"
         'Upstream RTM IDs:\n  task_id: "1200224403"\n  list_id: "49657585"\n'
-        'Status: active\n'
+        "Status: active\n"
     )
     files_note = _note(
         "ref: AI Memory/personal/sam/reference/notes.md\n"
@@ -42,13 +63,29 @@ def _sample_parsed():
         "out: output/draft.md\n"
     )
     return [
-        _t(PROJECT_ID, name="Sam's university open days", parent=AREA_ID,
-           tags=["ai_conversation", "personal", "project"],
-           notes=[_note("2026-04-05 — INCEPTION — the project")]),
-        _t("c1", name="Attend webinar", parent=PROJECT_ID, priority="1",
-           due="2026-07-03T00:00:00Z", tags=["action"], notes=[depends, files_note]),
-        _t("c2", name="Done thing", parent=PROJECT_ID,
-           completed="2026-06-15T12:00:00Z", tags=["action"]),
+        _t(
+            PROJECT_ID,
+            name="Sam's university open days",
+            parent=AREA_ID,
+            tags=["ai_conversation", "personal", "project"],
+            notes=[_note("2026-04-05 — INCEPTION — the project")],
+        ),
+        _t(
+            "c1",
+            name="Attend webinar",
+            parent=PROJECT_ID,
+            priority="1",
+            due="2026-07-03T00:00:00Z",
+            tags=["action"],
+            notes=[depends, files_note],
+        ),
+        _t(
+            "c2",
+            name="Done thing",
+            parent=PROJECT_ID,
+            completed="2026-06-15T12:00:00Z",
+            tags=["action"],
+        ),
         _t("c3", name=None, parent=PROJECT_ID, estimate=None, url=None),
         _t("g1", name="grandchild", parent="c1"),  # NOT a direct child → not a row
     ]
@@ -111,8 +148,13 @@ class TestBuildEnvelope:
     def test_resolved_dep_is_skipped(self):
         parsed = [
             _t(PROJECT_ID, parent=AREA_ID, tags=["project"]),
-            _t("c1", parent=PROJECT_ID, notes=[_note(
-                'DEPENDS-ON\nUpstream RTM IDs:\n  task_id: "999"\nStatus: resolved\n')]),
+            _t(
+                "c1",
+                parent=PROJECT_ID,
+                notes=[
+                    _note('DEPENDS-ON\nUpstream RTM IDs:\n  task_id: "999"\nStatus: resolved\n')
+                ],
+            ),
         ]
         env = build_envelope(parsed, PROJECT_ID)
         assert _row(env, "c1")["deps"] == []

@@ -92,7 +92,8 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         lst = result.get("list", {})
 
         return record_and_build_response(
-            client, result,
+            client,
+            result,
             data={
                 "list": format_list(lst),
                 "message": f"Created list: {name}",
@@ -130,7 +131,8 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         lst = result.get("list", {})
 
         return record_and_build_response(
-            client, result,
+            client,
+            result,
             data={
                 "list": format_list(lst),
                 "message": f"Renamed '{list_name}' to '{new_name}'",
@@ -160,7 +162,9 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
 
         if resolved["list"]["locked"]:
             return build_response(
-                data={"error": f"Cannot delete '{list_name}' — it is a locked system list (e.g. Inbox, Sent)."},
+                data={
+                    "error": f"Cannot delete '{list_name}' — it is a locked system list (e.g. Inbox, Sent)."
+                },
             )
 
         result = await client.call(
@@ -170,7 +174,8 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         )
 
         return record_and_build_response(
-            client, result,
+            client,
+            result,
             data={"message": f"Deleted list: {list_name}"},
             tool_name="delete_list",
         )
@@ -203,7 +208,8 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         lst = result.get("list", {})
 
         return record_and_build_response(
-            client, result,
+            client,
+            result,
             data={
                 "list": format_list(lst),
                 "message": f"Archived list: {list_name}",
@@ -239,7 +245,8 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         lst = result.get("list", {})
 
         return record_and_build_response(
-            client, result,
+            client,
+            result,
             data={
                 "list": format_list(lst),
                 "message": f"Unarchived list: {list_name}",

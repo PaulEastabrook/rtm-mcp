@@ -164,7 +164,9 @@ class RTMClient:
 
             try:
                 response = await self._attempt_http(
-                    method, request_params, is_write,
+                    method,
+                    request_params,
+                    is_write,
                 )
 
                 # Handle 503 (rate limit drop tier) before raise_for_status
@@ -178,14 +180,15 @@ class RTMClient:
                         )
                         logger.warning(
                             "RTM API %s returned 503 (attempt %d/%d), pausing %.1fs",
-                            method, attempt + 1, max_attempts, delay,
+                            method,
+                            attempt + 1,
+                            max_attempts,
+                            delay,
                         )
                         self._bucket.pause(delay)
                         self._rate_limit_stats.record_retry()
                         continue
-                    raise RTMRateLimitError(
-                        f"RTM API returned 503 after {max_attempts} attempts"
-                    )
+                    raise RTMRateLimitError(f"RTM API returned 503 after {max_attempts} attempts")
 
                 response.raise_for_status()
 
@@ -252,9 +255,7 @@ class RTMClient:
             except httpx.ConnectError as e:
                 # Don't retry TLS certificate validation failures
                 if _is_tls_cert_error(e):
-                    raise RTMNetworkError(
-                        "TLS certificate verification failed"
-                    ) from e
+                    raise RTMNetworkError("TLS certificate verification failed") from e
                 last_exc = e
 
             # If we get here, the request failed with a retryable error
@@ -265,10 +266,12 @@ class RTMClient:
                     else self.config.conn_retry_delay_subsequent
                 )
                 logger.warning(
-                    "RTM API %s connection error (attempt %d/%d): %s, "
-                    "retrying in %.1fs",
-                    method, conn_attempt + 1, conn_max + 1,
-                    type(last_exc).__name__, delay,
+                    "RTM API %s connection error (attempt %d/%d): %s, retrying in %.1fs",
+                    method,
+                    conn_attempt + 1,
+                    conn_max + 1,
+                    type(last_exc).__name__,
+                    delay,
                 )
                 self._rate_limit_stats.record_conn_retry()
                 await asyncio.sleep(delay)

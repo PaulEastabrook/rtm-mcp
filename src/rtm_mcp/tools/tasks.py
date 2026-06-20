@@ -36,14 +36,18 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
     """Register all task-related tools."""
 
     async def _task_write_response(
-        client: RTMClient, result: dict, message: str, tool_name: str,
+        client: RTMClient,
+        result: dict,
+        message: str,
+        tool_name: str,
     ) -> dict[str, Any]:
         """Common epilogue for task write operations: parse result, format, respond."""
         tasks = parse_tasks_response(result)
         task_data = tasks[0] if tasks else {}
         timezone = await client.get_timezone()
         return record_and_build_response(
-            client, result,
+            client,
+            result,
             data={"task": format_task(task_data, timezone=timezone), "message": message},
             tool_name=tool_name,
         )
@@ -255,9 +259,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         # Strict-tag mode: when SmartAdd is active, reject minting new tags via #tokens.
         if parse:
-            err = await enforce_strict_tags(
-                client, extract_smartadd_tags(name), tool="add_task"
-            )
+            err = await enforce_strict_tags(client, extract_smartadd_tags(name), tool="add_task")
             if err:
                 return build_response(data=err)
 
@@ -308,7 +310,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             task = await find_task(client, task_name)
             if not task:
                 return build_response(
-                    data={"error": f"Task not found: '{task_name}'. Use list_tasks to search by filter or check spelling."},
+                    data={
+                        "error": f"Task not found: '{task_name}'. Use list_tasks to search by filter or check spelling."
+                    },
                 )
             task_id = task["id"]
             taskseries_id = task["taskseries_id"]
@@ -316,7 +320,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         if not all([task_id, taskseries_id, list_id]):
             return build_response(
-                data={"error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."},
+                data={
+                    "error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."
+                },
             )
 
         result = await client.call(
@@ -368,11 +374,15 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             task = await find_task(client, task_name, include_completed=True)
             if not task:
                 return build_response(
-                    data={"error": f"No completed task found matching '{task_name}'. Use list_tasks(include_completed=True) to find it."},
+                    data={
+                        "error": f"No completed task found matching '{task_name}'. Use list_tasks(include_completed=True) to find it."
+                    },
                 )
             if not task.get("completed"):
                 return build_response(
-                    data={"error": f"'{task_name}' is not completed — use complete_task first, or check task status with list_tasks."},
+                    data={
+                        "error": f"'{task_name}' is not completed — use complete_task first, or check task status with list_tasks."
+                    },
                 )
             task_id = task["id"]
             taskseries_id = task["taskseries_id"]
@@ -380,7 +390,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         if not all([task_id, taskseries_id, list_id]):
             return build_response(
-                data={"error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."},
+                data={
+                    "error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."
+                },
             )
 
         result = await client.call(
@@ -432,7 +444,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             task = await find_task(client, task_name)
             if not task:
                 return build_response(
-                    data={"error": f"Task not found: '{task_name}'. Use list_tasks to search by filter or check spelling."},
+                    data={
+                        "error": f"Task not found: '{task_name}'. Use list_tasks to search by filter or check spelling."
+                    },
                 )
             task_id = task["id"]
             taskseries_id = task["taskseries_id"]
@@ -443,7 +457,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         if not all([task_id, taskseries_id, list_id]):
             return build_response(
-                data={"error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."},
+                data={
+                    "error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."
+                },
             )
 
         result = await client.call(
@@ -494,7 +510,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        return await _task_write_response(client, result, f"Renamed to: {new_name}", "set_task_name")
+        return await _task_write_response(
+            client, result, f"Renamed to: {new_name}", "set_task_name"
+        )
 
     @mcp.tool()
     async def set_task_due_date(
@@ -571,7 +589,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        return await _task_write_response(client, result, f"Priority set to: {priority}", "set_task_priority")
+        return await _task_write_response(
+            client, result, f"Priority set to: {priority}", "set_task_priority"
+        )
 
     @mcp.tool()
     async def move_task_priority(
@@ -597,7 +617,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         """
         if direction not in ("up", "down"):
             return build_response(
-                data={"error": "direction must be 'up' (higher priority) or 'down' (lower priority)."},
+                data={
+                    "error": "direction must be 'up' (higher priority) or 'down' (lower priority)."
+                },
             )
 
         client: RTMClient = await get_client()
@@ -612,7 +634,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        return await _task_write_response(client, result, f"Priority moved {direction}", "move_task_priority")
+        return await _task_write_response(
+            client, result, f"Priority moved {direction}", "move_task_priority"
+        )
 
     @mcp.tool()
     async def postpone_task(
@@ -774,7 +798,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             **ids,
         )
 
-        return await _task_write_response(client, result, f"Removed tags: {tags}", "remove_task_tags")
+        return await _task_write_response(
+            client, result, f"Removed tags: {tags}", "remove_task_tags"
+        )
 
     @mcp.tool()
     async def set_task_tags(

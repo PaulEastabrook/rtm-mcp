@@ -55,11 +55,15 @@ class TestLoadFromFile:
         config_dir = tmp_path / ".config" / "rtm-mcp"
         config_dir.mkdir(parents=True)
         config_file = config_dir / "config.json"
-        config_file.write_text(json.dumps({
-            "api_key": "fk",
-            "shared_secret": "fs",
-            "token": "ft",
-        }))
+        config_file.write_text(
+            json.dumps(
+                {
+                    "api_key": "fk",
+                    "shared_secret": "fs",
+                    "token": "ft",
+                }
+            )
+        )
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         # Clear env vars so file loading kicks in
@@ -72,14 +76,20 @@ class TestLoadFromFile:
         assert config.shared_secret == "fs"
         assert config.auth_token == "ft"
 
-    def test_load_falls_back_to_legacy(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_load_falls_back_to_legacy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         legacy_dir = tmp_path / ".config" / "rtm"
         legacy_dir.mkdir(parents=True)
-        (legacy_dir / "config.json").write_text(json.dumps({
-            "api_key": "lk",
-            "shared_secret": "ls",
-            "token": "lt",
-        }))
+        (legacy_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "api_key": "lk",
+                    "shared_secret": "ls",
+                    "token": "lt",
+                }
+            )
+        )
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.delenv("RTM_API_KEY", raising=False)
@@ -89,7 +99,9 @@ class TestLoadFromFile:
         config = RTMConfig.load()
         assert config.api_key == "lk"
 
-    def test_load_survives_corrupt_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_load_survives_corrupt_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         config_dir = tmp_path / ".config" / "rtm-mcp"
         config_dir.mkdir(parents=True)
         (config_dir / "config.json").write_text("{bad json")

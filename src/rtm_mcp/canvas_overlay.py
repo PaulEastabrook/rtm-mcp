@@ -47,14 +47,16 @@ def lean_seed(seed: dict[str, Any], note_cap: int = 3) -> dict[str, Any]:
     inline-widget tool. The "+N more — open in RTM" line (driven by `nc`) keeps the cap honest, and
     the dropped bodies stay one click away via each row's deep link. Frame (project-level) notes
     keep every gist but also shed their bodies. Mutates and returns the same seed dict."""
+
     def _strip_bodies(notes: list[dict[str, Any]] | None) -> None:
         for n in notes or []:
             n.pop("b", None)
+
     _strip_bodies(seed.get("frame", {}).get("notes"))
     for it in seed.get("seed", []):
         notes = it.get("notes") or []
         _strip_bodies(notes)
         if note_cap is not None and note_cap >= 0 and len(notes) > note_cap:
-            it["nc"] = it.get("nc") or len(notes)   # true total, so "+N more in RTM" stays honest
+            it["nc"] = it.get("nc") or len(notes)  # true total, so "+N more in RTM" stays honest
             it["notes"] = notes[:note_cap]
     return seed

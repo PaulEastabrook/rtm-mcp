@@ -231,7 +231,6 @@ class TestParseTasksResponse:
         assert tasks[0]["list_id"] == "1"
         assert tasks[1]["list_id"] == "2"
 
-
     def test_parse_write_response_format(self) -> None:
         """Test parsing write operation response (list at top level, not under tasks)."""
         result = {
@@ -372,7 +371,6 @@ class TestParseTasksResponse:
         assert alpha["parent_task_id"] == "100"
         assert beta["parent_task_id"] == "100"
 
-
     def test_parse_subtasks_across_different_lists(self) -> None:
         """Test subtasks that ended up in different lists than the parent."""
         result = {
@@ -427,10 +425,18 @@ class TestParseTasksResponse:
                         "tags": {"tag": "recurring"},
                         "notes": [],
                         "task": [
-                            {"id": "100", "due": "2026-03-31T00:00:00Z", "priority": "N",
-                             "completed": "2026-03-31T10:00:00Z"},
-                            {"id": "101", "due": "2026-04-07T00:00:00Z", "priority": "N",
-                             "completed": ""},
+                            {
+                                "id": "100",
+                                "due": "2026-03-31T00:00:00Z",
+                                "priority": "N",
+                                "completed": "2026-03-31T10:00:00Z",
+                            },
+                            {
+                                "id": "101",
+                                "due": "2026-04-07T00:00:00Z",
+                                "priority": "N",
+                                "completed": "",
+                            },
                         ],
                     },
                 }
@@ -730,8 +736,7 @@ class TestFormatList:
     def test_format_list_raw_smart_string(self) -> None:
         """Raw RTM smart='1' string is surfaced as True (write-response path)."""
         formatted = format_list(
-            {"id": "9", "name": "Due Today", "smart": "1",
-             "archived": "0", "locked": "0"},
+            {"id": "9", "name": "Due Today", "smart": "1", "archived": "0", "locked": "0"},
         )
         assert formatted["smart"] is True
 
@@ -742,8 +747,7 @@ class TestFormatList:
         ``== "1"`` against an already-parsed bool, yielding False for every flag.
         """
         formatted = format_list(
-            {"id": "9", "name": "Due Today", "smart": True,
-             "archived": True, "locked": True},
+            {"id": "9", "name": "Due Today", "smart": True, "archived": True, "locked": True},
         )
         assert formatted["smart"] is True
         assert formatted["archived"] is True

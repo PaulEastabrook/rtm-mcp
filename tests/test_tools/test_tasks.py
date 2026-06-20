@@ -66,7 +66,6 @@ class TestApplySubtaskCounts:
         assert tasks[1]["subtask_count"] == 1  # Child is its child
         assert tasks[2]["subtask_count"] == 0
 
-
     def test_multiple_parents_with_different_children(self) -> None:
         """Test multiple independent parent-child groups in one result set."""
         tasks = [
@@ -106,7 +105,12 @@ class TestApplySubtaskCounts:
         all_tasks = [
             {"id": "100", "name": "Parent", "parent_task_id": None, "completed": None},
             {"id": "200", "name": "Child A", "parent_task_id": "100", "completed": None},
-            {"id": "300", "name": "Child B", "parent_task_id": "100", "completed": "2026-03-30T10:00:00Z"},
+            {
+                "id": "300",
+                "name": "Child B",
+                "parent_task_id": "100",
+                "completed": "2026-03-30T10:00:00Z",
+            },
         ]
         # Simulate the incomplete filter applied in list_tasks
         tasks = [t for t in all_tasks if not t.get("completed")]
@@ -119,8 +123,18 @@ class TestApplySubtaskCounts:
         """When all children are completed and filtered out, parent subtask_count is 0."""
         all_tasks = [
             {"id": "100", "name": "Parent", "parent_task_id": None, "completed": None},
-            {"id": "200", "name": "Child A", "parent_task_id": "100", "completed": "2026-03-30T10:00:00Z"},
-            {"id": "300", "name": "Child B", "parent_task_id": "100", "completed": "2026-03-30T11:00:00Z"},
+            {
+                "id": "200",
+                "name": "Child A",
+                "parent_task_id": "100",
+                "completed": "2026-03-30T10:00:00Z",
+            },
+            {
+                "id": "300",
+                "name": "Child B",
+                "parent_task_id": "100",
+                "completed": "2026-03-30T11:00:00Z",
+            },
         ]
         tasks = [t for t in all_tasks if not t.get("completed")]
         _apply_subtask_counts(tasks)
@@ -133,7 +147,12 @@ class TestApplySubtaskCounts:
         tasks = [
             {"id": "100", "name": "Parent", "parent_task_id": None, "completed": None},
             {"id": "200", "name": "Child A", "parent_task_id": "100", "completed": None},
-            {"id": "300", "name": "Child B", "parent_task_id": "100", "completed": "2026-03-30T10:00:00Z"},
+            {
+                "id": "300",
+                "name": "Child B",
+                "parent_task_id": "100",
+                "completed": "2026-03-30T10:00:00Z",
+            },
         ]
         # No completion filter — simulates include_completed=True
         _apply_subtask_counts(tasks)

@@ -24,6 +24,7 @@ URL_SEGMENT_ID_FIELD: str = "id"
 # Pure URL builders
 # ---------------------------------------------------------------------------
 
+
 def build_list_url(list_id: str) -> str:
     """Build a web UI URL for a list."""
     return f"{RTM_WEB_BASE_URL}#list/{list_id}"
@@ -102,6 +103,7 @@ def walk_parent_chain(
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+
 async def resolve_task_url(
     client: Any,
     task_id: str,
@@ -141,10 +143,7 @@ async def resolve_task_url(
     url = build_task_url(list_id, segment_ids)
 
     # Build hierarchy info
-    hierarchy = [
-        {"name": t.get("name", ""), "level": i + 1}
-        for i, t in enumerate(chain)
-    ]
+    hierarchy = [{"name": t.get("name", ""), "level": i + 1} for i, t in enumerate(chain)]
 
     # Resolve list name
     lists_result = await client.call("rtm.lists.getList")

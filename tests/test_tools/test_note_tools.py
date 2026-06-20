@@ -9,6 +9,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_getlist_response(
     taskseries_list: list[dict] | dict,
     list_id: str = "1",
@@ -61,6 +62,7 @@ class FakeMCP:
         def decorator(fn):
             self.tools[fn.__name__] = fn
             return fn
+
         return decorator
 
 
@@ -92,6 +94,7 @@ def mock_client():
 # ---------------------------------------------------------------------------
 # Tests: add_note
 # ---------------------------------------------------------------------------
+
 
 class TestAddNote:
     @pytest.mark.asyncio
@@ -134,7 +137,9 @@ class TestAddNote:
         client.call = AsyncMock(side_effect=[find_resp, add_resp])
 
         result = await tools["add_note"](
-            FakeContext(), note_text="Remember oat milk", task_name="Buy milk",
+            FakeContext(),
+            note_text="Remember oat milk",
+            task_name="Buy milk",
         )
         assert result["data"]["message"] == "Note added"
 
@@ -144,7 +149,9 @@ class TestAddNote:
         client.call = AsyncMock(return_value=_make_getlist_response([]))
 
         result = await tools["add_note"](
-            FakeContext(), note_text="body", task_name="Nonexistent",
+            FakeContext(),
+            note_text="body",
+            task_name="Nonexistent",
         )
         assert "error" in result["data"]
 
@@ -152,7 +159,9 @@ class TestAddNote:
     async def test_add_note_missing_ids(self, note_tools):
         tools, _client = note_tools
         result = await tools["add_note"](
-            FakeContext(), note_text="body", task_id="100",
+            FakeContext(),
+            note_text="body",
+            task_id="100",
         )
         assert "error" in result["data"]
 
@@ -160,6 +169,7 @@ class TestAddNote:
 # ---------------------------------------------------------------------------
 # Tests: edit_note
 # ---------------------------------------------------------------------------
+
 
 class TestEditNote:
     @pytest.mark.asyncio
@@ -196,8 +206,12 @@ class TestEditNote:
         client.call = AsyncMock(return_value=edit_resp)
 
         result = await tools["edit_note"](
-            FakeContext(), note_id="n1", note_text="Fallback body",
-            task_id="100", taskseries_id="10", list_id="1",
+            FakeContext(),
+            note_id="n1",
+            note_text="Fallback body",
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
         )
         assert result["data"]["note"]["body"] == "Fallback body"
 
@@ -205,6 +219,7 @@ class TestEditNote:
 # ---------------------------------------------------------------------------
 # Tests: delete_note
 # ---------------------------------------------------------------------------
+
 
 class TestDeleteNote:
     @pytest.mark.asyncio
@@ -217,8 +232,11 @@ class TestDeleteNote:
         client.call = AsyncMock(return_value=del_resp)
 
         result = await tools["delete_note"](
-            FakeContext(), note_id="n1",
-            task_id="100", taskseries_id="10", list_id="1",
+            FakeContext(),
+            note_id="n1",
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
         )
         assert result["data"]["message"] == "Note deleted"
         assert result["metadata"]["transaction_id"] == "tx5"
@@ -229,7 +247,9 @@ class TestDeleteNote:
         client.call = AsyncMock(return_value=_make_getlist_response([]))
 
         result = await tools["delete_note"](
-            FakeContext(), note_id="n1", task_name="Missing",
+            FakeContext(),
+            note_id="n1",
+            task_name="Missing",
         )
         assert "error" in result["data"]
 
@@ -237,6 +257,7 @@ class TestDeleteNote:
 # ---------------------------------------------------------------------------
 # Tests: get_task_notes
 # ---------------------------------------------------------------------------
+
 
 class TestGetTaskNotes:
     @pytest.mark.asyncio
@@ -262,7 +283,10 @@ class TestGetTaskNotes:
         client.call = AsyncMock(return_value=resp)
 
         result = await tools["get_task_notes"](
-            FakeContext(), task_id="100", taskseries_id="10", list_id="1",
+            FakeContext(),
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
         )
         assert result["data"]["count"] == 1
 
