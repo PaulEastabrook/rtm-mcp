@@ -14,6 +14,7 @@ class FakeMCP:
         def decorator(fn):
             self.tools[fn.__name__] = fn
             return fn
+
         return decorator
 
 
@@ -39,8 +40,13 @@ def _list_entry(
     smart: str = "0",
 ) -> dict[str, Any]:
     return {
-        "id": id, "name": name, "deleted": deleted, "locked": locked,
-        "archived": archived, "position": position, "smart": smart,
+        "id": id,
+        "name": name,
+        "deleted": deleted,
+        "locked": locked,
+        "archived": archived,
+        "position": position,
+        "smart": smart,
     }
 
 
@@ -69,14 +75,19 @@ def list_tools(mock_client):
 # get_lists
 # ---------------------------------------------------------------------------
 
+
 class TestGetLists:
     @pytest.mark.asyncio
     async def test_basic(self, list_tools):
         tools, client = list_tools
-        client.call = AsyncMock(return_value=_lists_response([
-            _list_entry(id="1", name="Inbox", position="0"),
-            _list_entry(id="2", name="Work", position="1"),
-        ]))
+        client.call = AsyncMock(
+            return_value=_lists_response(
+                [
+                    _list_entry(id="1", name="Inbox", position="0"),
+                    _list_entry(id="2", name="Work", position="1"),
+                ]
+            )
+        )
 
         result = await tools["get_lists"](FakeContext())
         assert result["data"]["count"] == 2
@@ -86,10 +97,14 @@ class TestGetLists:
     @pytest.mark.asyncio
     async def test_excludes_archived_by_default(self, list_tools):
         tools, client = list_tools
-        client.call = AsyncMock(return_value=_lists_response([
-            _list_entry(id="1", name="Active"),
-            _list_entry(id="2", name="Old", archived="1"),
-        ]))
+        client.call = AsyncMock(
+            return_value=_lists_response(
+                [
+                    _list_entry(id="1", name="Active"),
+                    _list_entry(id="2", name="Old", archived="1"),
+                ]
+            )
+        )
 
         result = await tools["get_lists"](FakeContext())
         assert result["data"]["count"] == 1
@@ -98,10 +113,14 @@ class TestGetLists:
     @pytest.mark.asyncio
     async def test_include_archived(self, list_tools):
         tools, client = list_tools
-        client.call = AsyncMock(return_value=_lists_response([
-            _list_entry(id="1", name="Active"),
-            _list_entry(id="2", name="Old", archived="1"),
-        ]))
+        client.call = AsyncMock(
+            return_value=_lists_response(
+                [
+                    _list_entry(id="1", name="Active"),
+                    _list_entry(id="2", name="Old", archived="1"),
+                ]
+            )
+        )
 
         result = await tools["get_lists"](FakeContext(), include_archived=True)
         assert result["data"]["count"] == 2
@@ -109,10 +128,14 @@ class TestGetLists:
     @pytest.mark.asyncio
     async def test_exclude_smart(self, list_tools):
         tools, client = list_tools
-        client.call = AsyncMock(return_value=_lists_response([
-            _list_entry(id="1", name="Normal"),
-            _list_entry(id="2", name="Due Today", smart="1"),
-        ]))
+        client.call = AsyncMock(
+            return_value=_lists_response(
+                [
+                    _list_entry(id="1", name="Normal"),
+                    _list_entry(id="2", name="Due Today", smart="1"),
+                ]
+            )
+        )
 
         result = await tools["get_lists"](FakeContext(), include_smart=False)
         assert result["data"]["count"] == 1
@@ -127,10 +150,14 @@ class TestGetLists:
         every flag into False.
         """
         tools, client = list_tools
-        client.call = AsyncMock(return_value=_lists_response([
-            _list_entry(id="1", name="Inbox", position="0", locked="1"),
-            _list_entry(id="2", name="Due Today", position="1", smart="1"),
-        ]))
+        client.call = AsyncMock(
+            return_value=_lists_response(
+                [
+                    _list_entry(id="1", name="Inbox", position="0", locked="1"),
+                    _list_entry(id="2", name="Due Today", position="1", smart="1"),
+                ]
+            )
+        )
 
         result = await tools["get_lists"](FakeContext())
         by_name = {lst["name"]: lst for lst in result["data"]["lists"]}
@@ -143,15 +170,18 @@ class TestGetLists:
 # add_list
 # ---------------------------------------------------------------------------
 
+
 class TestAddList:
     @pytest.mark.asyncio
     async def test_basic(self, list_tools):
         tools, client = list_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "transaction": {"id": "tx1", "undoable": "1"},
-            "list": _list_entry(id="99", name="New List"),
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "transaction": {"id": "tx1", "undoable": "1"},
+                "list": _list_entry(id="99", name="New List"),
+            }
+        )
 
         result = await tools["add_list"](FakeContext(), name="New List")
         assert result["data"]["message"] == "Created list: New List"
@@ -160,14 +190,18 @@ class TestAddList:
     @pytest.mark.asyncio
     async def test_smart_list(self, list_tools):
         tools, client = list_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "transaction": {"id": "tx2", "undoable": "1"},
-            "list": {**_list_entry(id="99", name="Urgent", smart="1"), "filter": "priority:1"},
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "transaction": {"id": "tx2", "undoable": "1"},
+                "list": {**_list_entry(id="99", name="Urgent", smart="1"), "filter": "priority:1"},
+            }
+        )
 
         await tools["add_list"](
-            FakeContext(), name="Urgent", filter="priority:1",
+            FakeContext(),
+            name="Urgent",
+            filter="priority:1",
         )
         # Verify filter was passed to API
         call_kwargs = client.call.call_args.kwargs
@@ -177,6 +211,7 @@ class TestAddList:
 # ---------------------------------------------------------------------------
 # rename_list
 # ---------------------------------------------------------------------------
+
 
 class TestRenameList:
     @pytest.mark.asyncio
@@ -195,19 +230,27 @@ class TestRenameList:
         client.call = AsyncMock(side_effect=_side)
 
         result = await tools["rename_list"](
-            FakeContext(), list_name="Old Name", new_name="New Name",
+            FakeContext(),
+            list_name="Old Name",
+            new_name="New Name",
         )
         assert "Renamed" in result["data"]["message"]
 
     @pytest.mark.asyncio
     async def test_not_found(self, list_tools):
         tools, client = list_tools
-        client.call = AsyncMock(return_value=_lists_response([
-            _list_entry(id="1", name="Other"),
-        ]))
+        client.call = AsyncMock(
+            return_value=_lists_response(
+                [
+                    _list_entry(id="1", name="Other"),
+                ]
+            )
+        )
 
         result = await tools["rename_list"](
-            FakeContext(), list_name="Missing", new_name="X",
+            FakeContext(),
+            list_name="Missing",
+            new_name="X",
         )
         assert "error" in result["data"]
 
@@ -215,6 +258,7 @@ class TestRenameList:
 # ---------------------------------------------------------------------------
 # delete_list
 # ---------------------------------------------------------------------------
+
 
 class TestDeleteList:
     @pytest.mark.asyncio
@@ -234,9 +278,13 @@ class TestDeleteList:
     @pytest.mark.asyncio
     async def test_locked_list(self, list_tools):
         tools, client = list_tools
-        client.call = AsyncMock(return_value=_lists_response([
-            _list_entry(id="1", name="Inbox", locked="1"),
-        ]))
+        client.call = AsyncMock(
+            return_value=_lists_response(
+                [
+                    _list_entry(id="1", name="Inbox", locked="1"),
+                ]
+            )
+        )
 
         result = await tools["delete_list"](FakeContext(), list_name="Inbox")
         assert "locked" in result["data"]["error"].lower()
@@ -244,9 +292,13 @@ class TestDeleteList:
     @pytest.mark.asyncio
     async def test_not_found(self, list_tools):
         tools, client = list_tools
-        client.call = AsyncMock(return_value=_lists_response([
-            _list_entry(id="1", name="Other"),
-        ]))
+        client.call = AsyncMock(
+            return_value=_lists_response(
+                [
+                    _list_entry(id="1", name="Other"),
+                ]
+            )
+        )
 
         result = await tools["delete_list"](FakeContext(), list_name="Missing")
         assert "error" in result["data"]
@@ -255,6 +307,7 @@ class TestDeleteList:
 # ---------------------------------------------------------------------------
 # archive_list / unarchive_list
 # ---------------------------------------------------------------------------
+
 
 class TestArchiveList:
     @pytest.mark.asyncio
@@ -278,9 +331,13 @@ class TestArchiveList:
     @pytest.mark.asyncio
     async def test_archive_not_found(self, list_tools):
         tools, client = list_tools
-        client.call = AsyncMock(return_value=_lists_response([
-            _list_entry(name="Other"),
-        ]))
+        client.call = AsyncMock(
+            return_value=_lists_response(
+                [
+                    _list_entry(name="Other"),
+                ]
+            )
+        )
 
         result = await tools["archive_list"](FakeContext(), list_name="Missing")
         assert "error" in result["data"]
@@ -310,6 +367,7 @@ class TestUnarchiveList:
 # set_default_list
 # ---------------------------------------------------------------------------
 
+
 class TestSetDefaultList:
     @pytest.mark.asyncio
     async def test_set_default(self, list_tools):
@@ -328,9 +386,13 @@ class TestSetDefaultList:
     @pytest.mark.asyncio
     async def test_not_found(self, list_tools):
         tools, client = list_tools
-        client.call = AsyncMock(return_value=_lists_response([
-            _list_entry(name="Other"),
-        ]))
+        client.call = AsyncMock(
+            return_value=_lists_response(
+                [
+                    _list_entry(name="Other"),
+                ]
+            )
+        )
 
         result = await tools["set_default_list"](FakeContext(), list_name="Missing")
         assert "error" in result["data"]

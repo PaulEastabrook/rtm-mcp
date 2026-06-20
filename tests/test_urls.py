@@ -15,6 +15,7 @@ from rtm_mcp.urls import (
 # build_list_url
 # ---------------------------------------------------------------------------
 
+
 class TestBuildListUrl:
     def test_basic(self):
         url = build_list_url("49657585")
@@ -29,6 +30,7 @@ class TestBuildListUrl:
 # build_task_url
 # ---------------------------------------------------------------------------
 
+
 class TestBuildTaskUrl:
     def test_single_segment(self):
         url = build_task_url("100", ["200"])
@@ -41,14 +43,14 @@ class TestBuildTaskUrl:
     def test_three_segments(self):
         url = build_task_url("49657585", ["400591040", "1159504180", "1195101122"])
         assert url == (
-            "https://www.rememberthemilk.com/app/"
-            "#list/49657585/400591040/1159504180/1195101122"
+            "https://www.rememberthemilk.com/app/#list/49657585/400591040/1159504180/1195101122"
         )
 
 
 # ---------------------------------------------------------------------------
 # walk_parent_chain
 # ---------------------------------------------------------------------------
+
 
 def _task(task_id, name, parent_task_id=None, taskseries_id=None):
     """Helper to create a minimal task dict."""
@@ -127,6 +129,7 @@ class TestWalkParentChain:
 # resolve_task_url
 # ---------------------------------------------------------------------------
 
+
 class TestResolveTaskUrl:
     @pytest.mark.asyncio
     async def test_full_hierarchy(self):
@@ -134,45 +137,112 @@ class TestResolveTaskUrl:
 
         # getList returns tasks with 3-level hierarchy
         focus = {
-            "id": "100", "taskseries": [{
-                "id": "ts_100", "name": "Finance", "parent_task_id": "",
-                "tags": [], "notes": [], "url": "", "location_id": "",
-                "created": "", "modified": "",
-                "task": [{"id": "100", "due": "", "has_due_time": "0",
-                          "start": "", "has_start_time": "0",
-                          "completed": "", "deleted": "", "priority": "N",
-                          "postponed": "0", "estimate": ""}],
-            }],
+            "id": "100",
+            "taskseries": [
+                {
+                    "id": "ts_100",
+                    "name": "Finance",
+                    "parent_task_id": "",
+                    "tags": [],
+                    "notes": [],
+                    "url": "",
+                    "location_id": "",
+                    "created": "",
+                    "modified": "",
+                    "task": [
+                        {
+                            "id": "100",
+                            "due": "",
+                            "has_due_time": "0",
+                            "start": "",
+                            "has_start_time": "0",
+                            "completed": "",
+                            "deleted": "",
+                            "priority": "N",
+                            "postponed": "0",
+                            "estimate": "",
+                        }
+                    ],
+                }
+            ],
         }
         project = {
-            "id": "100", "taskseries": [{
-                "id": "ts_200", "name": "LW Dormancy", "parent_task_id": "100",
-                "tags": [], "notes": [], "url": "", "location_id": "",
-                "created": "", "modified": "",
-                "task": [{"id": "200", "due": "", "has_due_time": "0",
-                          "start": "", "has_start_time": "0",
-                          "completed": "", "deleted": "", "priority": "N",
-                          "postponed": "0", "estimate": ""}],
-            }],
+            "id": "100",
+            "taskseries": [
+                {
+                    "id": "ts_200",
+                    "name": "LW Dormancy",
+                    "parent_task_id": "100",
+                    "tags": [],
+                    "notes": [],
+                    "url": "",
+                    "location_id": "",
+                    "created": "",
+                    "modified": "",
+                    "task": [
+                        {
+                            "id": "200",
+                            "due": "",
+                            "has_due_time": "0",
+                            "start": "",
+                            "has_start_time": "0",
+                            "completed": "",
+                            "deleted": "",
+                            "priority": "N",
+                            "postponed": "0",
+                            "estimate": "",
+                        }
+                    ],
+                }
+            ],
         }
         action = {
-            "id": "100", "taskseries": [{
-                "id": "ts_300", "name": "Message Simon", "parent_task_id": "200",
-                "tags": [], "notes": [], "url": "", "location_id": "",
-                "created": "", "modified": "",
-                "task": [{"id": "300", "due": "", "has_due_time": "0",
-                          "start": "", "has_start_time": "0",
-                          "completed": "", "deleted": "", "priority": "N",
-                          "postponed": "0", "estimate": ""}],
-            }],
+            "id": "100",
+            "taskseries": [
+                {
+                    "id": "ts_300",
+                    "name": "Message Simon",
+                    "parent_task_id": "200",
+                    "tags": [],
+                    "notes": [],
+                    "url": "",
+                    "location_id": "",
+                    "created": "",
+                    "modified": "",
+                    "task": [
+                        {
+                            "id": "300",
+                            "due": "",
+                            "has_due_time": "0",
+                            "start": "",
+                            "has_start_time": "0",
+                            "completed": "",
+                            "deleted": "",
+                            "priority": "N",
+                            "postponed": "0",
+                            "estimate": "",
+                        }
+                    ],
+                }
+            ],
         }
 
         # lists.getList returns list info
-        lists_response = {"lists": {"list": [
-            {"id": "100", "name": "Processed", "deleted": "0",
-             "locked": "0", "archived": "0", "position": "0",
-             "smart": "0"},
-        ]}}
+        lists_response = {
+            "lists": {
+                "list": [
+                    {
+                        "id": "100",
+                        "name": "Processed",
+                        "deleted": "0",
+                        "locked": "0",
+                        "archived": "0",
+                        "position": "0",
+                        "smart": "0",
+                    },
+                ]
+            }
+        }
 
         async def mock_call(method, **kwargs):
             if method == "rtm.tasks.getList":
@@ -202,21 +272,50 @@ class TestResolveTaskUrl:
         client = AsyncMock()
 
         task_list = {
-            "id": "5", "taskseries": [{
-                "id": "ts_10", "name": "Solo task", "parent_task_id": "",
-                "tags": [], "notes": [], "url": "", "location_id": "",
-                "created": "", "modified": "",
-                "task": [{"id": "10", "due": "", "has_due_time": "0",
-                          "start": "", "has_start_time": "0",
-                          "completed": "", "deleted": "", "priority": "N",
-                          "postponed": "0", "estimate": ""}],
-            }],
+            "id": "5",
+            "taskseries": [
+                {
+                    "id": "ts_10",
+                    "name": "Solo task",
+                    "parent_task_id": "",
+                    "tags": [],
+                    "notes": [],
+                    "url": "",
+                    "location_id": "",
+                    "created": "",
+                    "modified": "",
+                    "task": [
+                        {
+                            "id": "10",
+                            "due": "",
+                            "has_due_time": "0",
+                            "start": "",
+                            "has_start_time": "0",
+                            "completed": "",
+                            "deleted": "",
+                            "priority": "N",
+                            "postponed": "0",
+                            "estimate": "",
+                        }
+                    ],
+                }
+            ],
         }
-        lists_response = {"lists": {"list": [
-            {"id": "5", "name": "Inbox", "deleted": "0",
-             "locked": "1", "archived": "0", "position": "0",
-             "smart": "0"},
-        ]}}
+        lists_response = {
+            "lists": {
+                "list": [
+                    {
+                        "id": "5",
+                        "name": "Inbox",
+                        "deleted": "0",
+                        "locked": "1",
+                        "archived": "0",
+                        "position": "0",
+                        "smart": "0",
+                    },
+                ]
+            }
+        }
 
         async def mock_call(method, **kwargs):
             if method == "rtm.tasks.getList":
@@ -253,21 +352,50 @@ class TestResolveTaskUrl:
         client = AsyncMock()
 
         task_list = {
-            "id": "1", "taskseries": [{
-                "id": "ts_200", "name": "Orphan", "parent_task_id": "999",
-                "tags": [], "notes": [], "url": "", "location_id": "",
-                "created": "", "modified": "",
-                "task": [{"id": "200", "due": "", "has_due_time": "0",
-                          "start": "", "has_start_time": "0",
-                          "completed": "", "deleted": "", "priority": "N",
-                          "postponed": "0", "estimate": ""}],
-            }],
+            "id": "1",
+            "taskseries": [
+                {
+                    "id": "ts_200",
+                    "name": "Orphan",
+                    "parent_task_id": "999",
+                    "tags": [],
+                    "notes": [],
+                    "url": "",
+                    "location_id": "",
+                    "created": "",
+                    "modified": "",
+                    "task": [
+                        {
+                            "id": "200",
+                            "due": "",
+                            "has_due_time": "0",
+                            "start": "",
+                            "has_start_time": "0",
+                            "completed": "",
+                            "deleted": "",
+                            "priority": "N",
+                            "postponed": "0",
+                            "estimate": "",
+                        }
+                    ],
+                }
+            ],
         }
-        lists_response = {"lists": {"list": [
-            {"id": "1", "name": "Processed", "deleted": "0",
-             "locked": "0", "archived": "0", "position": "0",
-             "smart": "0"},
-        ]}}
+        lists_response = {
+            "lists": {
+                "list": [
+                    {
+                        "id": "1",
+                        "name": "Processed",
+                        "deleted": "0",
+                        "locked": "0",
+                        "archived": "0",
+                        "position": "0",
+                        "smart": "0",
+                    },
+                ]
+            }
+        }
 
         async def mock_call(method, **kwargs):
             if method == "rtm.tasks.getList":

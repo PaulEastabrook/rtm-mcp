@@ -16,6 +16,7 @@ class FakeMCP:
         def decorator(fn):
             self.tools[fn.__name__] = fn
             return fn
+
         return decorator
 
 
@@ -55,6 +56,7 @@ def util_tools(mock_client):
 # test_connection
 # ---------------------------------------------------------------------------
 
+
 class TestTestConnection:
     @pytest.mark.asyncio
     async def test_success(self, util_tools):
@@ -79,17 +81,20 @@ class TestTestConnection:
 # check_auth
 # ---------------------------------------------------------------------------
 
+
 class TestCheckAuth:
     @pytest.mark.asyncio
     async def test_authenticated(self, util_tools):
         tools, client = util_tools
-        client.check_token = AsyncMock(return_value={
-            "auth": {
-                "token": "tok",
-                "perms": "delete",
-                "user": {"id": "1", "username": "testuser", "fullname": "Test User"},
-            },
-        })
+        client.check_token = AsyncMock(
+            return_value={
+                "auth": {
+                    "token": "tok",
+                    "perms": "delete",
+                    "user": {"id": "1", "username": "testuser", "fullname": "Test User"},
+                },
+            }
+        )
 
         result = await tools["check_auth"](FakeContext())
         assert result["data"]["status"] == "authenticated"
@@ -109,14 +114,17 @@ class TestCheckAuth:
 # get_tags
 # ---------------------------------------------------------------------------
 
+
 class TestGetTags:
     @pytest.mark.asyncio
     async def test_multiple_tags(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "tags": {"tag": [{"name": "work"}, {"name": "home"}, {"name": "alpha"}]},
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "tags": {"tag": [{"name": "work"}, {"name": "home"}, {"name": "alpha"}]},
+            }
+        )
 
         result = await tools["get_tags"](FakeContext())
         assert result["data"]["count"] == 3
@@ -126,10 +134,12 @@ class TestGetTags:
     @pytest.mark.asyncio
     async def test_single_tag_as_dict(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "tags": {"tag": {"name": "solo"}},
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "tags": {"tag": {"name": "solo"}},
+            }
+        )
 
         result = await tools["get_tags"](FakeContext())
         assert result["data"]["count"] == 1
@@ -137,10 +147,12 @@ class TestGetTags:
     @pytest.mark.asyncio
     async def test_tag_as_string(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "tags": {"tag": "simple"},
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "tags": {"tag": "simple"},
+            }
+        )
 
         result = await tools["get_tags"](FakeContext())
         assert result["data"]["count"] == 1
@@ -158,10 +170,12 @@ class TestGetTags:
     async def test_tag_with_dollar_t_field(self, util_tools):
         """Some RTM responses use $t instead of name."""
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "tags": {"tag": [{"$t": "via_dollar_t"}]},
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "tags": {"tag": [{"$t": "via_dollar_t"}]},
+            }
+        )
 
         result = await tools["get_tags"](FakeContext())
         assert result["data"]["tags"][0]["name"] == "via_dollar_t"
@@ -171,19 +185,36 @@ class TestGetTags:
 # get_locations
 # ---------------------------------------------------------------------------
 
+
 class TestGetLocations:
     @pytest.mark.asyncio
     async def test_multiple_locations(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "locations": {
-                "location": [
-                    {"id": "1", "name": "Home", "latitude": "51.5", "longitude": "-0.1", "zoom": "10", "address": "London"},
-                    {"id": "2", "name": "Office", "latitude": "40.7", "longitude": "-74.0", "zoom": "12", "address": "NYC"},
-                ],
-            },
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "locations": {
+                    "location": [
+                        {
+                            "id": "1",
+                            "name": "Home",
+                            "latitude": "51.5",
+                            "longitude": "-0.1",
+                            "zoom": "10",
+                            "address": "London",
+                        },
+                        {
+                            "id": "2",
+                            "name": "Office",
+                            "latitude": "40.7",
+                            "longitude": "-74.0",
+                            "zoom": "12",
+                            "address": "NYC",
+                        },
+                    ],
+                },
+            }
+        )
 
         result = await tools["get_locations"](FakeContext())
         assert result["data"]["count"] == 2
@@ -193,12 +224,14 @@ class TestGetLocations:
     @pytest.mark.asyncio
     async def test_single_location_as_dict(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "locations": {
-                "location": {"id": "1", "name": "Home", "latitude": "0", "longitude": "0"},
-            },
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "locations": {
+                    "location": {"id": "1", "name": "Home", "latitude": "0", "longitude": "0"},
+                },
+            }
+        )
 
         result = await tools["get_locations"](FakeContext())
         assert result["data"]["count"] == 1
@@ -206,12 +239,14 @@ class TestGetLocations:
     @pytest.mark.asyncio
     async def test_location_no_zoom(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "locations": {
-                "location": {"id": "1", "name": "Place", "latitude": "1", "longitude": "2"},
-            },
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "locations": {
+                    "location": {"id": "1", "name": "Place", "latitude": "1", "longitude": "2"},
+                },
+            }
+        )
 
         result = await tools["get_locations"](FakeContext())
         assert result["data"]["locations"][0]["zoom"] is None
@@ -229,20 +264,23 @@ class TestGetLocations:
 # get_settings
 # ---------------------------------------------------------------------------
 
+
 class TestGetSettings:
     @pytest.mark.asyncio
     async def test_european_12h(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "settings": {
-                "timezone": "Europe/London",
-                "dateformat": "0",
-                "timeformat": "0",
-                "defaultlist": "123",
-                "language": "en",
-            },
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "settings": {
+                    "timezone": "Europe/London",
+                    "dateformat": "0",
+                    "timeformat": "0",
+                    "defaultlist": "123",
+                    "language": "en",
+                },
+            }
+        )
 
         result = await tools["get_settings"](FakeContext())
         assert result["data"]["timezone"] == "Europe/London"
@@ -253,10 +291,12 @@ class TestGetSettings:
     @pytest.mark.asyncio
     async def test_american_24h(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "settings": {"dateformat": "1", "timeformat": "1"},
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "settings": {"dateformat": "1", "timeformat": "1"},
+            }
+        )
 
         result = await tools["get_settings"](FakeContext())
         assert "American" in result["data"]["date_format"]
@@ -267,14 +307,17 @@ class TestGetSettings:
 # parse_time
 # ---------------------------------------------------------------------------
 
+
 class TestParseTime:
     @pytest.mark.asyncio
     async def test_basic(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "time": {"$t": "2026-04-02T00:00:00Z", "precision": "date"},
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "time": {"$t": "2026-04-02T00:00:00Z", "precision": "date"},
+            }
+        )
 
         result = await tools["parse_time"](FakeContext(), text="tomorrow")
         assert result["data"]["input"] == "tomorrow"
@@ -284,13 +327,17 @@ class TestParseTime:
     @pytest.mark.asyncio
     async def test_with_timezone(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "time": {"$t": "2026-04-02T14:00:00Z", "precision": "time"},
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "time": {"$t": "2026-04-02T14:00:00Z", "precision": "time"},
+            }
+        )
 
         await tools["parse_time"](
-            FakeContext(), text="2pm", timezone="America/New_York",
+            FakeContext(),
+            text="2pm",
+            timezone="America/New_York",
         )
         # Verify timezone was passed to API
         call_kwargs = client.call.call_args.kwargs
@@ -300,6 +347,7 @@ class TestParseTime:
 # ---------------------------------------------------------------------------
 # undo
 # ---------------------------------------------------------------------------
+
 
 class TestUndo:
     @pytest.mark.asyncio
@@ -327,19 +375,22 @@ class TestUndo:
 # get_contacts
 # ---------------------------------------------------------------------------
 
+
 class TestGetContacts:
     @pytest.mark.asyncio
     async def test_multiple(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "contacts": {
-                "contact": [
-                    {"id": "1", "fullname": "Alice", "username": "alice"},
-                    {"id": "2", "fullname": "Bob", "username": "bob"},
-                ],
-            },
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "contacts": {
+                    "contact": [
+                        {"id": "1", "fullname": "Alice", "username": "alice"},
+                        {"id": "2", "fullname": "Bob", "username": "bob"},
+                    ],
+                },
+            }
+        )
 
         result = await tools["get_contacts"](FakeContext())
         assert result["data"]["count"] == 2
@@ -348,10 +399,12 @@ class TestGetContacts:
     @pytest.mark.asyncio
     async def test_single_as_dict(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "contacts": {"contact": {"id": "1", "fullname": "Solo", "username": "solo"}},
-        })
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "contacts": {"contact": {"id": "1", "fullname": "Solo", "username": "solo"}},
+            }
+        )
 
         result = await tools["get_contacts"](FakeContext())
         assert result["data"]["count"] == 1
@@ -369,22 +422,25 @@ class TestGetContacts:
 # get_groups
 # ---------------------------------------------------------------------------
 
+
 class TestGetGroups:
     @pytest.mark.asyncio
     async def test_group_with_members(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "groups": {
-                "group": {
-                    "id": "g1",
-                    "name": "Team",
-                    "contacts": {
-                        "contact": [{"id": "1"}, {"id": "2"}, {"id": "3"}],
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "groups": {
+                    "group": {
+                        "id": "g1",
+                        "name": "Team",
+                        "contacts": {
+                            "contact": [{"id": "1"}, {"id": "2"}, {"id": "3"}],
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
 
         result = await tools["get_groups"](FakeContext())
         assert result["data"]["count"] == 1
@@ -393,16 +449,18 @@ class TestGetGroups:
     @pytest.mark.asyncio
     async def test_group_single_contact_as_dict(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={
-            "stat": "ok",
-            "groups": {
-                "group": {
-                    "id": "g1",
-                    "name": "Duo",
-                    "contacts": {"contact": {"id": "1"}},
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "groups": {
+                    "group": {
+                        "id": "g1",
+                        "name": "Duo",
+                        "contacts": {"contact": {"id": "1"}},
+                    },
                 },
-            },
-        })
+            }
+        )
 
         result = await tools["get_groups"](FakeContext())
         assert result["data"]["groups"][0]["member_count"] == 1
@@ -420,6 +478,7 @@ class TestGetGroups:
 # batch_undo
 # ---------------------------------------------------------------------------
 
+
 class TestBatchUndo:
     @pytest.mark.asyncio
     async def test_undo_multiple(self, util_tools):
@@ -430,9 +489,9 @@ class TestBatchUndo:
             TransactionEntry("tx3", "delete_task", True, summary="Third"),
         ]
         client.get_all_transactions = MagicMock(return_value=entries)
-        client.get_transaction = MagicMock(side_effect=lambda tid: next(
-            (e for e in entries if e.transaction_id == tid), None
-        ))
+        client.get_transaction = MagicMock(
+            side_effect=lambda tid: next((e for e in entries if e.transaction_id == tid), None)
+        )
         client.call = AsyncMock(return_value={"stat": "ok"})
         type(client).timeline_id = PropertyMock(return_value="tl1")
 
@@ -458,9 +517,9 @@ class TestBatchUndo:
         entry_done = TransactionEntry("tx1", "add_task", True, undone=True)
         entry_pending = TransactionEntry("tx2", "complete_task", True)
         client.get_all_transactions = MagicMock(return_value=[entry_done, entry_pending])
-        client.get_transaction = MagicMock(side_effect=lambda tid: {
-            "tx1": entry_done, "tx2": entry_pending
-        }.get(tid))
+        client.get_transaction = MagicMock(
+            side_effect=lambda tid: {"tx1": entry_done, "tx2": entry_pending}.get(tid)
+        )
         client.call = AsyncMock(return_value={"stat": "ok"})
         type(client).timeline_id = PropertyMock(return_value="tl1")
 
@@ -477,18 +536,21 @@ class TestBatchUndo:
             TransactionEntry("tx3", "delete_task", True),
         ]
         client.get_all_transactions = MagicMock(return_value=entries)
-        client.get_transaction = MagicMock(side_effect=lambda tid: next(
-            (e for e in entries if e.transaction_id == tid), None
-        ))
+        client.get_transaction = MagicMock(
+            side_effect=lambda tid: next((e for e in entries if e.transaction_id == tid), None)
+        )
         # tx3 succeeds, tx2 fails
-        client.call = AsyncMock(side_effect=[
-            {"stat": "ok"},  # tx3
-            Exception("Server error"),  # tx2
-        ])
+        client.call = AsyncMock(
+            side_effect=[
+                {"stat": "ok"},  # tx3
+                Exception("Server error"),  # tx2
+            ]
+        )
         type(client).timeline_id = PropertyMock(return_value="tl1")
 
         result = await tools["batch_undo"](
-            FakeContext(), transaction_ids=["tx1", "tx2", "tx3"],
+            FakeContext(),
+            transaction_ids=["tx1", "tx2", "tx3"],
         )
         assert result["data"]["undone"] == ["tx3"]
         assert result["data"]["failed"]["transaction_id"] == "tx2"
@@ -507,13 +569,15 @@ class TestBatchUndo:
             TransactionEntry("tx3", "c", True),
         ]
         client.get_all_transactions = MagicMock(return_value=entries)
-        client.get_transaction = MagicMock(side_effect=lambda tid: next(
-            (e for e in entries if e.transaction_id == tid), None
-        ))
+        client.get_transaction = MagicMock(
+            side_effect=lambda tid: next((e for e in entries if e.transaction_id == tid), None)
+        )
         call_order = []
+
         async def track_call(*args, **kwargs):
             call_order.append(kwargs.get("transaction_id"))
             return {"stat": "ok"}
+
         client.call = AsyncMock(side_effect=track_call)
         type(client).timeline_id = PropertyMock(return_value="tl1")
 
@@ -537,6 +601,7 @@ class TestBatchUndo:
 # ---------------------------------------------------------------------------
 # get_timeline_info
 # ---------------------------------------------------------------------------
+
 
 class TestGetTimelineInfo:
     @pytest.mark.asyncio
@@ -577,6 +642,7 @@ class TestGetTimelineInfo:
 # get_rate_limit_status
 # ---------------------------------------------------------------------------
 
+
 class TestGetRateLimitStatus:
     @pytest.mark.asyncio
     async def test_returns_all_fields(self, util_tools):
@@ -611,6 +677,7 @@ class TestGetRateLimitStatus:
 # get_task_url
 # ---------------------------------------------------------------------------
 
+
 class TestGetTaskUrl:
     @pytest.mark.asyncio
     async def test_by_name_with_hierarchy(self, util_tools):
@@ -618,36 +685,108 @@ class TestGetTaskUrl:
         tools, client = util_tools
 
         # find_task fetches all incomplete tasks
-        all_tasks_response = {"tasks": {"list": [
-            {"id": "1", "taskseries": [
-                {"id": "ts_100", "name": "Focus area", "parent_task_id": "",
-                 "tags": [], "notes": [], "url": "", "location_id": "",
-                 "created": "", "modified": "2026-01-01T00:00:00Z",
-                 "task": [{"id": "100", "due": "", "has_due_time": "0",
-                           "start": "", "has_start_time": "0",
-                           "completed": "", "deleted": "", "priority": "N",
-                           "postponed": "0", "estimate": ""}]},
-                {"id": "ts_200", "name": "Project X", "parent_task_id": "100",
-                 "tags": [], "notes": [], "url": "", "location_id": "",
-                 "created": "", "modified": "2026-01-02T00:00:00Z",
-                 "task": [{"id": "200", "due": "", "has_due_time": "0",
-                           "start": "", "has_start_time": "0",
-                           "completed": "", "deleted": "", "priority": "N",
-                           "postponed": "0", "estimate": ""}]},
-                {"id": "ts_300", "name": "Do the thing", "parent_task_id": "200",
-                 "tags": [], "notes": [], "url": "", "location_id": "",
-                 "created": "", "modified": "2026-01-03T00:00:00Z",
-                 "task": [{"id": "300", "due": "", "has_due_time": "0",
-                           "start": "", "has_start_time": "0",
-                           "completed": "", "deleted": "", "priority": "N",
-                           "postponed": "0", "estimate": ""}]},
-            ]},
-        ]}}
+        all_tasks_response = {
+            "tasks": {
+                "list": [
+                    {
+                        "id": "1",
+                        "taskseries": [
+                            {
+                                "id": "ts_100",
+                                "name": "Focus area",
+                                "parent_task_id": "",
+                                "tags": [],
+                                "notes": [],
+                                "url": "",
+                                "location_id": "",
+                                "created": "",
+                                "modified": "2026-01-01T00:00:00Z",
+                                "task": [
+                                    {
+                                        "id": "100",
+                                        "due": "",
+                                        "has_due_time": "0",
+                                        "start": "",
+                                        "has_start_time": "0",
+                                        "completed": "",
+                                        "deleted": "",
+                                        "priority": "N",
+                                        "postponed": "0",
+                                        "estimate": "",
+                                    }
+                                ],
+                            },
+                            {
+                                "id": "ts_200",
+                                "name": "Project X",
+                                "parent_task_id": "100",
+                                "tags": [],
+                                "notes": [],
+                                "url": "",
+                                "location_id": "",
+                                "created": "",
+                                "modified": "2026-01-02T00:00:00Z",
+                                "task": [
+                                    {
+                                        "id": "200",
+                                        "due": "",
+                                        "has_due_time": "0",
+                                        "start": "",
+                                        "has_start_time": "0",
+                                        "completed": "",
+                                        "deleted": "",
+                                        "priority": "N",
+                                        "postponed": "0",
+                                        "estimate": "",
+                                    }
+                                ],
+                            },
+                            {
+                                "id": "ts_300",
+                                "name": "Do the thing",
+                                "parent_task_id": "200",
+                                "tags": [],
+                                "notes": [],
+                                "url": "",
+                                "location_id": "",
+                                "created": "",
+                                "modified": "2026-01-03T00:00:00Z",
+                                "task": [
+                                    {
+                                        "id": "300",
+                                        "due": "",
+                                        "has_due_time": "0",
+                                        "start": "",
+                                        "has_start_time": "0",
+                                        "completed": "",
+                                        "deleted": "",
+                                        "priority": "N",
+                                        "postponed": "0",
+                                        "estimate": "",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                ]
+            }
+        }
 
-        lists_response = {"lists": {"list": [
-            {"id": "1", "name": "Processed", "deleted": "0",
-             "locked": "0", "archived": "0", "position": "0", "smart": "0"},
-        ]}}
+        lists_response = {
+            "lists": {
+                "list": [
+                    {
+                        "id": "1",
+                        "name": "Processed",
+                        "deleted": "0",
+                        "locked": "0",
+                        "archived": "0",
+                        "position": "0",
+                        "smart": "0",
+                    },
+                ]
+            }
+        }
 
         async def mock_call(method, **kwargs):
             if method == "rtm.tasks.getList":
@@ -659,7 +798,8 @@ class TestGetTaskUrl:
         client.call = AsyncMock(side_effect=mock_call)
 
         result = await tools["get_task_url"](
-            FakeContext(), task_name="Do the thing",
+            FakeContext(),
+            task_name="Do the thing",
         )
         data = result["data"]
         assert data["url"] == "https://www.rememberthemilk.com/app/#list/1/100/200/300"
@@ -674,22 +814,58 @@ class TestGetTaskUrl:
         """Explicit IDs, no parents → short URL."""
         tools, client = util_tools
 
-        task_response = {"tasks": {"list": [
-            {"id": "5", "taskseries": [
-                {"id": "ts_10", "name": "Solo", "parent_task_id": "",
-                 "tags": [], "notes": [], "url": "", "location_id": "",
-                 "created": "", "modified": "",
-                 "task": [{"id": "10", "due": "", "has_due_time": "0",
-                           "start": "", "has_start_time": "0",
-                           "completed": "", "deleted": "", "priority": "N",
-                           "postponed": "0", "estimate": ""}]},
-            ]},
-        ]}}
+        task_response = {
+            "tasks": {
+                "list": [
+                    {
+                        "id": "5",
+                        "taskseries": [
+                            {
+                                "id": "ts_10",
+                                "name": "Solo",
+                                "parent_task_id": "",
+                                "tags": [],
+                                "notes": [],
+                                "url": "",
+                                "location_id": "",
+                                "created": "",
+                                "modified": "",
+                                "task": [
+                                    {
+                                        "id": "10",
+                                        "due": "",
+                                        "has_due_time": "0",
+                                        "start": "",
+                                        "has_start_time": "0",
+                                        "completed": "",
+                                        "deleted": "",
+                                        "priority": "N",
+                                        "postponed": "0",
+                                        "estimate": "",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                ]
+            }
+        }
 
-        lists_response = {"lists": {"list": [
-            {"id": "5", "name": "Inbox", "deleted": "0",
-             "locked": "1", "archived": "0", "position": "0", "smart": "0"},
-        ]}}
+        lists_response = {
+            "lists": {
+                "list": [
+                    {
+                        "id": "5",
+                        "name": "Inbox",
+                        "deleted": "0",
+                        "locked": "1",
+                        "archived": "0",
+                        "position": "0",
+                        "smart": "0",
+                    },
+                ]
+            }
+        }
 
         async def mock_call(method, **kwargs):
             if method == "rtm.tasks.getList":
@@ -702,7 +878,9 @@ class TestGetTaskUrl:
 
         result = await tools["get_task_url"](
             FakeContext(),
-            task_id="10", taskseries_id="ts_10", list_id="5",
+            task_id="10",
+            taskseries_id="ts_10",
+            list_id="5",
         )
         data = result["data"]
         assert data["url"] == "https://www.rememberthemilk.com/app/#list/5/10"
@@ -715,7 +893,8 @@ class TestGetTaskUrl:
         client.call = AsyncMock(return_value={"tasks": {"list": []}})
 
         result = await tools["get_task_url"](
-            FakeContext(), task_name="nonexistent",
+            FakeContext(),
+            task_name="nonexistent",
         )
         assert "error" in result["data"]
 
@@ -724,17 +903,32 @@ class TestGetTaskUrl:
 # get_list_url
 # ---------------------------------------------------------------------------
 
+
 class TestGetListUrl:
     @pytest.mark.asyncio
     async def test_by_name(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={"lists": {"list": [
-            {"id": "42", "name": "Processed", "deleted": "0",
-             "locked": "0", "archived": "0", "position": "0", "smart": "0"},
-        ]}})
+        client.call = AsyncMock(
+            return_value={
+                "lists": {
+                    "list": [
+                        {
+                            "id": "42",
+                            "name": "Processed",
+                            "deleted": "0",
+                            "locked": "0",
+                            "archived": "0",
+                            "position": "0",
+                            "smart": "0",
+                        },
+                    ]
+                }
+            }
+        )
 
         result = await tools["get_list_url"](
-            FakeContext(), list_name="Processed",
+            FakeContext(),
+            list_name="Processed",
         )
         data = result["data"]
         assert data["url"] == "https://www.rememberthemilk.com/app/#list/42"
@@ -744,13 +938,27 @@ class TestGetListUrl:
     @pytest.mark.asyncio
     async def test_by_id(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={"lists": {"list": [
-            {"id": "42", "name": "Processed", "deleted": "0",
-             "locked": "0", "archived": "0", "position": "0", "smart": "0"},
-        ]}})
+        client.call = AsyncMock(
+            return_value={
+                "lists": {
+                    "list": [
+                        {
+                            "id": "42",
+                            "name": "Processed",
+                            "deleted": "0",
+                            "locked": "0",
+                            "archived": "0",
+                            "position": "0",
+                            "smart": "0",
+                        },
+                    ]
+                }
+            }
+        )
 
         result = await tools["get_list_url"](
-            FakeContext(), list_id="42",
+            FakeContext(),
+            list_id="42",
         )
         data = result["data"]
         assert data["url"] == "https://www.rememberthemilk.com/app/#list/42"
@@ -759,13 +967,27 @@ class TestGetListUrl:
     @pytest.mark.asyncio
     async def test_list_not_found(self, util_tools):
         tools, client = util_tools
-        client.call = AsyncMock(return_value={"lists": {"list": [
-            {"id": "1", "name": "Inbox", "deleted": "0",
-             "locked": "1", "archived": "0", "position": "0", "smart": "0"},
-        ]}})
+        client.call = AsyncMock(
+            return_value={
+                "lists": {
+                    "list": [
+                        {
+                            "id": "1",
+                            "name": "Inbox",
+                            "deleted": "0",
+                            "locked": "1",
+                            "archived": "0",
+                            "position": "0",
+                            "smart": "0",
+                        },
+                    ]
+                }
+            }
+        )
 
         result = await tools["get_list_url"](
-            FakeContext(), list_name="NonExistent",
+            FakeContext(),
+            list_name="NonExistent",
         )
         assert "error" in result["data"]
 

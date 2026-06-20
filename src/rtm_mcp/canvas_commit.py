@@ -16,8 +16,15 @@ from typing import Any
 # Workflow-state tag per add `type` (canvas grammar → RTM workflow tag).
 TYPE_TAG = {"action": "action", "waiting_for": "waiting_for", "calendar": "calendar_entry"}
 CONTEXT_TAGS = frozenset({"using_device", "location_office", "location_home", "location_errand"})
-COMMS_TAGS = frozenset({"conversation_messenger", "conversation_email", "conversation_phone_call",
-                        "conversation_video_call", "conversation_f2f"})
+COMMS_TAGS = frozenset(
+    {
+        "conversation_messenger",
+        "conversation_email",
+        "conversation_phone_call",
+        "conversation_video_call",
+        "conversation_f2f",
+    }
+)
 AI_CONVERSATION = "ai_conversation"
 AI_PROGRESS = "ai_progress_requested"
 AI_DEFERRED = "ai_deferred_pending_unblock"
@@ -27,8 +34,7 @@ VALID_TYPES = frozenset(TYPE_TAG)
 VALID_EXECUTE = frozenset({"now", "later", "quick"})
 
 
-def classifiers_to_tags(item_type: str | None,
-                        classifiers: dict[str, Any] | None) -> list[str]:
+def classifiers_to_tags(item_type: str | None, classifiers: dict[str, Any] | None) -> list[str]:
     """Closed map: an add's type + classifiers → its canonical tag list (deduped, order-stable).
 
     Priority is NOT a tag (set via set_task_priority) and is excluded. Unknown type / non-canonical
@@ -82,8 +88,14 @@ def collect_commit_tags(ops: dict[str, Any]) -> set[str]:
     return tags
 
 
-def validate_commit(ops: dict[str, Any], plan_ids: set[str], project_id: str, *,
-                    processed_list_ok: bool, confirm_destructive: bool) -> dict[str, Any]:
+def validate_commit(
+    ops: dict[str, Any],
+    plan_ids: set[str],
+    project_id: str,
+    *,
+    processed_list_ok: bool,
+    confirm_destructive: bool,
+) -> dict[str, Any]:
     """Pure rejection collector — run BEFORE any write. Returns {"rejections": [...]}.
 
     Rejection reasons: `cross_project` (a referenced id is not a child of project_id),
@@ -96,8 +108,14 @@ def validate_commit(ops: dict[str, Any], plan_ids: set[str], project_id: str, *,
     def _check_ids(id_iter: Any, op_label: str) -> None:
         for rid in id_iter:
             if rid not in plan_ids:
-                rejections.append({"reason": "cross_project", "op": op_label, "id": rid,
-                                   "detail": f"id {rid} is not a child of project {project_id}"})
+                rejections.append(
+                    {
+                        "reason": "cross_project",
+                        "op": op_label,
+                        "id": rid,
+                        "detail": f"id {rid} is not a child of project {project_id}",
+                    }
+                )
 
     _check_ids((ops.get("edits") or {}).keys(), "edits")
     _check_ids(ops.get("completes") or [], "completes")
@@ -109,24 +127,45 @@ def validate_commit(ops: dict[str, Any], plan_ids: set[str], project_id: str, *,
     completes = ops.get("completes") or []
     removes = ops.get("removes") or []
     if (completes or removes) and not confirm_destructive:
-        rejections.append({"reason": "destructive_unconfirmed",
-                           "detail": "completes/removes require confirm_destructive=true",
-                           "completes": list(completes), "removes": list(removes)})
+        rejections.append(
+            {
+                "reason": "destructive_unconfirmed",
+                "detail": "completes/removes require confirm_destructive=true",
+                "completes": list(completes),
+                "removes": list(removes),
+            }
+        )
 
     for i, add in enumerate(ops.get("adds") or []):
         t = (add or {}).get("type")
         if t not in VALID_TYPES:
-            rejections.append({"reason": "unknown_add_type", "index": i, "type": t,
-                               "detail": f"add type {t!r} not in {sorted(VALID_TYPES)}"})
+            rejections.append(
+                {
+                    "reason": "unknown_add_type",
+                    "index": i,
+                    "type": t,
+                    "detail": f"add type {t!r} not in {sorted(VALID_TYPES)}",
+                }
+            )
 
     for rid, val in (ops.get("execute") or {}).items():
         if val not in VALID_EXECUTE:
-            rejections.append({"reason": "invalid_execute", "id": rid, "value": val,
-                               "detail": f"execute {val!r} not in {sorted(VALID_EXECUTE)}"})
+            rejections.append(
+                {
+                    "reason": "invalid_execute",
+                    "id": rid,
+                    "value": val,
+                    "detail": f"execute {val!r} not in {sorted(VALID_EXECUTE)}",
+                }
+            )
 
     # The creation target only matters when there are items to create.
     if (ops.get("adds")) and not processed_list_ok:
-        rejections.append({"reason": "smart_list_target",
-                           "detail": "target list 'Processed' is missing or is a smart list"})
+        rejections.append(
+            {
+                "reason": "smart_list_target",
+                "detail": "target list 'Processed' is missing or is a smart list",
+            }
+        )
 
     return {"rejections": rejections}

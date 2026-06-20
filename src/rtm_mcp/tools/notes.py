@@ -69,7 +69,8 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         note = result.get("note", {})
 
         return record_and_build_response(
-            client, result,
+            client,
+            result,
             data={
                 "note": {
                     "id": note.get("id"),
@@ -130,7 +131,8 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         note = result.get("note", {})
 
         return record_and_build_response(
-            client, result,
+            client,
+            result,
             data={
                 "note": {
                     "id": note.get("id"),
@@ -182,7 +184,8 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         )
 
         return record_and_build_response(
-            client, result,
+            client,
+            result,
             data={"message": "Note deleted"},
             tool_name="delete_note",
         )
@@ -217,11 +220,17 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         if task_name and not task_id:
             task = await find_task(client, task_name)
             if not task:
-                return build_response(data={"error": f"Task '{task_name}' not found. Use list_tasks to find the correct name or IDs."})
+                return build_response(
+                    data={
+                        "error": f"Task '{task_name}' not found. Use list_tasks to find the correct name or IDs."
+                    }
+                )
         else:
             if not all([task_id, taskseries_id, list_id]):
                 return build_response(
-                    data={"error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."},
+                    data={
+                        "error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."
+                    },
                 )
             # Fetch the specific task
             result = await client.call("rtm.tasks.getList", list_id=list_id)
@@ -233,19 +242,25 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
                     break
 
             if not task:
-                return build_response(data={"error": "Task not found with provided IDs. Use list_tasks to verify task_id, taskseries_id, and list_id."})
+                return build_response(
+                    data={
+                        "error": "Task not found with provided IDs. Use list_tasks to verify task_id, taskseries_id, and list_id."
+                    }
+                )
 
         notes = ensure_list(task.get("notes", []))
 
         formatted_notes = []
         for note in notes:
-            formatted_notes.append({
-                "id": note.get("id"),
-                "title": note.get("title", ""),
-                "body": extract_note_body(note),
-                "created": note.get("created"),
-                "modified": note.get("modified"),
-            })
+            formatted_notes.append(
+                {
+                    "id": note.get("id"),
+                    "title": note.get("title", ""),
+                    "body": extract_note_body(note),
+                    "created": note.get("created"),
+                    "modified": note.get("modified"),
+                }
+            )
 
         return build_response(
             data={

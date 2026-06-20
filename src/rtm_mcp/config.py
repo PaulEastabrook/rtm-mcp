@@ -47,15 +47,29 @@ class RTMConfig(BaseSettings):
 
     # Rate limiting configuration
     bucket_capacity: int = Field(default=3, description="Token bucket capacity (max burst)")
-    safety_margin: float = Field(default=0.1, description="Safety margin (0.0-1.0) reducing effective rate from 1 RPS")
-    max_retries: int = Field(default=2, description="Max retries on HTTP 503 (total attempts = max_retries + 1)")
-    retry_delay_first: float = Field(default=2.0, description="Seconds to pause before first 503 retry")
-    retry_delay_subsequent: float = Field(default=5.0, description="Seconds to pause before 2nd+ 503 retry")
+    safety_margin: float = Field(
+        default=0.1, description="Safety margin (0.0-1.0) reducing effective rate from 1 RPS"
+    )
+    max_retries: int = Field(
+        default=2, description="Max retries on HTTP 503 (total attempts = max_retries + 1)"
+    )
+    retry_delay_first: float = Field(
+        default=2.0, description="Seconds to pause before first 503 retry"
+    )
+    retry_delay_subsequent: float = Field(
+        default=5.0, description="Seconds to pause before 2nd+ 503 retry"
+    )
 
     # Connection retry configuration
-    conn_max_retries: int = Field(default=3, description="Max retries on transient connection errors")
-    conn_retry_delay_first: float = Field(default=1.0, description="Seconds before first connection retry")
-    conn_retry_delay_subsequent: float = Field(default=3.0, description="Seconds before 2nd+ connection retry")
+    conn_max_retries: int = Field(
+        default=3, description="Max retries on transient connection errors"
+    )
+    conn_retry_delay_first: float = Field(
+        default=1.0, description="Seconds before first connection retry"
+    )
+    conn_retry_delay_subsequent: float = Field(
+        default=3.0, description="Seconds before 2nd+ connection retry"
+    )
 
     # Strict-tag mode (existence gate)
     strict_tags: bool = Field(
@@ -81,9 +95,7 @@ class RTMConfig(BaseSettings):
         elif profile == "production":
             return cls._load_production()
         else:
-            raise ValueError(
-                f"RTM_PROFILE must be 'production' or 'sandpit', got '{profile}'"
-            )
+            raise ValueError(f"RTM_PROFILE must be 'production' or 'sandpit', got '{profile}'")
 
     @classmethod
     def _load_production(cls) -> "RTMConfig":

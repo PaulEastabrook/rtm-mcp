@@ -6,9 +6,17 @@ HEADER = {"project": {"id": "P"}}
 
 
 def _row(rid, tags=None, deps=None, completed=0, due="", start="", estimate="", name=None):
-    return {"id": rid, "tags": tags or ["action"], "deps": deps or [],
-            "completed": completed, "due": due, "start": start, "estimate": estimate,
-            "name": name or rid, "notes": []}
+    return {
+        "id": rid,
+        "tags": tags or ["action"],
+        "deps": deps or [],
+        "completed": completed,
+        "due": due,
+        "start": start,
+        "estimate": estimate,
+        "name": name or rid,
+        "notes": [],
+    }
 
 
 class TestEdgesAndBlocked:
@@ -41,7 +49,7 @@ class TestQuick:
     def test_blocked_quick_is_not_quick(self):
         rows = [_row("a"), _row("q", tags=["action", "quick_win"], deps=["a"])]
         g = build_graph(HEADER, rows)
-        assert g["judgement"]["q"]["quick"] is False       # blocked → not quick
+        assert g["judgement"]["q"]["quick"] is False  # blocked → not quick
         assert g["judgement"]["q"]["quick_ready"] is False
 
     def test_waiting_for_never_quick(self):
@@ -71,8 +79,8 @@ class TestCyclesAndFingerprint:
     def test_cycle_detected_and_order_still_complete(self):
         rows = [_row("c1", deps=["c2"]), _row("c2", deps=["c1"])]
         g = build_graph(HEADER, rows)
-        assert g["cycles"]                       # advisory cycle reported
-        assert set(g["order"]) == {"c1", "c2"}   # order still renders everything
+        assert g["cycles"]  # advisory cycle reported
+        assert set(g["order"]) == {"c1", "c2"}  # order still renders everything
 
     def test_fingerprint_stable_and_change_sensitive(self):
         rows = [_row("a", name="Alpha")]

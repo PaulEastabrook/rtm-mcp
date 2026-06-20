@@ -54,7 +54,9 @@ def _note_objs(notes: list[dict[str, Any]]) -> list[dict[str, str]]:
     out = []
     for n in notes:
         body = extract_note_body(n)
-        out.append({"date": _norm_date(n.get("created")), "summary": _first_line(body), "body": body})
+        out.append(
+            {"date": _norm_date(n.get("created")), "summary": _first_line(body), "body": body}
+        )
     return out
 
 
@@ -67,11 +69,11 @@ def _extract_deps_and_files(notes: list[dict[str, Any]]) -> tuple[list[str], lis
         body = extract_note_body(n) or ""
         if "DEPENDS-ON" in body:
             si = body.find("Status:")
-            status = body[si + 7:si + 40] if si >= 0 else ""
+            status = body[si + 7 : si + 40] if si >= 0 else ""
             if "resolved" not in status and "obsolete" not in status:
                 ti = body.find("task_id:")
                 if ti >= 0:
-                    m = _DIGITS.search(body[ti + 8:ti + 44])
+                    m = _DIGITS.search(body[ti + 8 : ti + 44])
                     if m:
                         deps.append(m.group(0))
         for line in body.split("\n"):
@@ -82,15 +84,20 @@ def _extract_deps_and_files(notes: list[dict[str, Any]]) -> tuple[list[str], lis
             for marker, cut in (("Agent Memory/", 13), ("AI Memory/", 10)):
                 idx = path.find(marker)
                 if idx >= 0:
-                    path = path[idx + cut:]
+                    path = path[idx + cut :]
                     break
             path = path.strip().lstrip("-/ ").strip()
             base = path.rsplit("/", 1)[-1]
             low = path.lower()
             filed = "output/" in low or "reference/" in low
             transient = "local-agent-mode-sessions" in path or "Library/Application" in path
-            if (filed and not transient and not base.startswith("_")
-                    and base not in seen and len(files) < _FILES_PER_ROW):
+            if (
+                filed
+                and not transient
+                and not base.startswith("_")
+                and base not in seen
+                and len(files) < _FILES_PER_ROW
+            ):
                 seen.add(base)
                 files.append(path)
     return deps, files
@@ -133,7 +140,8 @@ def resolve_project(parsed: list[dict[str, Any]], project_name: str) -> dict[str
     """
     name_lower = project_name.strip().lower()
     projects = [
-        t for t in parsed
+        t
+        for t in parsed
         if _PROJECT_TAG in (t.get("tags") or [])
         and _TEST_TAG not in (t.get("tags") or [])
         and not t.get("completed")
@@ -142,13 +150,17 @@ def resolve_project(parsed: list[dict[str, Any]], project_name: str) -> dict[str
     matches = exact or [t for t in projects if name_lower in (t.get("name") or "").lower()]
 
     if not matches:
-        return {"error": f"No incomplete project named '{project_name}' found. "
-                "Pass project_id, or check the name with list_tasks(filter='tag:project')."}
+        return {
+            "error": f"No incomplete project named '{project_name}' found. "
+            "Pass project_id, or check the name with list_tasks(filter='tag:project')."
+        }
     if len(matches) > 1:
-        return {"candidates": [
-            {"id": t["id"], "name": t.get("name") or "", "list_id": t.get("list_id") or ""}
-            for t in matches
-        ]}
+        return {
+            "candidates": [
+                {"id": t["id"], "name": t.get("name") or "", "list_id": t.get("list_id") or ""}
+                for t in matches
+            ]
+        }
     return {"project": matches[0]}
 
 
@@ -158,7 +170,8 @@ def build_envelope(parsed: list[dict[str, Any]], project_id: str) -> dict[str, A
     by_id = {r["id"]: r for r in parsed}
     proj = by_id.get(project_id)
     children = [
-        r for r in parsed
+        r
+        for r in parsed
         if str(r.get("parent_task_id") or "") == project_id and not r.get("deleted")
     ]
 
@@ -189,23 +202,25 @@ def build_envelope(parsed: list[dict[str, Any]], project_id: str) -> dict[str, A
     for c in children:
         notes_full = c.get("notes", [])
         deps, files = _extract_deps_and_files(notes_full)
-        rows.append({
-            "type": "row",
-            "id": c["id"],
-            "name": c.get("name") or "",
-            "priority": _PRIORITY_WORD.get(str(c.get("priority", "N")), "NoPriority"),
-            "completed": 1 if c.get("completed") else 0,
-            "completedDate": _norm_date(c.get("completed")),
-            "due": _norm_date(c.get("due")),
-            "tags": c.get("tags", []),
-            "permalink": _permalink(c["id"], by_id, c.get("list_id") or proj_list_id),
-            "deps": deps,
-            "files": files,
-            "noteCount": len(notes_full),
-            "notes": _note_objs(notes_full),
-            "estimate": c.get("estimate") or "",
-            "start": _norm_date(c.get("start")),
-            "url": c.get("url") or "",
-        })
+        rows.append(
+            {
+                "type": "row",
+                "id": c["id"],
+                "name": c.get("name") or "",
+                "priority": _PRIORITY_WORD.get(str(c.get("priority", "N")), "NoPriority"),
+                "completed": 1 if c.get("completed") else 0,
+                "completedDate": _norm_date(c.get("completed")),
+                "due": _norm_date(c.get("due")),
+                "tags": c.get("tags", []),
+                "permalink": _permalink(c["id"], by_id, c.get("list_id") or proj_list_id),
+                "deps": deps,
+                "files": files,
+                "noteCount": len(notes_full),
+                "notes": _note_objs(notes_full),
+                "estimate": c.get("estimate") or "",
+                "start": _norm_date(c.get("start")),
+                "url": c.get("url") or "",
+            }
+        )
 
     return {"header": header, "rows": rows}

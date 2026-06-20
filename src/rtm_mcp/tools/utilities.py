@@ -129,14 +129,16 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
         locations = []
         for loc in locations_data:
-            locations.append({
-                "id": loc.get("id"),
-                "name": loc.get("name"),
-                "latitude": float(loc.get("latitude", 0)),
-                "longitude": float(loc.get("longitude", 0)),
-                "zoom": int(loc.get("zoom", 0)) if loc.get("zoom") else None,
-                "address": loc.get("address"),
-            })
+            locations.append(
+                {
+                    "id": loc.get("id"),
+                    "name": loc.get("name"),
+                    "latitude": float(loc.get("latitude", 0)),
+                    "longitude": float(loc.get("longitude", 0)),
+                    "zoom": int(loc.get("zoom", 0)) if loc.get("zoom") else None,
+                    "address": loc.get("address"),
+                }
+            )
 
         return build_response(
             data={
@@ -164,7 +166,9 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         settings = result.get("settings", {})
 
         # Format settings nicely
-        date_format = "European (DD/MM/YY)" if settings.get("dateformat") == "0" else "American (MM/DD/YY)"
+        date_format = (
+            "European (DD/MM/YY)" if settings.get("dateformat") == "0" else "American (MM/DD/YY)"
+        )
         time_format = "12-hour" if settings.get("timeformat") == "0" else "24-hour"
 
         return build_response(
@@ -409,11 +413,13 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
         contacts = []
         for contact in contacts_data:
-            contacts.append({
-                "id": contact.get("id"),
-                "fullname": contact.get("fullname"),
-                "username": contact.get("username"),
-            })
+            contacts.append(
+                {
+                    "id": contact.get("id"),
+                    "fullname": contact.get("fullname"),
+                    "username": contact.get("username"),
+                }
+            )
 
         return build_response(
             data={
@@ -442,11 +448,13 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         for group in groups_data:
             contacts = ensure_list(group.get("contacts", {}).get("contact", []))
 
-            groups.append({
-                "id": group.get("id"),
-                "name": group.get("name"),
-                "member_count": len(contacts),
-            })
+            groups.append(
+                {
+                    "id": group.get("id"),
+                    "name": group.get("name"),
+                    "member_count": len(contacts),
+                }
+            )
 
         return build_response(
             data={
@@ -538,14 +546,21 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(
-            client, task_name, task_id, taskseries_id, list_id,
+            client,
+            task_name,
+            task_id,
+            taskseries_id,
+            list_id,
             include_completed=True,
         )
         if "error" in ids:
             return build_response(data=ids)
 
         result = await resolve_task_url(
-            client, ids["task_id"], ids["taskseries_id"], ids["list_id"],
+            client,
+            ids["task_id"],
+            ids["taskseries_id"],
+            ids["list_id"],
         )
         return build_response(data=result)
 
@@ -597,14 +612,18 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
                     break
 
         if not resolved_id:
-            return build_response(data={
-                "error": "Provide either list_name or list_id. "
-                "Use get_lists to see available list names."
-            })
+            return build_response(
+                data={
+                    "error": "Provide either list_name or list_id. "
+                    "Use get_lists to see available list names."
+                }
+            )
 
         url = build_list_url(resolved_id)
-        return build_response(data={
-            "url": url,
-            "list_name": resolved_name,
-            "list_id": resolved_id,
-        })
+        return build_response(
+            data={
+                "url": url,
+                "list_name": resolved_name,
+                "list_id": resolved_id,
+            }
+        )

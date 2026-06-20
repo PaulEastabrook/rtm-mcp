@@ -20,18 +20,33 @@ from typing import Any
 
 _PRIORITY = {"High": "1", "Medium": "2", "Low": "3", "NoPriority": "", "": ""}
 _CONTEXT_TAGS = ("using_device", "location_office", "location_home", "location_errand")
-_COMMS_TAGS = ("conversation_messenger", "conversation_email", "conversation_phone_call",
-               "conversation_video_call", "conversation_f2f")   # canonical tag is video_call (tag-taxonomy)
+_COMMS_TAGS = (
+    "conversation_messenger",
+    "conversation_email",
+    "conversation_phone_call",
+    "conversation_video_call",
+    "conversation_f2f",
+)  # canonical tag is video_call (tag-taxonomy)
 _DEFAULT_CONTEXT = "using_device"
 
 # files[]: a raw envelope path is a genuine filed artefact only if it sits under a
 # life-context / general / memory root AND inside an output|reference folder. This rejects
 # transient Cowork-session scratch paths the script may have swept up.
 _FILED_ROOTS = ("personal/", "work/", "leanworking/", "general/", "memory/")
-_EXT_MAP = {"docx": "docx", "doc": "docx", "xlsx": "xls", "xls": "xls",
-            "pptx": "ppt", "ppt": "ppt", "pdf": "pdf", "md": "md", "csv": "md", "txt": "md"}
+_EXT_MAP = {
+    "docx": "docx",
+    "doc": "docx",
+    "xlsx": "xls",
+    "xls": "xls",
+    "pptx": "ppt",
+    "ppt": "ppt",
+    "pdf": "pdf",
+    "md": "md",
+    "csv": "md",
+    "txt": "md",
+}
 
-_TYPE_DASH = re.compile(r"—\s*([A-Z][A-Z0-9 _\-]+?)\s*—")   # "— CONTEXT —" / "— AI ANALYSIS —"
+_TYPE_DASH = re.compile(r"—\s*([A-Z][A-Z0-9 _\-]+?)\s*—")  # "— CONTEXT —" / "— AI ANALYSIS —"
 _TYPE_COLON = re.compile(r"^\d{4}-\d{2}-\d{2}\s+([A-Z][A-Z0-9_\-]+):")  # "2026-04-06 OUTPUT:"
 
 
@@ -41,7 +56,9 @@ def parse_file(path: str | None) -> dict[str, str] | None:
     if not path:
         return None
     low = path.lower()
-    if not (any(path.startswith(r) for r in _FILED_ROOTS) and ("/output" in low or "/reference" in low)):
+    if not (
+        any(path.startswith(r) for r in _FILED_ROOTS) and ("/output" in low or "/reference" in low)
+    ):
         return None
     base = path.rsplit("/", 1)[-1]
     ext = base.rsplit(".", 1)[-1].lower() if "." in base else ""
@@ -105,7 +122,7 @@ def parse_note(note: dict[str, Any]) -> dict[str, Any]:
             gist = summary.split(":", 1)[1].strip()
     out: dict[str, Any] = {"t": typ, "d": date, "s": gist or summary}
     if body.strip() and body.strip() != (gist or summary).strip():
-        out["b"] = body   # full body — multi-line or longer-than-summary; drives the expand
+        out["b"] = body  # full body — multi-line or longer-than-summary; drives the expand
     return out
 
 
@@ -159,12 +176,19 @@ def _file_from_index(entry: dict[str, Any]) -> dict[str, Any]:
     """A file-store outputs-index entry -> a canvas file row (authoritative path + companion kind)."""
     ext = (entry.get("ext") or "").lower()
     kind = " · ".join(x for x in (entry.get("type"), entry.get("status")) if x) or "filed"
-    return {"n": entry.get("filename"), "ext": _EXT_MAP.get(ext, "md"),
-            "kind": kind, "path": entry.get("rel_path") or entry.get("abs_path") or entry.get("filename")}
+    return {
+        "n": entry.get("filename"),
+        "ext": _EXT_MAP.get(ext, "md"),
+        "kind": kind,
+        "path": entry.get("rel_path") or entry.get("abs_path") or entry.get("filename"),
+    }
 
 
-def build_seed(header: dict[str, Any], rows: list[dict[str, Any]],
-               outputs_index: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def build_seed(
+    header: dict[str, Any],
+    rows: list[dict[str, Any]],
+    outputs_index: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """outputs_index: optional list of file-store artefacts. When supplied, each row's note-derived
     file pointers are RESOLVED against it by filename (confirmed full path + real kind/status from
     the companion, unresolved pointers dropped). When absent (v1 — no vault), the note-scraped
@@ -190,7 +214,12 @@ def build_seed(header: dict[str, Any], rows: list[dict[str, Any]],
         seen, refs = set(), []
         for e in outputs_index:
             fn = e.get("filename")
-            if e.get("folder") == "reference" and not e.get("source_action") and fn and fn not in seen:
+            if (
+                e.get("folder") == "reference"
+                and not e.get("source_action")
+                and fn
+                and fn not in seen
+            ):
                 seen.add(fn)
                 refs.append(_file_from_index(e))
         if refs:
@@ -200,8 +229,10 @@ def build_seed(header: dict[str, Any], rows: list[dict[str, Any]],
     #    attach the artefact to THAT action, regardless of which note mentioned the path.
     #  - FALLBACK: artefacts WITHOUT a source_action are resolved via note-derived path pointers
     #    matched by basename against the index. So pre-backlink artefacts still attach.
-    idx = None          # basename → entry, only for entries WITHOUT a source_action (fallback pool)
-    by_action: dict[str, list[dict[str, Any]]] = {}      # source_action → [entries] (authoritative pool)
+    idx = None  # basename → entry, only for entries WITHOUT a source_action (fallback pool)
+    by_action: dict[
+        str, list[dict[str, Any]]
+    ] = {}  # source_action → [entries] (authoritative pool)
     if outputs_index is not None:
         idx = {}
         for e in outputs_index:
@@ -226,11 +257,11 @@ def build_seed(header: dict[str, Any], rows: list[dict[str, Any]],
         raw_files = it.pop("_files_raw", [])
         if outputs_index is not None and idx is not None:
             seen, resolved = set(), []
-            for e in by_action.get(str(it.get("id") or ""), []):    # authoritative: owns this action
+            for e in by_action.get(str(it.get("id") or ""), []):  # authoritative: owns this action
                 if e.get("filename") and e["filename"] not in seen:
                     seen.add(e["filename"])
                     resolved.append(_file_from_index(e))
-            for p in raw_files:                                      # fallback: note-scrape basename
+            for p in raw_files:  # fallback: note-scrape basename
                 base = p.rsplit("/", 1)[-1]
                 if base in idx and base not in seen:
                     seen.add(base)

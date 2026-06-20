@@ -12,11 +12,22 @@ from rtm_mcp.canvas_commit import (
 
 class TestClassifiersToTags:
     def test_full_action_mapping_excludes_priority(self):
-        tags = classifiers_to_tags("action", {"context": "using_device",
-                                              "comms": "conversation_email",
-                                              "priority": "1", "quick": True})
-        assert tags == ["action", "using_device", "conversation_email",
-                        "quick_win", AI_CONVERSATION]
+        tags = classifiers_to_tags(
+            "action",
+            {
+                "context": "using_device",
+                "comms": "conversation_email",
+                "priority": "1",
+                "quick": True,
+            },
+        )
+        assert tags == [
+            "action",
+            "using_device",
+            "conversation_email",
+            "quick_win",
+            AI_CONVERSATION,
+        ]
 
     def test_waiting_for_minimal(self):
         assert classifiers_to_tags("waiting_for", None) == ["waiting_for", AI_CONVERSATION]
@@ -39,8 +50,14 @@ class TestCollectCommitTags:
             "notes": {"z": {"type": "CONTEXT", "text": "hi"}},
         }
         tags = collect_commit_tags(ops)
-        assert {"action", "using_device", "conversation_phone_call",
-                AI_PROGRESS, AI_DEFERRED, AI_CONVERSATION} <= tags
+        assert {
+            "action",
+            "using_device",
+            "conversation_phone_call",
+            AI_PROGRESS,
+            AI_DEFERRED,
+            AI_CONVERSATION,
+        } <= tags
 
     def test_empty_ops_no_tags(self):
         assert collect_commit_tags({}) == set()
@@ -50,8 +67,9 @@ PLAN_IDS = {"c1", "c2"}
 
 
 def _validate(ops, *, processed=True, confirm=False):
-    return validate_commit(ops, PLAN_IDS, "P",
-                           processed_list_ok=processed, confirm_destructive=confirm)
+    return validate_commit(
+        ops, PLAN_IDS, "P", processed_list_ok=processed, confirm_destructive=confirm
+    )
 
 
 def _reasons(result):
@@ -60,8 +78,7 @@ def _reasons(result):
 
 class TestValidateCommit:
     def test_happy_path_no_rejections(self):
-        ops = {"edits": {"c1": {"priority": "1"}},
-               "adds": [{"type": "action", "text": "New"}]}
+        ops = {"edits": {"c1": {"priority": "1"}}, "adds": [{"type": "action", "text": "New"}]}
         assert _validate(ops, processed=True, confirm=False)["rejections"] == []
 
     def test_cross_project_id_rejected(self):

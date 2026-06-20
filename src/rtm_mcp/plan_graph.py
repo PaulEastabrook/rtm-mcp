@@ -63,11 +63,14 @@ def _kind(row: dict[str, Any]) -> str:
     return "action"
 
 
-def build_graph(header: dict[str, Any], rows: list[dict[str, Any]],
-                outputs_index: list[dict[str, Any]] | None = None,
-                context_deps: dict[str, list[str]] | None = None,
-                lexical_deps: dict[str, list[str]] | None = None,
-                manual_order: list[str] | None = None) -> dict[str, Any]:
+def build_graph(
+    header: dict[str, Any],
+    rows: list[dict[str, Any]],
+    outputs_index: list[dict[str, Any]] | None = None,
+    context_deps: dict[str, list[str]] | None = None,
+    lexical_deps: dict[str, list[str]] | None = None,
+    manual_order: list[str] | None = None,
+) -> dict[str, Any]:
     context_deps = context_deps or {}
     lexical_deps = lexical_deps or {}
     ids = [str(r.get("id")) for r in rows]
@@ -78,11 +81,17 @@ def build_graph(header: dict[str, Any], rows: list[dict[str, Any]],
     for r in rows:
         rid = str(r.get("id"))
         est = _estimate_minutes(r.get("estimate"))
-        nodes.append({
-            "id": rid, "kind": _kind(r), "name": r.get("name") or "",
-            "done": bool(r.get("completed")), "due": r.get("due") or "",
-            "start": r.get("start") or "", "estimate_min": est,
-        })
+        nodes.append(
+            {
+                "id": rid,
+                "kind": _kind(r),
+                "name": r.get("name") or "",
+                "done": bool(r.get("completed")),
+                "due": r.get("due") or "",
+                "start": r.get("start") or "",
+                "estimate_min": est,
+            }
+        )
 
     # ── edges (producer → consumer), deterministic-first ──────────────────
     edges: list[dict[str, str]] = []
@@ -98,19 +107,22 @@ def build_graph(header: dict[str, Any], rows: list[dict[str, Any]],
 
     # 1. DEPENDS-ON notes: row.deps = upstream producers this row consumes
     for r in rows:
-        for up in (r.get("deps") or []):
+        for up in r.get("deps") or []:
             add_edge(up, r.get("id"), "depends-on")
     # 2. output-consumption via source_action: if a row's notes reference an artefact owned by
     #    another row, that row consumes the owner's output → owner(producer) → row(consumer)
     if outputs_index:
-        owner_by_name = {str(e.get("filename")): str(e.get("source_action") or "")
-                         for e in outputs_index if e.get("filename") and e.get("source_action")}
+        owner_by_name = {
+            str(e.get("filename")): str(e.get("source_action") or "")
+            for e in outputs_index
+            if e.get("filename") and e.get("source_action")
+        }
         for r in rows:
             consumer = str(r.get("id"))
             mentioned = set()
-            for p in (r.get("files") or []):
+            for p in r.get("files") or []:
                 mentioned.add(p.rsplit("/", 1)[-1])
-            for n in (r.get("notes") or []):
+            for n in r.get("notes") or []:
                 body = n.get("body") or ""
                 for fn in owner_by_name:
                     if fn in body:
@@ -136,31 +148,45 @@ def build_graph(header: dict[str, Any], rows: list[dict[str, Any]],
     for rid in ids:
         node = by_id[rid]
         done = bool(node.get("completed"))
-        open_blockers = [u for u in upstreams[rid]
-                         if not by_id[u].get("completed")]      # upstream not yet done
+        open_blockers = [
+            u for u in upstreams[rid] if not by_id[u].get("completed")
+        ]  # upstream not yet done
         blocked = len(open_blockers) > 0
         kind = _kind(node)
         # quick (2-min rule): READ from the persisted #quick_win tag — the judgement is made at GTD
         # write-time (clarify / creation / adjustment), not recomputed here. Structural guards still
         # hold: action/calendar only, unblocked, not done; waiting_for never quick (even if mis-tagged).
-        quick = (kind in ("action", "calendar") and not blocked and not done
-                 and "quick_win" in (node.get("tags") or []))
-        judgement[rid] = {"blocked": blocked, "blockers": open_blockers,
-                          "quick": bool(quick),
-                          "quick_ready": bool(quick and not blocked)}
+        quick = (
+            kind in ("action", "calendar")
+            and not blocked
+            and not done
+            and "quick_win" in (node.get("tags") or [])
+        )
+        judgement[rid] = {
+            "blocked": blocked,
+            "blockers": open_blockers,
+            "quick": bool(quick),
+            "quick_ready": bool(quick and not blocked),
+        }
 
     # ── cycle detection (advisory) ────────────────────────────────────────
     cycles = _find_cycles(ids, upstreams)
-    cycle_edges = _weak_back_edges(cycles, edges)   # edges to ignore for layering only
+    cycle_edges = _weak_back_edges(cycles, edges)  # edges to ignore for layering only
 
     # ── timeline order: topological layering + tiered ready cohort, manual pin honoured ──
     clean_manual = [i for i in (manual_order or []) if i in id_set]
     order = _timeline_order(ids, by_id, upstreams, judgement, cycle_edges, clean_manual)
 
     fingerprint = _fingerprint(header, rows)
-    return {"nodes": nodes, "edges": edges, "judgement": judgement,
-            "order": order, "cycles": cycles, "fingerprint": fingerprint,
-            "manual_order": clean_manual}
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "judgement": judgement,
+        "order": order,
+        "cycles": cycles,
+        "fingerprint": fingerprint,
+        "manual_order": clean_manual,
+    }
 
 
 def _find_cycles(ids: list[str], upstreams: dict[str, list[str]]) -> list[list[str]]:
@@ -173,10 +199,10 @@ def _find_cycles(ids: list[str], upstreams: dict[str, list[str]]) -> list[list[s
     def visit(u: str) -> None:
         colour[u] = GREY
         stack.append(u)
-        for v in upstreams.get(u, []):       # follow producer edges
+        for v in upstreams.get(u, []):  # follow producer edges
             if colour[v] == GREY:
                 if v in stack:
-                    cycles.append([*stack[stack.index(v):], v])
+                    cycles.append([*stack[stack.index(v) :], v])
             elif colour[v] == WHITE:
                 visit(v)
         stack.pop()
@@ -193,15 +219,19 @@ def _weak_back_edges(cycles: list[list[str]], edges: list[dict[str, str]]) -> se
     ignore: set[tuple[str, str]] = set()
     for cyc in cycles:
         for a, b in pairwise(cyc):
-            ignore.add((b, a))   # producer→consumer direction stored as (src,dst)
+            ignore.add((b, a))  # producer→consumer direction stored as (src,dst)
             break
     return ignore
 
 
-def _timeline_order(ids: list[str], by_id: dict[str, dict[str, Any]],
-                    upstreams: dict[str, list[str]], judgement: dict[str, dict[str, Any]],
-                    cycle_edges: set[tuple[str, str]],
-                    manual_order: list[str] | None = None) -> list[str]:
+def _timeline_order(
+    ids: list[str],
+    by_id: dict[str, dict[str, Any]],
+    upstreams: dict[str, list[str]],
+    judgement: dict[str, dict[str, Any]],
+    cycle_edges: set[tuple[str, str]],
+    manual_order: list[str] | None = None,
+) -> list[str]:
     """Topological layering (natural-sequence spine) with the tiered ready-cohort sort.
 
     When `manual_order` is given (Paul's drag-drop pin), it takes precedence over the cosmetic
@@ -222,36 +252,39 @@ def _timeline_order(ids: list[str], by_id: dict[str, dict[str, Any]],
         j = judgement[rid]
         # lower tier sorts earlier
         if j["quick"] and not j["blocked"]:
-            return 0                                   # 2-min unblocker
+            return 0  # 2-min unblocker
         if j["quick"]:
-            return 1                                   # 2-min item
+            return 1  # 2-min item
         if not j["blocked"]:
-            return 2                                   # other unblocker (ready)
-        return 3                                       # blocked / the rest
+            return 2  # other unblocker (ready)
+        return 3  # blocked / the rest
 
     def sort_key(rid: str) -> tuple[Any, ...]:
         n = by_id[rid]
         pinned = rid in manual_rank
         # pinned items: (0, pin-index) — reproduce the drag order, ahead of unpinned.
         # unpinned items: (1, tier, …) — the original tiered/date sort, after the pinned ones.
-        return (0 if pinned else 1,
-                manual_rank[rid] if pinned else tier(rid),
-                n.get("due") or "9999-99-99", n.get("start") or "9999-99-99",
-                ids.index(rid))
+        return (
+            0 if pinned else 1,
+            manual_rank[rid] if pinned else tier(rid),
+            n.get("due") or "9999-99-99",
+            n.get("start") or "9999-99-99",
+            ids.index(rid),
+        )
 
     remaining = list(open_ids)
     guard = 0
     while remaining and guard < len(ids) + 5:
         guard += 1
         ready = [r for r in remaining if all(u in placed or u not in open_ids for u in eff[r])]
-        if not ready:                                   # residual cycle — release all remaining
+        if not ready:  # residual cycle — release all remaining
             ready = list(remaining)
         ready.sort(key=sort_key)
         for r in ready:
             order.append(r)
             placed.add(r)
         remaining = [r for r in remaining if r not in placed]
-    order.extend(done_ids)                              # completed (history) last
+    order.extend(done_ids)  # completed (history) last
     return order
 
 
@@ -265,14 +298,27 @@ def _fingerprint(header: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     proj = header.get("project") or {}
     h.update((str(proj.get("id")) + "|").encode())
     for r in sorted(rows, key=lambda x: str(x.get("id"))):
-        notes_digest = "".join(sorted((n.get("date", "") + ":" + (n.get("summary") or "")[:60])
-                                      for n in (r.get("notes") or [])))
-        h.update("|".join([
-            str(r.get("id")), r.get("name") or "", str(r.get("completed") or 0),
-            r.get("due") or "", r.get("start") or "", r.get("estimate") or "",
-            ",".join(sorted(r.get("tags") or [])),
-            ",".join(sorted(str(d) for d in (r.get("deps") or []))),
-            ",".join(sorted(p.rsplit("/", 1)[-1] for p in (r.get("files") or []))),
-            str(len(r.get("notes") or [])), notes_digest,
-        ]).encode())
+        notes_digest = "".join(
+            sorted(
+                (n.get("date", "") + ":" + (n.get("summary") or "")[:60])
+                for n in (r.get("notes") or [])
+            )
+        )
+        h.update(
+            "|".join(
+                [
+                    str(r.get("id")),
+                    r.get("name") or "",
+                    str(r.get("completed") or 0),
+                    r.get("due") or "",
+                    r.get("start") or "",
+                    r.get("estimate") or "",
+                    ",".join(sorted(r.get("tags") or [])),
+                    ",".join(sorted(str(d) for d in (r.get("deps") or []))),
+                    ",".join(sorted(p.rsplit("/", 1)[-1] for p in (r.get("files") or []))),
+                    str(len(r.get("notes") or [])),
+                    notes_digest,
+                ]
+            ).encode()
+        )
     return h.hexdigest()[:16]
