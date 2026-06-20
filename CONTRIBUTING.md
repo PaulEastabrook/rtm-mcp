@@ -194,12 +194,17 @@ A tool is not "done" until all four are in sync.
 
 ## 11. Quality gate
 
-Before hand-off / commit, all of these must pass:
+Before hand-off / commit, all of these must pass (this is exactly what CI runs):
 
 ```bash
-make lint     # uv run ruff check src tests  +  uv run pyright src
+make lint     # ruff check + ruff format --check + pyright (src tests / src)
 make test     # uv run pytest
 ```
+
+`make lint` includes `ruff format --check` so a format-only drift can't slip past local
+checks and fail CI. Dev tooling (`ruff`, `pyright`) is **exact-pinned** in `pyproject.toml`
+so lint/format/type rules don't drift between machines; bump those pins deliberately (and
+re-run `make format` if a ruff bump changes formatting).
 
 ## 12. Adding a new tool — checklist
 
