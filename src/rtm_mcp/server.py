@@ -102,6 +102,15 @@ This server provides full access to Remember The Milk's task management features
 - gtd_project_plan: Read-only — returns a whole project plan (project + all
   descendant items + every note, full bodies) as the project-plan-seed envelope
   consumed by the GTD canvas, in ONE getList. Identify by project_id or project_name.
+- gtd_project_canvas: Read-only — the read-sibling of gtd_project_plan. Returns the
+  canvas-ready seed ({mode, frame, seed}) with the deterministic plan-graph overlay
+  applied (quick, sibling deps, dependency-respecting order). Identify by project_id
+  or project_name.
+- gtd_apply_canvas_commit: Constrained write — the single governed write surface for a
+  project-plan-canvas commit (adds/edits/completes/removes/execute/notes). Validates the
+  whole commit up-front (cross-project, strict-tag gate, Processed/non-smart list,
+  destructive-confirm) and writes nothing if rejected; applies durable-first. Identify
+  the project by project_id.
 
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,

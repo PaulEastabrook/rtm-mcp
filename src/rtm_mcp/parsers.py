@@ -8,7 +8,6 @@ in ``$t``, and timezone conversion.
 from datetime import datetime
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Normalization helpers
 # ---------------------------------------------------------------------------

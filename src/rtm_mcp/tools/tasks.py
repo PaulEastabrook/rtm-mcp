@@ -5,6 +5,7 @@ from typing import Any
 from fastmcp import Context
 
 from ..client import RTMClient
+from ..lookup import find_task, resolve_list_id, resolve_task_ids
 from ..parsers import (
     analyze_tasks,
     format_task,
@@ -16,7 +17,6 @@ from ..response_builder import (
     build_response,
     record_and_build_response,
 )
-from ..lookup import find_task, resolve_list_id, resolve_task_ids
 from ..strict_tags import enforce_strict_tags, extract_smartadd_tags, split_tags
 
 
