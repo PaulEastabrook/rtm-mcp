@@ -483,7 +483,7 @@ class TestConnectionRetry:
     async def test_timeout_on_write_raises_immediately(self, conn_client: RTMClient) -> None:
         """TimeoutException on a write operation should NOT retry."""
         # First: timeline creation succeeds (GET)
-        get_route = respx.get(RTM_API_URL).mock(
+        respx.get(RTM_API_URL).mock(
             return_value=httpx.Response(
                 200, json={"rsp": {"stat": "ok", "timeline": "12345"}},
             )
@@ -513,9 +513,11 @@ class TestConnectionRetry:
         mock_http.get = AsyncMock(side_effect=connect_err)
         mock_http.is_closed = False
 
-        with patch.object(conn_client, "_get_http", return_value=mock_http):
-            with pytest.raises(RTMNetworkError, match="TLS certificate"):
-                await conn_client.call("rtm.test.echo")
+        with (
+            patch.object(conn_client, "_get_http", return_value=mock_http),
+            pytest.raises(RTMNetworkError, match="TLS certificate"),
+        ):
+            await conn_client.call("rtm.test.echo")
 
         assert conn_client.rate_limit_stats.conn_retries_last_60s() == 0
 

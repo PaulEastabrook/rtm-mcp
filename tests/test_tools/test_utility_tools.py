@@ -771,7 +771,7 @@ class TestGetListUrl:
 
     @pytest.mark.asyncio
     async def test_neither_name_nor_id(self, util_tools):
-        tools, client = util_tools
+        tools, _client = util_tools
 
         result = await tools["get_list_url"](FakeContext())
         assert "error" in result["data"]

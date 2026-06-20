@@ -4,6 +4,7 @@ from typing import Any
 
 from fastmcp import Context
 
+from ..lookup import find_task, resolve_task_ids
 from ..parsers import (
     ensure_list,
     extract_note_body,
@@ -13,7 +14,6 @@ from ..response_builder import (
     build_response,
     record_and_build_response,
 )
-from ..lookup import find_task, resolve_task_ids
 
 
 def register_note_tools(mcp: Any, get_client: Any) -> None:
