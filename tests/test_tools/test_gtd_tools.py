@@ -157,3 +157,223 @@ class TestGtdProjectPlan:
             FakeContext(), project_id=PROJECT_ID, include_completed=False)
         call = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.getList")
         assert call.kwargs["filter"] == "status:incomplete"
+
+
+# ── canvas tools ───────────────────────────────────────────────────────────
+
+def _lists(processed_smart="0"):
+    return {"lists": {"list": [
+        {"id": LIST_ID, "name": "Processed", "smart": processed_smart,
+         "deleted": "0", "locked": "0", "archived": "0", "position": "0",
+         "filter": "", "sort_order": "0"},
+    ]}}
+
+
+def _commit_tree():
+    return _getlist([
+        _ts("tsP", PROJECT_ID, "Test Project", parent=AREA_ID, tags=["personal", "project"]),
+        _ts("ts1", "c1", "Edit me", parent=PROJECT_ID, priority="N",
+            tags=["action", "using_device"]),
+        _ts("ts2", "c2", "Complete me", parent=PROJECT_ID, priority="N", tags=["action"]),
+    ])
+
+
+def _add_result():
+    return {
+        "transaction": {"id": "txadd", "undoable": "1"},
+        "list": {"id": LIST_ID, "taskseries": [_ts("tsNew", "new1", "New action", parent="")]},
+    }
+
+
+def _commit_dispatch(tree, lists):
+    """side_effect for client.call: route by RTM method to the right canned response."""
+    async def _call(method, **kwargs):
+        if method == "rtm.tasks.getList":
+            return tree
+        if method == "rtm.lists.getList":
+            return lists
+        if method == "rtm.tasks.add":
+            return _add_result()
+        return {"transaction": {"id": f"tx_{method.rsplit('.', 1)[-1]}", "undoable": "1"}}
+    return _call
+
+
+WRITE_METHODS = {
+    "rtm.tasks.add", "rtm.tasks.setTags", "rtm.tasks.addTags", "rtm.tasks.setPriority",
+    "rtm.tasks.setDueDate", "rtm.tasks.setName", "rtm.tasks.setParentTask",
+    "rtm.tasks.complete", "rtm.tasks.delete", "rtm.tasks.notes.add",
+}
+
+
+class TestGtdProjectCanvas:
+    @pytest.mark.asyncio
+    async def test_returns_seed_shape(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_project_tree())
+
+        result = await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID)
+        data = result["data"]
+        assert data["mode"] == "existing"
+        assert data["frame"]["name"] == "Sam's university open days"
+        assert data["frame"]["life"] == "personal"
+        ids = {it["id"] for it in data["seed"]}
+        assert ids == {"c1", "c2"}
+
+    @pytest.mark.asyncio
+    async def test_read_only_call_surface(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_project_tree())
+
+        await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID)
+
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"]  # no writes, no timeline
+
+    @pytest.mark.asyncio
+    async def test_completed_history_placed_last(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_project_tree())
+
+        result = await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID)
+        seed = result["data"]["seed"]
+        c2 = next(it for it in seed if it["id"] == "c2")
+        assert c2.get("hx") == 1
+        assert seed[-1]["id"] == "c2"  # history after open items
+
+    @pytest.mark.asyncio
+    async def test_by_name(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_project_tree())
+
+        result = await tools["gtd_project_canvas"](
+            FakeContext(), project_name="university open days")
+        assert result["data"]["frame"]["name"] == "Sam's university open days"
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_name_returns_candidates(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([
+            _ts("tsA", "a1", "Alpha", parent=AREA_ID, tags=["project"]),
+            _ts("tsB", "a2", "Alpha", parent=AREA_ID, tags=["project"]),
+        ]))
+
+        result = await tools["gtd_project_canvas"](FakeContext(), project_name="Alpha")
+        assert {c["id"] for c in result["data"]["candidates"]} == {"a1", "a2"}
+
+    @pytest.mark.asyncio
+    async def test_not_found(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([
+            _ts("tsX", "x1", "Something", tags=["action"]),
+        ]))
+
+        result = await tools["gtd_project_canvas"](FakeContext(), project_id="nope")
+        assert "error" in result["data"]
+
+    @pytest.mark.asyncio
+    async def test_lean_caps_notes(self, gtd_tools):
+        tools, client = gtd_tools
+        many = [{"id": f"n{i}", "created": "2026-01-01T00:00:00Z", "title": "",
+                 "$t": f"note {i}"} for i in range(5)]
+        client.call = AsyncMock(return_value=_getlist([
+            _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["personal", "project"]),
+            _ts("ts1", "c1", "Busy", parent=PROJECT_ID, tags=["action"], notes=many),
+        ]))
+
+        result = await tools["gtd_project_canvas"](
+            FakeContext(), project_id=PROJECT_ID, lean=True, note_cap=2)
+        c1 = next(it for it in result["data"]["seed"] if it["id"] == "c1")
+        assert len(c1["notes"]) == 2
+        assert c1["nc"] == 5  # honest true total
+
+
+class TestGtdApplyCanvasCommit:
+    @pytest.mark.asyncio
+    async def test_staged_commit_applies(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID,
+            adds=[{"type": "action", "text": "New action",
+                   "classifiers": {"context": "using_device", "priority": "2"}}],
+            edits={"c1": {"priority": "1"}},
+            completes=["c2"],
+            execute={"c1": "later"},
+            confirm_destructive=True,
+        )
+        data = result["data"]
+        assert "rejected" not in data
+        assert data["order_persisted"] is False
+        assert len(data["applied"]) >= 5
+
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        for m in ("rtm.tasks.add", "rtm.tasks.setParentTask", "rtm.tasks.complete",
+                  "rtm.tasks.addTags", "rtm.tasks.notes.add"):
+            assert m in methods
+
+        # execute writes the durable progression tag
+        addtags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
+        assert "ai_progress_requested" in addtags.kwargs["tags"]
+        # a COMMIT audit note is written
+        notes = [c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add"]
+        assert any(c.kwargs.get("note_title") == "COMMIT" for c in notes)
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_canonical_tag_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=True)
+        client.get_account_tags = AsyncMock(return_value={"action"})  # missing using_device etc.
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID,
+            adds=[{"type": "action", "text": "x", "classifiers": {"context": "using_device"}}],
+        )
+        reasons = {r["reason"] for r in result["data"]["rejected"]}
+        assert "non_canonical_tag" in reasons
+        assert result["data"]["applied"] == []
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_rejects_smart_list_target(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists("1")))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID,
+            adds=[{"type": "action", "text": "x"}],
+        )
+        reasons = {r["reason"] for r in result["data"]["rejected"]}
+        assert "smart_list_target" in reasons
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_rejects_cross_project_id(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID,
+            edits={"intruder": {"priority": "1"}},
+        )
+        reasons = {r["reason"] for r in result["data"]["rejected"]}
+        assert "cross_project" in reasons
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_rejects_destructive_without_confirm(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID,
+            completes=["c2"], confirm_destructive=False,
+        )
+        reasons = {r["reason"] for r in result["data"]["rejected"]}
+        assert "destructive_unconfirmed" in reasons
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)

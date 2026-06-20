@@ -12,6 +12,7 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Default-List Aware**: `add_task` without a list routes to your configured RTM default list (not the built-in Inbox); `get_lists` surfaces the `smart`/`locked`/`archived` flags so callers can pick a writable target
 - **Strict-Tag Mode** (on by default): the server refuses to apply any tag that doesn't already exist in your account — stopping accidental tag creation at the source, with a guided error that tells the caller how to recover. Set `RTM_STRICT_TAGS=0` to disable.
 - **Batched project read** (`gtd_project_plan`): a whole project plan — project, all descendant items, and every note — in one read-only call (vs `1+N`), as the `project-plan-seed` envelope the GTD canvas consumes. The first of the server's `gtd_`-prefixed domain compositions.
+- **Project-plan canvas tools** (`gtd_project_canvas` + `gtd_apply_canvas_commit`): a read-only canvas seed with the deterministic plan-graph overlay applied (ordering, blocking, quick-wins), and a single governed write surface that validates a whole canvas commit up-front and writes nothing if anything is rejected.
 - **Undo and Batch Undo**: All write operations return transaction IDs; undo one or many operations with `batch_undo`
 - **Timeline Introspection**: Session transaction log with `get_timeline_info` for reviewing write history
 - **Token Bucket Rate Limiting**: Burst to 3 RPS, sustain ~0.9 RPS with configurable safety margin
@@ -273,6 +274,16 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   descendant items, and every note (full bodies) — as the `project-plan-seed` envelope
   consumed by the GTD canvas, in a **single** `rtm.tasks.getList`. Identify by `project_id`
   or `project_name` (ambiguous names return a candidate list). See *Tool naming convention*.
+- `gtd_project_canvas` - **Read-only.** The read-sibling of `gtd_project_plan`: returns the
+  *canvas-ready* seed (`{mode, frame, seed}`) with the deterministic plan-graph overlay already
+  applied — `quick` (from `#quick_win`), sibling `deps`, and a dependency-respecting timeline
+  order — so the canvas never re-implements GTD ordering/blocking. Byte-compatible with the GTD
+  plugin's `build_canvas --emit html-lean` seed.
+- `gtd_apply_canvas_commit` - **Constrained write.** The single governed write surface for a
+  canvas commit (adds / edits / completes / removes / execute / notes). Validates the whole
+  commit up-front and writes nothing if anything is rejected (cross-project id, non-canonical
+  tag via the strict-tag gate, smart-list target, unconfirmed destructive op), then applies
+  durable-first and records each transaction. Identify the project by `project_id`.
 
 #### Tool naming convention
 Bare verbs (`add_task`, `list_tasks`, `get_task_notes`) are **generic RTM primitives** —
@@ -436,6 +447,9 @@ If you see HTTP 503 errors or slow responses:
 - **Error 4070**: Repeating tasks cannot be nested under other repeating tasks
 
 ## Development
+
+Coding, testing, and documentation standards are in [CONTRIBUTING.md](CONTRIBUTING.md) — the
+canonical conventions doc. Architecture and RTM API quirks are in [CLAUDE.md](CLAUDE.md).
 
 ```bash
 # Install dev dependencies
