@@ -30,6 +30,7 @@ from ..plan_graph import build_graph
 from ..project_plan import build_envelope, resolve_project
 from ..response_builder import build_response, get_transaction_info
 from ..strict_tags import enforce_strict_tags
+from ..tool_params import JsonObjArray, JsonObject, JsonStrArray, coerce_json
 
 
 def register_gtd_tools(mcp: Any, get_client: Any) -> None:
@@ -198,13 +199,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     async def gtd_apply_canvas_commit(
         ctx: Context,
         project_id: str,
-        order: list[str] | None = None,
-        edits: dict[str, dict[str, Any]] | None = None,
-        adds: list[dict[str, Any]] | None = None,
-        completes: list[str] | None = None,
-        removes: list[str] | None = None,
-        execute: dict[str, str] | None = None,
-        notes: dict[str, dict[str, str]] | None = None,
+        order: JsonStrArray = None,
+        edits: JsonObject = None,
+        adds: JsonObjArray = None,
+        completes: JsonStrArray = None,
+        removes: JsonStrArray = None,
+        execute: JsonObject = None,
+        notes: JsonObject = None,
         confirm_destructive: bool = False,
     ) -> dict[str, Any]:
         """GTD — the single governed write surface for a project-plan-canvas commit. The artifact
@@ -241,6 +242,17 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         Returns (on rejection — nothing written): {"applied": [], "rejected": [...], "message": ...}.
         """
         client: RTMClient = await get_client()
+
+        # Belt-and-braces: a client may pass a complex op as a JSON string. The typed parameter
+        # schemas + BeforeValidator already coerce this for pydantic-validated calls; this also
+        # covers any caller that bypasses validation (e.g. direct/test invocation).
+        order = coerce_json(order)
+        edits = coerce_json(edits)
+        adds = coerce_json(adds)
+        completes = coerce_json(completes)
+        removes = coerce_json(removes)
+        execute = coerce_json(execute)
+        notes = coerce_json(notes)
 
         result = await client.call(
             "rtm.tasks.getList", filter="status:incomplete OR status:completed"
