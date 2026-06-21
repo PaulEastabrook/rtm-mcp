@@ -183,6 +183,62 @@ class TestBuildEnvelope:
         assert env["rows"] == []
 
 
+class TestTimezoneLocalisation:
+    """Date fields are localised to the account tz before truncation (RTM returns UTC)."""
+
+    def _wf(self, due=None, completed=None, note_created=None):
+        notes = [_note("body", created=note_created)] if note_created else None
+        return [
+            _t(PROJECT_ID, parent=AREA_ID, tags=["project", "personal"]),
+            _t(
+                "c1",
+                parent=PROJECT_ID,
+                tags=["waiting_for"],
+                due=due,
+                completed=completed,
+                notes=notes,
+            ),
+        ]
+
+    def test_bst_midnight_due_keeps_local_day(self):
+        # The exact live failure: a 22 Jun BST date-only due is on the wire as 21 Jun 23:00 UTC.
+        env = build_envelope(
+            self._wf(due="2026-06-21T23:00:00Z"), PROJECT_ID, timezone="Europe/London"
+        )
+        assert _row(env, "c1")["due"] == "2026-06-22"
+
+    def test_gmt_due_unaffected(self):
+        env = build_envelope(
+            self._wf(due="2026-03-06T00:00:00Z"), PROJECT_ID, timezone="Europe/London"
+        )
+        assert _row(env, "c1")["due"] == "2026-03-06"
+
+    def test_real_time_of_day_truncates_to_local_day(self):
+        # 23:30 UTC on 21 Jun is 00:30 BST on 22 Jun → local calendar day is 22 Jun.
+        env = build_envelope(
+            self._wf(due="2026-06-21T23:30:00Z"), PROJECT_ID, timezone="Europe/London"
+        )
+        assert _row(env, "c1")["due"] == "2026-06-22"
+
+    def test_no_timezone_falls_back_to_raw_truncation(self):
+        env = build_envelope(self._wf(due="2026-06-21T23:00:00Z"), PROJECT_ID)  # tz omitted
+        assert _row(env, "c1")["due"] == "2026-06-21"  # documented fallback, never raises
+
+    def test_completed_date_localised(self):
+        env = build_envelope(
+            self._wf(completed="2026-06-21T23:30:00Z"), PROJECT_ID, timezone="Europe/London"
+        )
+        assert _row(env, "c1")["completedDate"] == "2026-06-22"
+
+    def test_note_date_localised(self):
+        env = build_envelope(
+            self._wf(due="2026-07-01T00:00:00Z", note_created="2026-06-21T23:00:00Z"),
+            PROJECT_ID,
+            timezone="Europe/London",
+        )
+        assert _row(env, "c1")["notes"][0]["date"] == "2026-06-22"
+
+
 class TestResolveProject:
     def _projects(self):
         return [

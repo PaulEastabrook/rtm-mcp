@@ -63,6 +63,9 @@ def mock_client():
     client.record_transaction = MagicMock()
     type(client).timeline_id = PropertyMock(return_value="tl_test")
     client.config = MagicMock(strict_tags=False, vault_root=None)
+    # Realistic account tz (cached settings read in the real client; here a plain stub so the
+    # envelope's date localisation runs — get_timezone never routes through client.call).
+    client.get_timezone = AsyncMock(return_value="Europe/London")
     return client
 
 
@@ -419,6 +422,59 @@ class TestGtdProjectCanvas:
         assert by_id["c1"]["prog"] == "now"
         assert by_id["c2"]["prog"] == "later"
         assert "prog" not in by_id["c3"]
+
+    @pytest.mark.asyncio
+    async def test_bst_due_renders_local_day(self, gtd_tools):
+        """Regression: a BST date-only due arrives from RTM as the prior day's 23:00 UTC
+        (2026-06-22 local → 2026-06-21T23:00:00Z). The seed must localise to the account tz and
+        show 2026-06-22, not the UTC-truncated 2026-06-21."""
+        tools, client = gtd_tools
+        client.get_timezone = AsyncMock(return_value="Europe/London")
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["personal", "project"]),
+                    _ts(
+                        "ts1",
+                        "c1",
+                        "Waiting for New Again",
+                        parent=PROJECT_ID,
+                        tags=["waiting_for"],
+                        due="2026-06-21T23:00:00Z",
+                    ),
+                ]
+            )
+        )
+
+        data = (await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID))["data"]
+        c1 = next(it for it in data["seed"] if it["id"] == "c1")
+        assert c1["d"] == "2026-06-22"  # account-local day, not the UTC-truncated 2026-06-21
+
+    @pytest.mark.asyncio
+    async def test_dates_fall_back_when_timezone_unavailable(self, gtd_tools):
+        """If the tz settings read fails (get_timezone → None), date localisation is skipped
+        (raw-UTC truncation) rather than raising — the read still succeeds."""
+        tools, client = gtd_tools
+        client.get_timezone = AsyncMock(return_value=None)
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["personal", "project"]),
+                    _ts(
+                        "ts1",
+                        "c1",
+                        "Waiting for New Again",
+                        parent=PROJECT_ID,
+                        tags=["waiting_for"],
+                        due="2026-06-21T23:00:00Z",
+                    ),
+                ]
+            )
+        )
+
+        data = (await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID))["data"]
+        c1 = next(it for it in data["seed"] if it["id"] == "c1")
+        assert c1["d"] == "2026-06-21"  # documented fallback: no tz → raw UTC truncation
 
 
 def _meta_tree():

@@ -101,7 +101,8 @@ This server provides full access to Remember The Milk's task management features
 ## GTD Tools (domain compositions, gtd_ prefix)
 - gtd_project_plan: Read-only — returns a whole project plan (project + all
   descendant items + every note, full bodies) as the project-plan-seed envelope
-  consumed by the GTD canvas, in ONE getList. Identify by project_id or project_name.
+  consumed by the GTD canvas, in one getList (plus a session-cached settings read
+  so dates are shown in the account timezone). Identify by project_id or project_name.
 - gtd_project_canvas: Read-only — the read-sibling of gtd_project_plan. Returns the
   canvas-ready seed ({mode, frame, seed}) with the deterministic plan-graph overlay
   applied (quick, sibling deps, dependency-respecting order). Each row also carries an

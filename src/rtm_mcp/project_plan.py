@@ -19,7 +19,7 @@ import re
 from typing import Any
 
 from .config import RTM_WEB_BASE_URL
-from .parsers import extract_note_body
+from .parsers import _convert_rtm_date, extract_note_body
 from .urls import build_task_url
 
 SCHEMA = "project-plan-seed/3"
@@ -37,10 +37,18 @@ _DIGITS = re.compile(r"\d+")
 _FILES_PER_ROW = 8
 
 
-def _norm_date(iso: str | None) -> str:
-    """RTM ISO timestamp → YYYY-MM-DD (empty stays empty)."""
+def _norm_date(iso: str | None, timezone: str | None = None) -> str:
+    """RTM ISO timestamp → YYYY-MM-DD in the user's timezone (empty stays empty).
+
+    RTM returns timestamps in UTC: a London-BST date-only due of 22 Jun arrives on the wire as
+    ``2026-06-21T23:00:00Z``. Truncating the UTC string directly (``[:10]``) would roll every BST
+    midnight date back a day, so we convert to the account timezone FIRST, then take the calendar
+    date. With no timezone (the settings fetch failed, or a pure call passes none) we fall back to
+    the raw truncation — identical for UTC-midnight values, and it never raises."""
     if not iso:
         return ""
+    if timezone and "T" in iso:
+        iso = _convert_rtm_date(iso, timezone)
     return iso[:10] if "T" in iso or len(iso) >= 10 else iso
 
 
@@ -49,13 +57,17 @@ def _first_line(body: str | None, cap: int = 160) -> str:
     return line[:cap]
 
 
-def _note_objs(notes: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _note_objs(notes: list[dict[str, Any]], timezone: str | None = None) -> list[dict[str, str]]:
     """Map raw RTM notes → envelope note objects with full bodies + a one-line summary."""
     out = []
     for n in notes:
         body = extract_note_body(n)
         out.append(
-            {"date": _norm_date(n.get("created")), "summary": _first_line(body), "body": body}
+            {
+                "date": _norm_date(n.get("created"), timezone),
+                "summary": _first_line(body),
+                "body": body,
+            }
         )
     return out
 
@@ -164,8 +176,15 @@ def resolve_project(parsed: list[dict[str, Any]], project_name: str) -> dict[str
     return {"project": matches[0]}
 
 
-def build_envelope(parsed: list[dict[str, Any]], project_id: str) -> dict[str, Any]:
-    """Flat parsed tasks → the {header, rows} `project-plan-seed/3` envelope for project_id."""
+def build_envelope(
+    parsed: list[dict[str, Any]], project_id: str, timezone: str | None = None
+) -> dict[str, Any]:
+    """Flat parsed tasks → the {header, rows} `project-plan-seed/3` envelope for project_id.
+
+    timezone: the account's IANA zone (e.g. 'Europe/London'). When supplied, every date field
+        (due/start/completedDate + note dates) is localised to it before truncation — RTM returns
+        UTC, so a BST midnight date would otherwise render a day early. None → raw-UTC truncation
+        (the pre-fix behaviour; safe fallback when the tz settings read fails)."""
     project_id = str(project_id)
     by_id = {r["id"]: r for r in parsed}
     proj = by_id.get(project_id)
@@ -197,7 +216,7 @@ def build_envelope(parsed: list[dict[str, Any]], project_id: str) -> dict[str, A
             "life": life,
             "listId": proj_list_id or "",
             "permalink": _permalink(project_id, by_id, proj_list_id),
-            "notes": _note_objs(proj_notes_raw),
+            "notes": _note_objs(proj_notes_raw, timezone),
             "files": proj_files,
         },
         "rowCount": len(children),
@@ -214,16 +233,16 @@ def build_envelope(parsed: list[dict[str, Any]], project_id: str) -> dict[str, A
                 "name": c.get("name") or "",
                 "priority": _PRIORITY_WORD.get(str(c.get("priority", "N")), "NoPriority"),
                 "completed": 1 if c.get("completed") else 0,
-                "completedDate": _norm_date(c.get("completed")),
-                "due": _norm_date(c.get("due")),
+                "completedDate": _norm_date(c.get("completed"), timezone),
+                "due": _norm_date(c.get("due"), timezone),
                 "tags": c.get("tags", []),
                 "permalink": _permalink(c["id"], by_id, c.get("list_id") or proj_list_id),
                 "deps": deps,
                 "files": files,
                 "noteCount": len(notes_full),
-                "notes": _note_objs(notes_full),
+                "notes": _note_objs(notes_full, timezone),
                 "estimate": c.get("estimate") or "",
-                "start": _norm_date(c.get("start")),
+                "start": _norm_date(c.get("start"), timezone),
                 "url": c.get("url") or "",
             }
         )
