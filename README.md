@@ -272,15 +272,19 @@ you just created elsewhere is picked up without waiting for the cache to expire.
 ### GTD (domain compositions)
 - `gtd_project_plan` - **Read-only.** Return a whole project plan — the project, all
   descendant items, and every note (full bodies) — as the `project-plan-seed` envelope
-  consumed by the GTD canvas, in a **single** `rtm.tasks.getList`. Identify by `project_id`
-  or `project_name` (ambiguous names return a candidate list). See *Tool naming convention*.
+  consumed by the GTD canvas, in a single `rtm.tasks.getList` (plus a session-cached
+  `rtm.settings.getList` so dates render in the account timezone, not UTC). Identify by
+  `project_id` or `project_name` (ambiguous names return a candidate list). See *Tool naming
+  convention*.
 - `gtd_project_canvas` - **Read-only.** The read-sibling of `gtd_project_plan`: returns the
   *canvas-ready* seed (`{mode, frame, seed}`) with the deterministic plan-graph overlay already
   applied — `quick` (from `#quick_win`), sibling `deps`, and a dependency-respecting timeline
   order — so the canvas never re-implements GTD ordering/blocking. Each row also carries an
   optional `prog` (`"now"` from `#ai_progress_requested` / `"later"` from `#ai_progress_deferred`)
-  so the execute pill reflects committed state on reload. Byte-compatible with the GTD plugin's
-  `build_canvas --emit html-lean` seed. Filed-artefact file objects (per-action and the
+  so the execute pill reflects committed state on reload. Date fields (`d`, `cd`, note dates) are
+  localised to the account timezone (RTM returns UTC, so BST/DST dues would otherwise render a day
+  early). Byte-compatible with the GTD plugin's `build_canvas --emit html-lean` seed. Filed-artefact
+  file objects (per-action and the
   project-level `frame.files`) gain a `meta` block from the artefact's companion metadata
   (title/type/status/dates/authors/tags) when a read-only AI Memory vault is configured
   (`RTM_VAULT_ROOT` / `AI_MEMORY_DIR`, or the host default); absent vault or companion → no `meta`.

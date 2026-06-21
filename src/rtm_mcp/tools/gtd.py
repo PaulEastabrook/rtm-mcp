@@ -48,10 +48,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         """GTD — return a whole project plan (the project + all its descendant items + every
         note, with full bodies) as the `project-plan-seed` envelope consumed by the GTD canvas.
 
-        Read-only. Collapses the canvas read path from ~1+N calls to a SINGLE signed
-        rtm.tasks.getList: it fetches the tasks once, reconstructs the project→children tree via
-        parent_task_id, and emits the comprehensive envelope — the RTM token never leaves the
-        server. The tool issues no write and creates no timeline.
+        Read-only. Collapses the canvas read path from ~1+N calls to ONE signed
+        rtm.tasks.getList (plus a session-cached rtm.settings.getList for the account timezone):
+        it fetches the tasks once, reconstructs the project→children tree via parent_task_id, and
+        emits the comprehensive envelope — the RTM token never leaves the server. Dates are
+        localised to the account timezone (RTM returns UTC). The tool issues no write and creates
+        no timeline.
 
         Identify the project by EXACTLY ONE of:
             project_id: the project (parent) task id. Preferred when known.
@@ -105,7 +107,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     }
                 )
 
-        return build_response(data=build_envelope(parsed, pid))
+        # Localise dates to the account timezone (cached settings read) so BST/DST dues don't
+        # render a day early — RTM returns UTC. None on failure → safe raw-UTC fallback.
+        tz = await client.get_timezone()
+        return build_response(data=build_envelope(parsed, pid, timezone=tz))
 
     @mcp.tool()
     async def gtd_project_canvas(
@@ -122,7 +127,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         deterministic plan-graph overlay already applied, so the page never re-implements GTD
         ordering/blocking.
 
-        Read-only. One signed rtm.tasks.getList; no write, no timeline. It reconstructs the
+        Read-only. One signed rtm.tasks.getList (plus a session-cached rtm.settings.getList for
+        the account timezone); no write, no timeline. Dates are localised to the account timezone
+        (RTM returns UTC, so BST/DST dues would otherwise render a day early). It reconstructs the
         project→children tree, builds the `{mode, frame, seed}` seed (priority/context/comms,
         completion→history, note gists, files), then merges the plan-graph overlay: `quick` (from
         the #quick_win tag), sibling `deps`, and a dependency-respecting timeline order (the array
@@ -185,7 +192,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     }
                 )
 
-        envelope = build_envelope(parsed, pid)
+        # Localise dates to the account timezone (cached settings read) so BST/DST dues don't
+        # render a day early — RTM returns UTC. None on failure → safe raw-UTC fallback.
+        tz = await client.get_timezone()
+        envelope = build_envelope(parsed, pid, timezone=tz)
         seed = build_seed(envelope["header"], envelope["rows"], outputs_index=None)
         graph = build_graph(envelope["header"], envelope["rows"])
         seed = apply_graph(seed, graph)
