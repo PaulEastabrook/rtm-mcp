@@ -183,6 +183,10 @@ def build_envelope(parsed: list[dict[str, Any]], project_id: str) -> dict[str, A
                 break
 
     proj_list_id = proj.get("list_id") if proj else ""
+    proj_notes_raw = proj.get("notes", []) if proj else []
+    # Project-level support material: filed-artefact paths from the PROJECT's own notes
+    # (not a child action's) — the analog of row files[]. deps are unused at project level.
+    _proj_deps, proj_files = _extract_deps_and_files(proj_notes_raw)
     header = {
         "type": "header",
         "schema": SCHEMA,
@@ -193,7 +197,8 @@ def build_envelope(parsed: list[dict[str, Any]], project_id: str) -> dict[str, A
             "life": life,
             "listId": proj_list_id or "",
             "permalink": _permalink(project_id, by_id, proj_list_id),
-            "notes": _note_objs(proj.get("notes", []) if proj else []),
+            "notes": _note_objs(proj_notes_raw),
+            "files": proj_files,
         },
         "rowCount": len(children),
     }

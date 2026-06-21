@@ -24,6 +24,7 @@ from ..canvas_commit import (
 from ..canvas_overlay import apply_graph, lean_seed
 from ..canvas_seed import build_seed
 from ..client import RTMClient
+from ..companion import enrich_files, resolve_vault_root
 from ..lookup import resolve_list_id
 from ..parsers import parse_tasks_response, priority_to_code
 from ..plan_graph import build_graph
@@ -127,6 +128,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         the #quick_win tag), sibling `deps`, and a dependency-respecting timeline order (the array
         order of `seed`). `blocked` is NOT a field — the template derives it from `deps[]`.
 
+        File objects (per-action `files[]` and project-level `frame.files`) carry `{n, ext, kind,
+        path}`; each also gains a `meta` block (the companion `.md`/`.yaml` frontmatter — title,
+        type, status, dates, authors, tags, …) when the read-only AI Memory vault is configured
+        (RTM_VAULT_ROOT / AI_MEMORY_DIR, or the host default) and a companion exists. Absent vault
+        or companion → no `meta`, no error.
+
         Identify the project by EXACTLY ONE of:
             project_id: the project (parent) task id. Preferred when known.
             project_name: resolved server-side to an incomplete, `project`-tagged, non-`test`
@@ -182,6 +189,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         seed = apply_graph(seed, graph)
         if lean:
             seed = lean_seed(seed, note_cap)
+        # Enrich file objects with companion metadata from the read-only AI Memory vault, when
+        # available. Last step: apply_graph/lean_seed don't touch files[], and a missing vault is a
+        # graceful no-op (n/ext/kind/path unchanged; `meta` added only where a companion exists).
+        enrich_files(seed, resolve_vault_root(client.config.vault_root))
 
         analysis = None
         cycles = graph.get("cycles") or []

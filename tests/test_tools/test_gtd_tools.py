@@ -62,7 +62,7 @@ def mock_client():
     client.call = AsyncMock()
     client.record_transaction = MagicMock()
     type(client).timeline_id = PropertyMock(return_value="tl_test")
-    client.config = MagicMock(strict_tags=False)
+    client.config = MagicMock(strict_tags=False, vault_root=None)
     return client
 
 
@@ -373,6 +373,122 @@ class TestGtdProjectCanvas:
         c1 = next(it for it in result["data"]["seed"] if it["id"] == "c1")
         assert len(c1["notes"]) == 2
         assert c1["nc"] == 5  # honest true total
+
+
+def _meta_tree():
+    """Project + one open action, each note pointing at a filed artefact (reference / output)."""
+    return _getlist(
+        [
+            _ts(
+                "tsP",
+                PROJECT_ID,
+                "Sam's placement",
+                parent=AREA_ID,
+                tags=["personal", "project"],
+                notes=[
+                    {
+                        "id": "np",
+                        "created": "2026-05-01T00:00:00Z",
+                        "title": "",
+                        "$t": "REFERENCE: personal/sam/reference/cert.pdf",
+                    }
+                ],
+            ),
+            _ts(
+                "ts1",
+                "c1",
+                "Draft decision",
+                parent=PROJECT_ID,
+                tags=["action"],
+                notes=[
+                    {
+                        "id": "n1",
+                        "created": "2026-05-04T00:00:00Z",
+                        "title": "",
+                        "$t": "OUTPUT: personal/sam/output/decision-x.md",
+                    }
+                ],
+            ),
+        ]
+    )
+
+
+def _build_vault(root):
+    """Materialise a tmp AI Memory vault with the marker + two filed artefacts + companions."""
+    (root / "memory").mkdir(parents=True)
+    (root / "memory" / "_index.md").write_text("# index\n")
+    out = root / "personal" / "sam" / "output"
+    ref = root / "personal" / "sam" / "reference"
+    out.mkdir(parents=True)
+    ref.mkdir(parents=True)
+    (out / "decision-x.md").write_text("# decision\n")
+    (out / "decision-x.meta.md").write_text(
+        "---\n"
+        'schema_version: "1.0.0"\n'
+        'title: "Decision X"\n'
+        "type: decision-record\n"
+        "status: review-needed\n"
+        "date_created: 2026-05-04\n"
+        "authors:\n"
+        '  - "Paul Eastabrook (directing)"\n'
+        "  - Claude\n"
+        "tags:\n"
+        "  - sam\n"
+        "  - placement\n"
+        "---\nbody\n"
+    )
+    (ref / "cert.pdf").write_text("%PDF stub\n")
+    (ref / "cert.meta.md").write_text(
+        '---\ntitle: "TT Employers Liability Certificate"\ntype: reference\nstatus: final\n---\nbody\n'
+    )
+    return str(root)
+
+
+class TestGtdProjectCanvasCompanionMeta:
+    @pytest.mark.asyncio
+    async def test_row_and_frame_files_gain_meta(self, gtd_tools, tmp_path):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=False, vault_root=_build_vault(tmp_path))
+        client.call = AsyncMock(return_value=_meta_tree())
+
+        data = (await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID))["data"]
+
+        c1 = next(it for it in data["seed"] if it["id"] == "c1")
+        f = c1["files"][0]
+        assert f["meta"]["type"] == "decision-record"
+        assert f["meta"]["status"] == "review-needed"
+        assert f["meta"]["title"] == "Decision X"
+        assert f["meta"]["authors"] == ["Paul Eastabrook (directing)", "Claude"]
+        assert f["meta"]["tags"] == ["sam", "placement"]
+        # n/ext/kind/path unchanged — backward-compatible
+        assert (f["n"], f["ext"], f["kind"]) == ("decision-x.md", "md", "output")
+
+        frame_file = data["frame"]["files"][0]
+        assert frame_file["kind"] == "reference"
+        assert frame_file["meta"]["type"] == "reference"
+        assert frame_file["meta"]["title"] == "TT Employers Liability Certificate"
+
+    @pytest.mark.asyncio
+    async def test_read_only_with_vault(self, gtd_tools, tmp_path):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=False, vault_root=_build_vault(tmp_path))
+        client.call = AsyncMock(return_value=_meta_tree())
+
+        await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID)
+
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"]  # vault reads are FS-only; no extra API calls
+
+    @pytest.mark.asyncio
+    async def test_no_meta_when_vault_absent(self, gtd_tools, tmp_path):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=False, vault_root=str(tmp_path / "nope"))
+        client.call = AsyncMock(return_value=_meta_tree())
+
+        data = (await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID))["data"]
+        c1 = next(it for it in data["seed"] if it["id"] == "c1")
+        assert c1["files"] and "meta" not in c1["files"][0]  # file objects present, no meta
+        assert "meta" not in data["frame"]["files"][0]
 
 
 class TestGtdApplyCanvasCommit:

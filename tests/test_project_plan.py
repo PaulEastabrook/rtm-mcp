@@ -101,6 +101,7 @@ class TestBuildEnvelope:
         assert h["project"]["name"] == "Sam's university open days"
         assert h["project"]["life"] == "personal"  # first life-context tag
         assert h["project"]["listId"] == LIST_ID
+        assert h["project"]["files"] == []  # INCEPTION note carries no filed path
         assert h["rowCount"] == 3  # c1, c2, c3 — grandchild excluded
 
     def test_project_permalink_includes_absent_ancestor(self):
@@ -113,6 +114,21 @@ class TestBuildEnvelope:
         assert notes[0]["body"] == "2026-04-05 — INCEPTION — the project"
         assert notes[0]["summary"] == "2026-04-05 — INCEPTION — the project"
         assert notes[0]["date"] == "2026-06-15"
+
+    def test_project_level_files_from_project_notes(self):
+        # Project-level support material: filed paths scraped from the PROJECT's own notes,
+        # AI Memory/ prefix stripped — the analog of row files[] (additive to the envelope).
+        parsed = [
+            _t(
+                PROJECT_ID,
+                parent=AREA_ID,
+                tags=["project", "personal"],
+                notes=[_note("REFERENCE: AI Memory/personal/sam/reference/cert.pdf")],
+            ),
+            _t("c1", parent=PROJECT_ID, tags=["action"]),
+        ]
+        env = build_envelope(parsed, PROJECT_ID)
+        assert env["header"]["project"]["files"] == ["personal/sam/reference/cert.pdf"]
 
     def test_row_priority_word_form_and_permalink(self):
         env = build_envelope(_sample_parsed(), PROJECT_ID)

@@ -278,7 +278,10 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   *canvas-ready* seed (`{mode, frame, seed}`) with the deterministic plan-graph overlay already
   applied — `quick` (from `#quick_win`), sibling `deps`, and a dependency-respecting timeline
   order — so the canvas never re-implements GTD ordering/blocking. Byte-compatible with the GTD
-  plugin's `build_canvas --emit html-lean` seed.
+  plugin's `build_canvas --emit html-lean` seed. Filed-artefact file objects (per-action and the
+  project-level `frame.files`) gain a `meta` block from the artefact's companion metadata
+  (title/type/status/dates/authors/tags) when a read-only AI Memory vault is configured
+  (`RTM_VAULT_ROOT` / `AI_MEMORY_DIR`, or the host default); absent vault or companion → no `meta`.
 - `gtd_apply_canvas_commit` - **Constrained write.** The single governed write surface for a
   canvas commit (adds / edits / completes / removes / execute / notes). Validates the whole
   commit up-front and writes nothing if anything is rejected (cross-project id, non-canonical
@@ -313,6 +316,11 @@ RTM_RETRY_DELAY_SUBSEQUENT=5.0 # Seconds before 2nd+ retry
 
 # Tag discipline (on by default)
 RTM_STRICT_TAGS=1              # default on; set 0/false to allow tags not already in the account (see Strict-Tag Mode)
+
+# Companion metadata (optional) — read-only AI Memory vault for gtd_project_canvas file.meta
+RTM_VAULT_ROOT=~/Documents/AI Memory   # preferred; or set the shared AI_MEMORY_DIR. Unset → host
+                                        # default ~/Documents/AI Memory if its memory/_index.md marker
+                                        # exists, else companion resolution is off (no meta, no error)
 ```
 
 ### Config File
