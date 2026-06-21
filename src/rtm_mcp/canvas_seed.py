@@ -97,6 +97,18 @@ def map_comms(tags: list[str]) -> str:
     return ""
 
 
+def map_prog(tags: list[str]) -> str:
+    """Execute tri-state read back from the durable progression tags — the read-side mirror of the
+    commit's execute mapping (gtd_apply_canvas_commit). `now` wins if both are somehow present;
+    absent → "" (the template treats absent `prog` as "off"). Server-emitted field, additive to the
+    reference build-canvas-seed.py shape (upstream parity is a follow-up)."""
+    if "ai_progress_requested" in tags:
+        return "now"
+    if "ai_progress_deferred" in tags:
+        return "later"
+    return ""
+
+
 def parse_note(note: dict[str, Any]) -> dict[str, Any]:
     """{date, summary, body?} -> {t: <TYPE>, d: <date>, s: <gist>, b?: <full body>}. Type parsed
     from the journaling first-line; gist is the (one-line) summary minus the date/type prefix; `b`
@@ -153,6 +165,11 @@ def map_row(row: dict[str, Any]) -> dict[str, Any]:
     # deps[]: raw upstream task_ids from active DEPENDS-ON notes; build_seed filters to siblings.
     if row.get("deps"):
         item["_deps_raw"] = [str(d) for d in row["deps"]]
+    # prog: durable execute tri-state read back from the progression tags, so the canvas pill
+    # reflects committed state on reload (round-trips with gtd_apply_canvas_commit's execute write).
+    prog = map_prog(tags)
+    if prog:
+        item["prog"] = prog
     if item["k"] == "action":
         item["c"] = map_context(tags)
         item["m"] = map_comms(tags)

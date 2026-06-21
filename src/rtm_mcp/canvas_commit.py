@@ -26,12 +26,29 @@ COMMS_TAGS = frozenset(
     }
 )
 AI_CONVERSATION = "ai_conversation"
+# execute now/quick — immediate progress, drained by the on-commit fire
 AI_PROGRESS = "ai_progress_requested"
+# execute later — durable, deferred (the mutually-exclusive sibling of AI_PROGRESS)
+AI_PROGRESS_DEFERRED = "ai_progress_deferred"
+# blocked, pending unblock (engine-set; a distinct concept, NOT user-deferred)
 AI_DEFERRED = "ai_deferred_pending_unblock"
 QUICK_WIN = "quick_win"
 
 VALID_TYPES = frozenset(TYPE_TAG)
 VALID_EXECUTE = frozenset({"now", "later", "quick"})
+
+
+def execute_progress_tags(mode: str) -> tuple[str, str]:
+    """An execute mode → (progress_tag_to_write, stale_sibling_to_drop).
+
+    `later` is the durable deferred signal (`ai_progress_deferred`); `now`/`quick` request
+    immediate progress (`ai_progress_requested`). The two progression siblings are mutually
+    exclusive — an item must never carry both — so the returned stale sibling is removed when a
+    prior commit left it. (Blocked handling adds `ai_deferred_pending_unblock` separately; it is a
+    distinct concept and is not one of these siblings.)"""
+    if mode == "later":
+        return AI_PROGRESS_DEFERRED, AI_PROGRESS
+    return AI_PROGRESS, AI_PROGRESS_DEFERRED
 
 
 def classifiers_to_tags(item_type: str | None, classifiers: dict[str, Any] | None) -> list[str]:
@@ -68,8 +85,9 @@ def collect_commit_tags(ops: dict[str, Any]) -> set[str]:
     """Every canonical tag the commit *could* write, for the single up-front existence-gate pass.
 
     Bounded by the closed mapping: add classifier tags; edit context/comms tags; the execute tags
-    (`ai_progress_requested` + `ai_deferred_pending_unblock`, since `blocked` is decided at apply);
-    and `ai_conversation` whenever any task-touching op is present."""
+    (`ai_progress_requested` + `ai_deferred_pending_unblock`, since `blocked` is decided at apply,
+    plus `ai_progress_deferred` when any execute value is `later`); and `ai_conversation` whenever
+    any task-touching op is present."""
     tags: set[str] = set()
     for add in ops.get("adds") or []:
         tags.update(classifiers_to_tags(add.get("type"), add.get("classifiers")))
@@ -81,8 +99,13 @@ def collect_commit_tags(ops: dict[str, Any]) -> set[str]:
         if comms in COMMS_TAGS:
             tags.add(comms)
         tags.add(AI_CONVERSATION)
-    if ops.get("execute"):
+    execute = ops.get("execute") or {}
+    if execute:
         tags.update({AI_PROGRESS, AI_DEFERRED, AI_CONVERSATION})
+        # `later` writes the new deferred sibling; gate it only when actually present so a
+        # now/quick-only commit stays backward-compatible (doesn't require the new tag to exist).
+        if any(v == "later" for v in execute.values()):
+            tags.add(AI_PROGRESS_DEFERRED)
     if ops.get("notes"):
         tags.add(AI_CONVERSATION)
     return tags

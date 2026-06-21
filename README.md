@@ -277,16 +277,21 @@ you just created elsewhere is picked up without waiting for the cache to expire.
 - `gtd_project_canvas` - **Read-only.** The read-sibling of `gtd_project_plan`: returns the
   *canvas-ready* seed (`{mode, frame, seed}`) with the deterministic plan-graph overlay already
   applied — `quick` (from `#quick_win`), sibling `deps`, and a dependency-respecting timeline
-  order — so the canvas never re-implements GTD ordering/blocking. Byte-compatible with the GTD
-  plugin's `build_canvas --emit html-lean` seed. Filed-artefact file objects (per-action and the
+  order — so the canvas never re-implements GTD ordering/blocking. Each row also carries an
+  optional `prog` (`"now"` from `#ai_progress_requested` / `"later"` from `#ai_progress_deferred`)
+  so the execute pill reflects committed state on reload. Byte-compatible with the GTD plugin's
+  `build_canvas --emit html-lean` seed. Filed-artefact file objects (per-action and the
   project-level `frame.files`) gain a `meta` block from the artefact's companion metadata
   (title/type/status/dates/authors/tags) when a read-only AI Memory vault is configured
   (`RTM_VAULT_ROOT` / `AI_MEMORY_DIR`, or the host default); absent vault or companion → no `meta`.
 - `gtd_apply_canvas_commit` - **Constrained write.** The single governed write surface for a
-  canvas commit (adds / edits / completes / removes / execute / notes). Validates the whole
-  commit up-front and writes nothing if anything is rejected (cross-project id, non-canonical
-  tag via the strict-tag gate, smart-list target, unconfirmed destructive op), then applies
-  durable-first and records each transaction. Identify the project by `project_id`.
+  canvas commit (adds / edits / completes / removes / execute / notes). `execute` is a durable
+  now/later split: `now`/`quick` write `#ai_progress_requested`; `later` writes
+  `#ai_progress_deferred` (the two are mutually exclusive — switching state drops the stale
+  sibling). Validates the whole commit up-front and writes nothing if anything is rejected
+  (cross-project id, non-canonical tag via the strict-tag gate, smart-list target, unconfirmed
+  destructive op), then applies durable-first and records each transaction. Identify the project
+  by `project_id`.
 
 #### Tool naming convention
 Bare verbs (`add_task`, `list_tasks`, `get_task_notes`) are **generic RTM primitives** —

@@ -4,8 +4,10 @@ from rtm_mcp.canvas_commit import (
     AI_CONVERSATION,
     AI_DEFERRED,
     AI_PROGRESS,
+    AI_PROGRESS_DEFERRED,
     classifiers_to_tags,
     collect_commit_tags,
+    execute_progress_tags,
     validate_commit,
 )
 
@@ -41,6 +43,16 @@ class TestClassifiersToTags:
         assert tags == ["action", AI_CONVERSATION]
 
 
+class TestExecuteProgressTags:
+    def test_now_and_quick_request_immediate_progress(self):
+        # now/quick write ai_progress_requested; the deferred sibling is the one to drop
+        assert execute_progress_tags("now") == (AI_PROGRESS, AI_PROGRESS_DEFERRED)
+        assert execute_progress_tags("quick") == (AI_PROGRESS, AI_PROGRESS_DEFERRED)
+
+    def test_later_defers_and_drops_requested(self):
+        assert execute_progress_tags("later") == (AI_PROGRESS_DEFERRED, AI_PROGRESS)
+
+
 class TestCollectCommitTags:
     def test_union_across_ops(self):
         ops = {
@@ -58,6 +70,15 @@ class TestCollectCommitTags:
             AI_DEFERRED,
             AI_CONVERSATION,
         } <= tags
+
+    def test_later_execute_pulls_deferred_into_gate(self):
+        assert AI_PROGRESS_DEFERRED in collect_commit_tags({"execute": {"y": "later"}})
+
+    def test_now_only_execute_does_not_require_deferred(self):
+        # backward-compat: a now/quick-only commit must NOT make the new tag a gate requirement
+        tags = collect_commit_tags({"execute": {"y": "now", "z": "quick"}})
+        assert AI_PROGRESS_DEFERRED not in tags
+        assert {AI_PROGRESS, AI_DEFERRED, AI_CONVERSATION} <= tags
 
     def test_empty_ops_no_tags(self):
         assert collect_commit_tags({}) == set()
