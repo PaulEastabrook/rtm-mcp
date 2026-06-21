@@ -14,11 +14,11 @@ from fastmcp import Context
 from ..canvas_commit import (
     AI_CONVERSATION,
     AI_DEFERRED,
-    AI_PROGRESS,
     COMMS_TAGS,
     CONTEXT_TAGS,
     classifiers_to_tags,
     collect_commit_tags,
+    execute_progress_tags,
     validate_commit,
 )
 from ..canvas_overlay import apply_graph, lean_seed
@@ -126,7 +126,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         project→children tree, builds the `{mode, frame, seed}` seed (priority/context/comms,
         completion→history, note gists, files), then merges the plan-graph overlay: `quick` (from
         the #quick_win tag), sibling `deps`, and a dependency-respecting timeline order (the array
-        order of `seed`). `blocked` is NOT a field — the template derives it from `deps[]`.
+        order of `seed`). `blocked` is NOT a field — the template derives it from `deps[]`. Each row
+        also carries `prog` ("now" from #ai_progress_requested / "later" from #ai_progress_deferred;
+        absent when neither) so the execute pill reflects committed state on reload.
 
         File objects (per-action `files[]` and project-level `frame.files`) carry `{n, ext, kind,
         path}`; each also gains a `meta` block (the companion `.md`/`.yaml` frontmatter — title,
@@ -239,8 +241,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 to the project.
             completes / removes: lists of ids — DESTRUCTIVE, require confirm_destructive=True
                 (removes are RTM soft-deletes).
-            execute: {id: "now"|"later"|"quick"} — writes #ai_progress_requested
-                (+ #ai_deferred_pending_unblock when the item is blocked).
+            execute: {id: "now"|"later"|"quick"} — durable progression signal. "now"/"quick"
+                write #ai_progress_requested (drained immediately by the on-commit fire); "later"
+                writes #ai_progress_deferred (durable, NOT actioned by the fire). The two are
+                mutually exclusive — switching an item's state drops the stale sibling so it never
+                carries both. #ai_deferred_pending_unblock is still added when the item is blocked.
             notes: {id: {type, text}} — a journaling note per item.
             confirm_destructive: must be True for any completes/removes.
 
@@ -421,14 +426,26 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     "rtm.tasks.setTags", "edit:tags", rid, tags=",".join(sorted(new_tags)), **ids
                 )
 
-        # execute → durable progression signal (no AI work here)
+        # execute → durable progression signal (no AI work here). now/quick request immediate
+        # progress (#ai_progress_requested); later is the durable deferred sibling
+        # (#ai_progress_deferred). The two are mutually exclusive, so a stale sibling left by a
+        # prior commit (e.g. later→now) is removed — an item never carries both.
         for rid, mode in ops["execute"].items():
-            tags = [AI_PROGRESS, AI_CONVERSATION]
+            progress_tag, stale_sibling = execute_progress_tags(mode)
+            tags = [progress_tag, AI_CONVERSATION]
             if blocked_by_id.get(rid):
                 tags.append(AI_DEFERRED)
             await _write(
                 "rtm.tasks.addTags", f"execute:{mode}", rid, tags=",".join(tags), **_ids(rid)
             )
+            if stale_sibling in (by_id.get(rid, {}).get("tags") or []):
+                await _write(
+                    "rtm.tasks.removeTags",
+                    f"execute:{mode}:drop-stale",
+                    rid,
+                    tags=stale_sibling,
+                    **_ids(rid),
+                )
 
         # notes
         for rid, n in ops["notes"].items():

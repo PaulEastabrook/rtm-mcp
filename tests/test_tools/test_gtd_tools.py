@@ -241,6 +241,17 @@ def _commit_tree():
     )
 
 
+def _commit_tree_c1_tags(c1_tags):
+    """A commit tree where c1 carries the given tags (e.g. a stale progression sibling)."""
+    return _getlist(
+        [
+            _ts("tsP", PROJECT_ID, "Test Project", parent=AREA_ID, tags=["personal", "project"]),
+            _ts("ts1", "c1", "Edit me", parent=PROJECT_ID, priority="N", tags=c1_tags),
+            _ts("ts2", "c2", "Complete me", parent=PROJECT_ID, priority="N", tags=["action"]),
+        ]
+    )
+
+
 def _add_result():
     return {
         "transaction": {"id": "txadd", "undoable": "1"},
@@ -267,6 +278,7 @@ WRITE_METHODS = {
     "rtm.tasks.add",
     "rtm.tasks.setTags",
     "rtm.tasks.addTags",
+    "rtm.tasks.removeTags",
     "rtm.tasks.setPriority",
     "rtm.tasks.setDueDate",
     "rtm.tasks.setName",
@@ -373,6 +385,40 @@ class TestGtdProjectCanvas:
         c1 = next(it for it in result["data"]["seed"] if it["id"] == "c1")
         assert len(c1["notes"]) == 2
         assert c1["nc"] == 5  # honest true total
+
+    @pytest.mark.asyncio
+    async def test_seed_emits_prog_from_progression_tags(self, gtd_tools):
+        """The execute tri-state round-trips: seed rows carry `prog` derived from the durable tags
+        (now/later), or omit it when neither is present, so the pill reflects committed state."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["personal", "project"]),
+                    _ts(
+                        "ts1",
+                        "c1",
+                        "Now item",
+                        parent=PROJECT_ID,
+                        tags=["action", "ai_progress_requested"],
+                    ),
+                    _ts(
+                        "ts2",
+                        "c2",
+                        "Later item",
+                        parent=PROJECT_ID,
+                        tags=["action", "ai_progress_deferred"],
+                    ),
+                    _ts("ts3", "c3", "Plain item", parent=PROJECT_ID, tags=["action"]),
+                ]
+            )
+        )
+
+        data = (await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID))["data"]
+        by_id = {it["id"]: it for it in data["seed"]}
+        assert by_id["c1"]["prog"] == "now"
+        assert by_id["c2"]["prog"] == "later"
+        assert "prog" not in by_id["c3"]
 
 
 def _meta_tree():
@@ -527,9 +573,10 @@ class TestGtdApplyCanvasCommit:
         ):
             assert m in methods
 
-        # execute writes the durable progression tag
+        # execute "later" writes the durable DEFERRED progression tag, not the immediate one
         addtags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
-        assert "ai_progress_requested" in addtags.kwargs["tags"]
+        assert "ai_progress_deferred" in addtags.kwargs["tags"]
+        assert "ai_progress_requested" not in addtags.kwargs["tags"]
         # a COMMIT audit note is written
         notes = [c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add"]
         assert any(c.kwargs.get("note_title") == "COMMIT" for c in notes)
@@ -624,3 +671,97 @@ class TestGtdApplyCanvasCommit:
         assert "destructive_unconfirmed" in reasons
         methods = {c.args[0] for c in client.call.call_args_list if c.args}
         assert not (methods & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_execute_now_writes_requested_no_stale_drop(self, gtd_tools):
+        """now/quick write #ai_progress_requested; with no stale sibling present, no removeTags."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, execute={"c1": "now"}
+        )
+        addtags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
+        assert "ai_progress_requested" in addtags.kwargs["tags"]
+        assert "ai_progress_deferred" not in addtags.kwargs["tags"]
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert "rtm.tasks.removeTags" not in methods  # nothing stale to drop
+
+    @pytest.mark.asyncio
+    async def test_execute_later_to_now_drops_stale_deferred(self, gtd_tools):
+        """An item previously deferred, now set to now: writes requested and drops the stale
+        deferred sibling so it never carries both."""
+        tools, client = gtd_tools
+        tree = _commit_tree_c1_tags(["action", "ai_progress_deferred"])
+        client.call = AsyncMock(side_effect=_commit_dispatch(tree, _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, execute={"c1": "now"}
+        )
+        addtags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
+        assert "ai_progress_requested" in addtags.kwargs["tags"]
+        removetags = next(
+            c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.removeTags"
+        )
+        assert removetags.kwargs["tags"] == "ai_progress_deferred"
+
+    @pytest.mark.asyncio
+    async def test_execute_now_to_later_drops_stale_requested(self, gtd_tools):
+        """An item previously requested, now deferred: writes deferred and drops the stale
+        requested sibling."""
+        tools, client = gtd_tools
+        tree = _commit_tree_c1_tags(["action", "ai_progress_requested"])
+        client.call = AsyncMock(side_effect=_commit_dispatch(tree, _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, execute={"c1": "later"}
+        )
+        addtags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
+        assert "ai_progress_deferred" in addtags.kwargs["tags"]
+        removetags = next(
+            c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.removeTags"
+        )
+        assert removetags.kwargs["tags"] == "ai_progress_requested"
+
+    @pytest.mark.asyncio
+    async def test_later_rejected_when_deferred_tag_missing(self, gtd_tools):
+        """Dependency: until #ai_progress_deferred is provisioned in RTM, a `later` commit fails
+        the strict-tag existence gate with a clear, recoverable error — no silent drop, no write."""
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=True)
+        client.get_account_tags = AsyncMock(
+            return_value={"ai_progress_requested", "ai_deferred_pending_unblock", "ai_conversation"}
+        )
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, execute={"c1": "later"}
+        )
+        rejected = result["data"]["rejected"]
+        assert {r["reason"] for r in rejected} == {"non_canonical_tag"}
+        assert any("ai_progress_deferred" in r.get("rejected_tags", []) for r in rejected)
+        assert result["data"]["applied"] == []
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_now_allowed_when_deferred_tag_missing(self, gtd_tools):
+        """Backward-compat: a now/quick-only commit does NOT require the new deferred tag to exist,
+        so it still applies even before #ai_progress_deferred is provisioned."""
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=True)
+        client.get_account_tags = AsyncMock(
+            return_value={
+                "ai_progress_requested",
+                "ai_deferred_pending_unblock",
+                "ai_conversation",
+            }  # note: ai_progress_deferred deliberately absent
+        )
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, execute={"c1": "now"}
+        )
+        assert "rejected" not in result["data"]
+        addtags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
+        assert "ai_progress_requested" in addtags.kwargs["tags"]

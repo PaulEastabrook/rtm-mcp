@@ -6,6 +6,7 @@ from rtm_mcp.canvas_seed import (
     map_context,
     map_kind,
     map_priority,
+    map_prog,
     map_row,
     parse_file,
     parse_note,
@@ -33,6 +34,13 @@ class TestScalarMappers:
     def test_map_comms_optional(self):
         assert map_comms(["conversation_email"]) == "conversation_email"
         assert map_comms(["action"]) == ""
+
+    def test_map_prog_tri_state(self):
+        assert map_prog(["action", "ai_progress_requested"]) == "now"
+        assert map_prog(["action", "ai_progress_deferred"]) == "later"
+        assert map_prog(["action"]) == ""  # neither → off
+        # both somehow present → now wins
+        assert map_prog(["ai_progress_requested", "ai_progress_deferred"]) == "now"
 
 
 class TestParseNote:
@@ -141,6 +149,15 @@ class TestMapRow:
         )
         assert item["hx"] == 1
         assert item["cd"] == "2026-06-15"
+
+    def test_prog_emitted_from_progression_tags(self):
+        base = {"name": "X", "completed": 0, "permalink": "u", "notes": [], "files": []}
+        now = map_row({**base, "id": "c1", "tags": ["action", "ai_progress_requested"]})
+        assert now["prog"] == "now"
+        later = map_row({**base, "id": "c2", "tags": ["action", "ai_progress_deferred"]})
+        assert later["prog"] == "later"
+        plain = map_row({**base, "id": "c3", "tags": ["action"]})
+        assert "prog" not in plain  # backward-compat: absent when neither tag present
 
     def test_nc_honest_when_notes_capped(self):
         item = map_row(
