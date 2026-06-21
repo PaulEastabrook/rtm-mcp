@@ -209,7 +209,9 @@ def build_seed(
         frame["notes"] = proj_notes
     # Project-level support files: reference-folder artefacts NOT owned by a specific action
     # (source_action empty) — i.e. genuine project support material, not an action's output. Resolved
-    # from the file-store outputs index (authoritative paths), de-duped by filename.
+    # from the file-store outputs index (authoritative paths), de-duped by filename. With no index
+    # (v1 / vault-companion mode) the analog is the project's own note-scraped files (header carries
+    # them as header.project.files) parsed via parse_file; companion `meta` is attached downstream.
     if outputs_index is not None:
         seen, refs = set(), []
         for e in outputs_index:
@@ -224,6 +226,10 @@ def build_seed(
                 refs.append(_file_from_index(e))
         if refs:
             frame["files"] = refs
+    else:
+        proj_files = [f for f in (parse_file(p) for p in (proj.get("files") or [])) if f]
+        if proj_files:
+            frame["files"] = proj_files
     # Dual-mode artefact attribution (robust to both situations):
     #  - AUTHORITATIVE: file-store companion carries `source_action` (the owning RTM item id) →
     #    attach the artefact to THAT action, regardless of which note mentioned the path.

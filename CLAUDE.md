@@ -21,6 +21,7 @@ src/rtm_mcp/
 ├── plan_graph.py       # Pure deterministic plan-graph engine (port of gtd plan_graph.py)
 ├── canvas_overlay.py   # Pure seed+graph merge (apply_graph) + lean transform (lean_seed)
 ├── canvas_commit.py    # Pure closed tag-mapping + commit validators (backs gtd_apply_canvas_commit)
+├── companion.py        # Read-only vault locate (cross-platform) + companion .md/.yaml reader → canvas file.meta
 ├── tool_params.py      # Shared MCP complex-param coercion + clean-schema Annotated types
 ├── urls.py             # Web UI URL construction + task hierarchy walking
 ├── rate_limiter.py     # Token bucket rate limiter + diagnostics stats
@@ -50,6 +51,7 @@ src/rtm_mcp/
 | `plan_graph.py` | Pure deterministic plan-graph engine (DAG, blocked/quick judgement, tiered timeline order, cycles, fingerprint) — byte-compatible port of the gtd plugin's `plan_graph.py` |
 | `canvas_overlay.py` | Pure merge of the plan-graph overlay onto the seed (`apply_graph`) + the lean/inline transform (`lean_seed`) — port of the gtd plugin's `build_canvas.py` helpers |
 | `canvas_commit.py` | Pure closed canonical classifier→tag mapping + commit validators (`validate_commit`, `collect_commit_tags`) for `gtd_apply_canvas_commit` |
+| `companion.py` | The vault file-IO seam: locate the read-only AI Memory vault root (cross-platform; `AI_MEMORY_DIR`/host default + `memory/_index.md` marker), resolve each filed artefact's companion (`.md`/`.yaml`) frontmatter, and enrich `gtd_project_canvas` file objects with a `meta` block. Mirrors file-store's `query_outputs.py` by contract (stdlib-only). Graceful: every IO failure → no `meta`, never raises |
 | `tool_params.py` | Shared coercion for complex (array/object) MCP params: a `coerce_json` `BeforeValidator` + `Annotated` types presenting a clean single-typed JSON schema (no `anyOf`/null) so clients that stringify union-typed params still interoperate |
 | `exceptions.py` | Map RTM error codes to typed exceptions with recovery hints |
 | `urls.py` | Build RTM web UI deep-link URLs; walk parent_task_id chain for hierarchy |
@@ -283,6 +285,29 @@ ports** of the gtd plugin's scripts:
   and caps notes per item with an honest `nc` — byte-compatible with `build_canvas --emit
   html-lean`.) Read-only invariant: only `rtm.tasks.getList`; no timeline, no writes.
 
+  **Companion metadata (`file.meta`) + `frame.files`.** After the overlay/lean pass, `companion.py`
+  enriches every file object — per-action `seed[*].files[]` **and** project-level `frame.files` —
+  with a `meta` block: the artefact's companion (`.md`/`.yaml`) frontmatter (title/type/status/
+  dates/authors/tags/decision/…), read from the **read-only AI Memory vault**. `meta` is a full
+  pass-through of present top-level fields — **never** vocabulary-validated (real `type` values like
+  `form-prefilled` pass through verbatim). Backward-compatible: `n/ext/kind/path` are unchanged;
+  `meta` is added only where a companion exists, omitted otherwise. The reader mirrors file-store's
+  `query_outputs.py` by contract, extended to resolve multiple companion forms (`X.meta.md` →
+  `X.md` (non-md) → `X.companion.md` → `.companion/X.yaml` → `X.metadata.yaml`) and to read list
+  fields (`authors`/`tags`) the reference parser skips. `frame.files` is the project-level
+  support-material roll-up: filed paths scraped from the **project's own** notes
+  (`project_plan.build_envelope` now also emits `header.project.files`, additive to the
+  `project-plan-seed/3` envelope — `rtm_fetch.py` parity is an upstream follow-up), mapped via
+  `parse_file` in the `outputs_index is None` branch.
+
+  **Vault resolution (`companion.resolve_vault_root`)** mirrors the agent-memory plugins,
+  cross-platform via `pathlib` (macOS + Windows, no OS branching): explicit override
+  `config.vault_root` (env `RTM_VAULT_ROOT`, preferred, or the shared `AI_MEMORY_DIR`) → Cowork
+  sandbox mount (`/sessions/*/mnt/AI Memory`) → host default `~/Documents/AI Memory`; each
+  validated by the `memory/_index.md` marker. An explicit-but-invalid override does **not**
+  fall through (honest no-op). Unset/absent vault ⇒ no `meta`, no error — the read-only invariant
+  holds (companion reads are filesystem-only; still only `rtm.tasks.getList` hits the API).
+
 **`gtd_apply_canvas_commit` (constrained write)** is the single governed write surface for a
 canvas commit — safe by construction (artifacts call connectors without prompting). It runs
 **validate-then-apply**:
@@ -404,17 +429,18 @@ call-surface assertion, strict-tag rejection setup) are canonical in
 
 This inventory is the canonical per-file test count (keep it in sync — CONTRIBUTING.md § 9).
 
-Test files (422 tests total):
+Test files (457 tests total):
 - `tests/test_client.py` — client signing, API calls, settings + account-tag caching, transaction log, 503 retry, connection retry, POST/GET split (39 tests)
 - `tests/test_config.py` — config load/save, file fallback, corrupt JSON, strict-tag toggle (12 tests)
 - `tests/test_strict_tags.py` — strict-tag guard: normalize/split/SmartAdd-extract + enforce_strict_tags (off / reject / live-refetch) (12 tests)
-- `tests/test_project_plan.py` — project-plan-seed/3 envelope builder: header/row mapping, priority word-form, id-based permalink (absent ancestor), deps/files extraction, None→"" coercion, resolve_project disambiguation (13 tests)
-- `tests/test_canvas_seed.py` — canvas mapper: kind/priority/context/comms, parse_note (dash/colon forms, body-omit), parse_file filtering, map_row, build_seed frame + sibling-deps + history placement (17 tests)
+- `tests/test_project_plan.py` — project-plan-seed/3 envelope builder: header/row mapping, priority word-form, id-based permalink (absent ancestor), deps/files extraction, project-level `header.project.files`, None→"" coercion, resolve_project disambiguation (14 tests)
+- `tests/test_canvas_seed.py` — canvas mapper: kind/priority/context/comms, parse_note (dash/colon forms, body-omit), parse_file filtering, map_row, build_seed frame + sibling-deps + history placement + v1 `frame.files` from project files (18 tests)
 - `tests/test_plan_graph.py` — plan-graph engine: DEPENDS-ON edges + blocked, quick-from-tag (and blocked/waiting-for guards), tiered topological order, cycle fallback, fingerprint stability (11 tests)
 - `tests/test_canvas_overlay.py` — apply_graph (reorder + quick + sorted deps, no blocked/order field) and lean_seed (body-strip, cap, honest nc) (5 tests)
 - `tests/test_canvas_commit.py` — closed classifier→tag mapping, collect_commit_tags, validate_commit rejection paths (cross-project, destructive-confirm, unknown type, invalid execute, smart-list) (13 tests)
+- `tests/test_companion.py` — companion reader: parse_frontmatter (scalars/quote-strip, block + inline lists, empty-scalar drop, closing-fence stop), companion_candidates ordering, resolve_vault_root (explicit/host-default/marker), resolve_companion_meta (5 forms + precedence + containment + non-artefact skip), enrich_files (30 tests)
 - `tests/test_tool_params.py` — shared complex-param coercion: `coerce_json` (parse/passthrough/blank/invalid) + Annotated types (string→structured via BeforeValidator, clean single-typed schema, no `anyOf`) (11 tests)
-- `tests/test_tools/test_gtd_tools.py` — gtd_project_plan + gtd_project_canvas (seed shape, read-only call surface, lean cap, name/ambiguity/not-found) + gtd_apply_canvas_commit (staged-commit apply, JSON-string ops defensive path, all four rejection-without-write paths) via FakeMCP (20 tests)
+- `tests/test_tools/test_gtd_tools.py` — gtd_project_plan + gtd_project_canvas (seed shape, read-only call surface, lean cap, name/ambiguity/not-found, companion `file.meta` + `frame.files` from a tmp vault, no-meta-when-absent) + gtd_apply_canvas_commit (staged-commit apply, JSON-string ops defensive path, all four rejection-without-write paths) via FakeMCP (23 tests)
 - `tests/test_exceptions.py` — error code mapping including subtask codes 4040-4090 (16 tests)
 - `tests/test_rate_limiter.py` — token bucket acquire/refill/pause, rate limit stats (14 tests)
 - `tests/test_response_builder.py` — envelope builder, transaction info, record_and_build_response, parsers (40 tests)

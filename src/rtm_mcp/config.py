@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -78,6 +78,24 @@ class RTMConfig(BaseSettings):
             "Reject tag writes that would introduce a tag not already present in "
             "the RTM account. Env var RTM_STRICT_TAGS. On by default; set "
             "RTM_STRICT_TAGS=0 (or false/no) to allow new tags."
+        ),
+    )
+
+    # Read-only AI Memory vault root — backs companion-metadata resolution on
+    # gtd_project_canvas. RTM_VAULT_ROOT (server-local) takes precedence over the
+    # shared AI_MEMORY_DIR (the agent-memory plugins' canonical override). When unset,
+    # companion.resolve_vault_root falls back to the cross-platform host default
+    # (~/Documents/AI Memory) if its memory/_index.md marker exists, else resolution is
+    # off and file objects carry no `meta` (graceful no-op). The validation_alias bypasses
+    # the RTM_ env_prefix so AI_MEMORY_DIR is honoured verbatim.
+    vault_root: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("RTM_VAULT_ROOT", "AI_MEMORY_DIR"),
+        description=(
+            "Read-only AI Memory vault root for resolving filed-artefact companion "
+            "metadata on gtd_project_canvas. Env: RTM_VAULT_ROOT (preferred) or "
+            "AI_MEMORY_DIR. Unset → host default ~/Documents/AI Memory when present, "
+            "else companion resolution is off."
         ),
     )
 

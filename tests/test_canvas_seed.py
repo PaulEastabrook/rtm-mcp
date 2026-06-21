@@ -233,3 +233,13 @@ class TestBuildSeed:
         order = [it["id"] for it in seed["seed"]]
         assert order.index("c3") == len(order) - 1  # completed history last
         assert order.index("c1") < order.index("c3")
+
+    def test_frame_files_from_project_files_v1(self):
+        # v1 / vault-companion branch (outputs_index=None): frame.files comes from the project's
+        # own note-scraped files, mapped via parse_file (non-filed paths rejected).
+        header = self._header()
+        header["project"]["files"] = ["work/area/proj/reference/cert.pdf", "scratch.md"]
+        seed = build_seed(header, self._rows())
+        files = seed["frame"]["files"]
+        assert [f["n"] for f in files] == ["cert.pdf"]  # only the genuine filed artefact
+        assert files[0]["kind"] == "reference"
