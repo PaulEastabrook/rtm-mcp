@@ -32,6 +32,12 @@ AI_PROGRESS = "ai_progress_requested"
 AI_PROGRESS_DEFERRED = "ai_progress_deferred"
 # blocked, pending unblock (engine-set; a distinct concept, NOT user-deferred)
 AI_DEFERRED = "ai_deferred_pending_unblock"
+# overlay-refresh mark — stamped on the project by gtd_apply_canvas_commit after ANY successful
+# commit; drained (overlay recomputed + persisted, then removed) by the gtd-side gtd-project-finalise
+# engine. A NEW tag: under strict-tag mode it must be provisioned in RTM before this server version is
+# activated, else the up-front existence gate rejects every commit. The commit-path twin of
+# canvas_create.FINALISE_MARK. (A2.1 Piece 0b.)
+OVERLAY_REFRESH = "ai_overlay_refresh_needed"
 QUICK_WIN = "quick_win"
 
 VALID_TYPES = frozenset(TYPE_TAG)
@@ -108,6 +114,11 @@ def collect_commit_tags(ops: dict[str, Any]) -> set[str]:
             tags.add(AI_PROGRESS_DEFERRED)
     if ops.get("notes"):
         tags.add(AI_CONVERSATION)
+    # Every non-empty commit stamps the overlay-refresh mark on the project (Piece 0b) — so the gate
+    # must include it whenever any actionable op is present (adds / edits / execute / notes / completes
+    # / removes), not only the tag-writing ops above.
+    if any(ops.get(k) for k in ("adds", "edits", "execute", "notes", "completes", "removes")):
+        tags.add(OVERLAY_REFRESH)
     return tags
 
 

@@ -16,6 +16,7 @@ from ..canvas_commit import (
     AI_DEFERRED,
     COMMS_TAGS,
     CONTEXT_TAGS,
+    OVERLAY_REFRESH,
     classifiers_to_tags,
     collect_commit_tags,
     execute_progress_tags,
@@ -268,7 +269,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         Tag writes pass the strict-tag existence gate and use a closed canonical classifier→tag
         mapping; created/edited items carry #ai_conversation; a COMMIT note is written to the
-        project as an audit trail.
+        project as an audit trail. On any successful commit the project is also stamped with
+        #ai_overlay_refresh_needed (the gtd-side finalise engine drains it to recompute + persist the
+        enriched plan-graph overlay); this tag must exist in the RTM account under strict-tag mode.
 
         Returns (on success): {"applied": [{op, id, transaction_id}, ...], "errors": [...],
             "order_persisted": false, "message": "..."}.
@@ -498,6 +501,19 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "commit-note",
                 note_title="COMMIT",
                 note_text=body,
+                task_id=proj.get("id"),
+                taskseries_id=proj.get("taskseries_id"),
+                list_id=proj.get("list_id"),
+            )
+            # Piece 0b: stamp the overlay-refresh mark on the project so the gtd-side
+            # gtd-project-finalise engine recomputes + persists the enriched plan-graph overlay
+            # after ANY commit (not only execute-triggered ones). Best-effort + idempotent: addTags
+            # dedupes, and _write records the op in `applied` / `errors` like every other write.
+            await _write(
+                "rtm.tasks.addTags",
+                "overlay-refresh-mark",
+                proj.get("id"),
+                tags=OVERLAY_REFRESH,
                 task_id=proj.get("id"),
                 taskseries_id=proj.get("taskseries_id"),
                 list_id=proj.get("list_id"),
