@@ -112,6 +112,13 @@ This server provides full access to Remember The Milk's task management features
   metadata when a read-only AI Memory vault is configured (RTM_VAULT_ROOT / AI_MEMORY_DIR
   or the host default); absent vault or companion → no meta. Identify by project_id
   or project_name.
+- gtd_project_index: Read-only — the active-project portfolio index for the canvas navigator
+  (Phase C cockpit): one row per #project (incomplete, not #test; #hold always excluded, #someday
+  excluded unless include_someday=True) carrying life, the parent Area-of-Focus (focus/focus_id),
+  priority, open_count, blocked_count (children blocked by an open DEPENDS-ON upstream, via the thin
+  plan-graph), next_tickle (earliest open due, incl. overdue), and updated. One rtm.tasks.getList
+  (plus the session-cached settings read for the tz); no write, no timeline. Returns a list sorted
+  life → focus → project, or [] when none.
 - gtd_apply_canvas_commit: Constrained write — the single governed write surface for a
   project-plan-canvas commit (adds/edits/completes/removes/execute/notes). execute is a
   durable now/later split: now/quick → #ai_progress_requested; later →

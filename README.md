@@ -13,6 +13,7 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Strict-Tag Mode** (on by default): the server refuses to apply any tag that doesn't already exist in your account — stopping accidental tag creation at the source, with a guided error that tells the caller how to recover. Set `RTM_STRICT_TAGS=0` to disable.
 - **Batched project read** (`gtd_project_plan`): a whole project plan — project, all descendant items, and every note — in one read-only call (vs `1+N`), as the `project-plan-seed` envelope the GTD canvas consumes. The first of the server's `gtd_`-prefixed domain compositions.
 - **Project-plan canvas tools** (`gtd_project_canvas` + `gtd_apply_canvas_commit` + `gtd_create_project`): a read-only canvas seed with the deterministic plan-graph overlay applied (ordering, blocking, quick-wins), a single governed write surface that validates a whole canvas commit up-front and writes nothing if anything is rejected, and a create-sibling that builds a brand-new project (task + dependency-ordered children + notes/tags + finalise mark) from a canvas draft in one governed call.
+- **Portfolio index** (`gtd_project_index`): a read-only roll-up of every active `#project` — life, parent Area-of-Focus, and at-a-glance open/blocked counts + next tickle — in one call, backing the canvas navigator (the Phase C cockpit project picker).
 - **Undo and Batch Undo**: All write operations return transaction IDs; undo one or many operations with `batch_undo`
 - **Timeline Introspection**: Session transaction log with `get_timeline_info` for reviewing write history
 - **Token Bucket Rate Limiting**: Burst to 3 RPS, sustain ~0.9 RPS with configurable safety margin
@@ -288,6 +289,16 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   project-level `frame.files`) gain a `meta` block from the artefact's companion metadata
   (title/type/status/dates/authors/tags) when a read-only AI Memory vault is configured
   (`RTM_VAULT_ROOT` / `AI_MEMORY_DIR`, or the host default); absent vault or companion → no `meta`.
+- `gtd_project_index` - **Read-only.** The active-project **portfolio index** that backs the canvas
+  navigator (the Phase C cockpit picker). Returns one row per `#project` (incomplete, not `#test`;
+  `#hold` always excluded, `#someday` excluded unless `include_someday=True`) with `life`, the parent
+  Area-of-Focus (`focus` / `focus_id`; a top-level project is kept as `"(unfiled)"`, never dropped),
+  `priority`, `open_count` (incomplete children), `blocked_count` (children blocked by an open
+  `DEPENDS-ON` upstream — the same thin `plan_graph` judgement `gtd_project_canvas` applies),
+  `next_tickle` (earliest open due date, including overdue, or `""`), and `updated`. One
+  `rtm.tasks.getList` (plus the session-cached settings read for the timezone); no write, no timeline.
+  Returns a list sorted `life` → `focus` → `project`, or `[]` when none. Counts are vault-free — the
+  enriched overlay stays gtd-side.
 - `gtd_apply_canvas_commit` - **Constrained write.** The single governed write surface for a
   canvas commit (adds / edits / completes / removes / execute / notes). `execute` is a durable
   now/later split: `now`/`quick` write `#ai_progress_requested`; `later` writes

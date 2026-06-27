@@ -17,6 +17,7 @@ src/rtm_mcp/
 ├── lookup.py           # Shared name-to-ID resolution for tasks and lists
 ├── strict_tags.py      # Strict-tag mode: existence gate for tag writes (on by default)
 ├── project_plan.py     # Pure project-plan-seed/3 envelope builder (backs gtd_project_plan)
+├── project_index.py    # Pure active-#project portfolio roll-up + counts (backs gtd_project_index)
 ├── canvas_seed.py      # Pure envelope→canvas-seed mapper (port of gtd build-canvas-seed.py)
 ├── plan_graph.py       # Pure deterministic plan-graph engine (port of gtd plan_graph.py)
 ├── canvas_overlay.py   # Pure seed+graph merge (apply_graph) + lean transform (lean_seed)
@@ -33,7 +34,7 @@ src/rtm_mcp/
 │   ├── lists.py        # List management (7 tools)
 │   ├── notes.py        # Note operations (4 tools)
 │   ├── utilities.py    # Tags, locations, settings, undo, timeline, diagnostics, URLs (14 tools)
-│   └── gtd.py          # GTD domain compositions — gtd_project_plan, gtd_project_canvas, gtd_apply_canvas_commit, gtd_create_project (4 tools)
+│   └── gtd.py          # GTD domain compositions — gtd_project_plan, gtd_project_canvas, gtd_project_index, gtd_apply_canvas_commit, gtd_create_project (5 tools)
 └── scripts/
     └── setup_auth.py   # Interactive auth setup CLI
 ```
@@ -48,6 +49,7 @@ src/rtm_mcp/
 | `lookup.py` | Resolve human-readable names (task name, list name) to RTM IDs |
 | `strict_tags.py` | Strict-tag mode policy: normalize/split tags, extract SmartAdd `#tokens`, and gate tag writes against the account's existing tag set |
 | `project_plan.py` | Pure (no IO) reconstruction of the `project-plan-seed/3` envelope from parsed tasks — byte-compatible with the gtd plugin's `rtm_fetch.py` reference |
+| `project_index.py` | Pure (no IO) active-`#project` portfolio roll-up backing `gtd_project_index` — selection (incomplete, `#project`, not `#test`; `#hold`/`#someday` policy), life + parent Area-of-Focus resolution, and per-project counts (`open_count`, `blocked_count`, `next_tickle`) computed by reusing `project_plan.build_envelope` + the thin `plan_graph.build_graph`. Vault-free |
 | `canvas_seed.py` | Pure mapper: `project-plan-seed/3` envelope → canvas `{mode, frame, seed}` shape — byte-compatible port of the gtd plugin's `build-canvas-seed.py` |
 | `plan_graph.py` | Pure deterministic plan-graph engine (DAG, blocked/quick judgement, tiered timeline order, cycles, fingerprint) — byte-compatible port of the gtd plugin's `plan_graph.py` |
 | `canvas_overlay.py` | Pure merge of the plan-graph overlay onto the seed (`apply_graph`) + the lean/inline transform (`lean_seed`) — port of the gtd plugin's `build_canvas.py` helpers |
@@ -401,6 +403,39 @@ recording (so `batch_undo` works), and batch-resilient `_write` helper. Payload:
 - *Complex-param contract:* `frame`/`items`/`notes` use the same `tool_params` `Annotated` types +
   in-body `coerce_json` as the commit tool, so each accepts structured JSON or a JSON-string.
 
+### Portfolio index (`gtd_project_index`)
+
+`gtd_project_index` (`tools/gtd.py`, backed by the pure `project_index.py`) is the **read-only
+portfolio roll-up** that powers the project-plan-canvas **navigator** (the Phase C cockpit picker) —
+the third gtd read tool alongside `gtd_project_plan` / `gtd_project_canvas`. It answers "what's the
+whole active-project landscape, and where does each project stand?" in ONE read.
+
+**Read-only, one `getList`.** The tool issues a single `rtm.tasks.getList(filter="status:incomplete")`
+(plus the session-cached `get_timezone`) — no timeline, no write — then hands the parsed tasks to
+`project_index.build_index`. That comprehensive read (the same posture as `gtd_project_plan`) carries
+every project AND its children in one response, so the per-project counts need no N+1 fan-out.
+
+**`build_index` (pure).** For each project — incomplete, `#project`, **not** `#test`; `#hold` always
+excluded and `#someday` excluded unless `include_someday=True` — it reuses the **parity-pinned**
+engines so the navigator's numbers match the canvas exactly: `project_plan.build_envelope` (children +
+localised dates + active `DEPENDS-ON` `deps`) and the **thin** `plan_graph.build_graph` (the blocked
+judgement). It emits one row per project: `{life, focus, focus_id, project, project_id, priority,
+open_count, blocked_count, next_tickle, updated}`, sorted `life → focus → project`. Decisions:
+- `open_count` = **all** incomplete children (actions + waiting-fors + calendar entries — the read
+  only fetches incomplete, so it's `len(rows)`); `blocked_count` = children the thin graph judges
+  `blocked` (an open `DEPENDS-ON` upstream **within the project's own rows** — cross-project /
+  completed upstreams don't count, consistent with `gtd_project_canvas`).
+- `next_tickle` = the earliest open `due` across the project's rows **including overdue** (`""` when
+  none) — no clock dependency, so the builder stays deterministic.
+- `focus`/`focus_id` come from the project's **parent** Area-of-Focus task; a top-level project is
+  kept as `focus="(unfiled)"`, `focus_id=""` (never dropped). `priority` is the project's raw RTM
+  priority coerced to `"1"|"2"|"3"|""`; dates are localised to the account tz (the BST off-by-one
+  fix, via `project_plan._norm_date`).
+
+**Vault-free (the membrane).** Counts derive only from the server's thin plan-graph — the enriched
+AI-Memory overlay stays gtd-side, exactly as for the canvas/commit tools. Purely additive and
+read-only: **no new tag, no strict-tag-gate interaction**, so no activation-ordering hazard.
+
 ## RTM API Quirks
 
 ### Response Normalization
@@ -499,11 +534,12 @@ call-surface assertion, strict-tag rejection setup) are canonical in
 
 This inventory is the canonical per-file test count (keep it in sync — CONTRIBUTING.md § 9).
 
-Test files (516 tests total):
+Test files (540 tests total):
 - `tests/test_client.py` — client signing, API calls, settings + account-tag caching, transaction log, 503 retry, connection retry, POST/GET split (39 tests)
 - `tests/test_config.py` — config load/save, file fallback, corrupt JSON, strict-tag toggle (12 tests)
 - `tests/test_strict_tags.py` — strict-tag guard: normalize/split/SmartAdd-extract + enforce_strict_tags (off / reject / live-refetch) (12 tests)
 - `tests/test_project_plan.py` — project-plan-seed/3 envelope builder: header/row mapping, priority word-form, id-based permalink (absent ancestor), deps/files extraction, project-level `header.project.files`, None→"" coercion, tz date-localisation (BST off-by-one fix, GMT-unaffected, no-tz fallback, completed/note dates), resolve_project disambiguation, resolve_focus (by id/name/substring, area-from-project-parents, ambiguity, miss, project-less area) (27 tests)
+- `tests/test_project_index.py` — portfolio-index builder: selection (incomplete/#project/not-#test; #hold always excluded; #someday default-out/opt-in; completed-project excluded; empty), field-set shape, life-from-tag, focus/focus_id from parent (+ top-level → `(unfiled)` not dropped), priority mapping (1/2/3 and N→""), `updated` tz-localisation (BST), open_count = all incomplete children, blocked_count from a DEPENDS-ON edge, next_tickle earliest incl. overdue (+ empty), life→focus→project sort (20 tests)
 - `tests/test_canvas_seed.py` — canvas mapper: kind/priority/context/comms, `map_prog` tri-state + per-row `prog` emit, parse_note (dash/colon forms, body-omit), parse_file filtering, map_row, build_seed frame + sibling-deps + history placement + v1 `frame.files` from project files (20 tests)
 - `tests/test_plan_graph.py` — plan-graph engine: DEPENDS-ON edges + blocked, quick-from-tag (and blocked/waiting-for guards), tiered topological order, cycle fallback, fingerprint stability (11 tests)
 - `tests/test_canvas_overlay.py` — apply_graph (reorder + quick + sorted deps, no blocked/order field) and lean_seed (body-strip, cap, honest nc) (5 tests)
@@ -511,7 +547,7 @@ Test files (516 tests total):
 - `tests/test_canvas_create.py` — create-side pure helpers: `item_id` (explicit/index/empty), `project_tags` (life + project + ai_conversation + finalise mark), `collect_create_tags` (project tags; later pulls deferred into gate; now-only backward-compat; no-execute omits progress tags), `validate_create` rejection paths (missing_name, invalid_life, unknown_add_type, invalid_execute, unknown_dep, dep-by-index) (18 tests)
 - `tests/test_companion.py` — companion reader: parse_frontmatter (scalars/quote-strip, block + inline lists, empty-scalar drop, closing-fence stop), companion_candidates ordering, resolve_vault_root (explicit/host-default/marker), resolve_companion_meta (5 forms + precedence + containment + non-artefact skip), enrich_files (30 tests)
 - `tests/test_tool_params.py` — shared complex-param coercion: `coerce_json` (parse/passthrough/blank/invalid) + Annotated types (string→structured via BeforeValidator, clean single-typed schema, no `anyOf`) (11 tests)
-- `tests/test_tools/test_gtd_tools.py` — gtd_project_plan + gtd_project_canvas (seed shape, read-only call surface, lean cap, name/ambiguity/not-found, per-row `prog` from progression tags, BST due renders local day + no-tz fallback, companion `file.meta` + `frame.files` from a tmp vault, no-meta-when-absent) + gtd_apply_canvas_commit (staged-commit apply, JSON-string ops defensive path, now/later execute split + stale-sibling drop both directions, `later` strict-gate rejection + `now` backward-compat, all four rejection-without-write paths, overlay-refresh mark stamped on successful commit + not on zero-apply) + gtd_create_project (project + children in dep order under the area, DEPENDS-ON note → producer's new id, finalise-mark + life + #project on the project, INCEPTION note, undoable; create-then-complete; now/later execute split + blocked→deferred; JSON-string params; focus ambiguity/miss without writes; missing-name + finalise-mark-absent strict rejection without writes; now-only backward-compat; reads once before writing) via FakeMCP (43 tests)
+- `tests/test_tools/test_gtd_tools.py` — gtd_project_plan + gtd_project_canvas (seed shape, read-only call surface, lean cap, name/ambiguity/not-found, per-row `prog` from progression tags, BST due renders local day + no-tz fallback, companion `file.meta` + `frame.files` from a tmp vault, no-meta-when-absent) + gtd_apply_canvas_commit (staged-commit apply, JSON-string ops defensive path, now/later execute split + stale-sibling drop both directions, `later` strict-gate rejection + `now` backward-compat, all four rejection-without-write paths, overlay-refresh mark stamped on successful commit + not on zero-apply) + gtd_create_project (project + children in dep order under the area, DEPENDS-ON note → producer's new id, finalise-mark + life + #project on the project, INCEPTION note, undoable; create-then-complete; now/later execute split + blocked→deferred; JSON-string params; focus ambiguity/miss without writes; missing-name + finalise-mark-absent strict rejection without writes; now-only backward-compat; reads once before writing) + gtd_project_index (list wrapper + row field-set, life/focus/focus_id, open/blocked counts, read-only call surface + no transaction, include_someday passthrough) via FakeMCP (46 tests)
 - `tests/test_exceptions.py` — error code mapping including subtask codes 4040-4090 (16 tests)
 - `tests/test_rate_limiter.py` — token bucket acquire/refill/pause, rate limit stats (14 tests)
 - `tests/test_response_builder.py` — envelope builder, transaction info, record_and_build_response, parsers (40 tests)

@@ -35,6 +35,7 @@ from ..companion import enrich_files, resolve_vault_root
 from ..lookup import resolve_list_id
 from ..parsers import parse_tasks_response, priority_to_code
 from ..plan_graph import build_graph
+from ..project_index import build_index
 from ..project_plan import build_envelope, resolve_focus, resolve_project
 from ..response_builder import build_response, get_transaction_info
 from ..strict_tags import enforce_strict_tags
@@ -225,6 +226,46 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             }
 
         return build_response(data=seed, analysis=analysis)
+
+    @mcp.tool()
+    async def gtd_project_index(
+        ctx: Context,
+        include_someday: bool = False,
+    ) -> dict[str, Any]:
+        """GTD — return the active-project portfolio index: one row per project with at-a-glance
+        state (open / blocked counts + next tickle), grouped by life → focus. The data source for
+        the project-plan-canvas navigator (the Phase C cockpit picker); a read-sibling of
+        gtd_project_plan / gtd_project_canvas.
+
+        Read-only. One signed rtm.tasks.getList (status:incomplete) plus a session-cached
+        rtm.settings.getList for the account timezone; no write, no timeline. Counts are vault-free —
+        derived from the THIN plan-graph over each project's rows (the same blocked judgement
+        gtd_project_canvas applies), so cross-project / completed upstreams don't count as blockers.
+        Dates are localised to the account timezone (RTM returns UTC).
+
+        Selection: incomplete tasks tagged #project, NOT #test; #hold always excluded, #someday
+        excluded unless include_someday=True. A project with no Area-of-Focus parent is kept with
+        focus="(unfiled)", focus_id="" — never dropped.
+
+        Args:
+            include_someday: include #someday projects in the portfolio (default False; #hold stays
+                excluded regardless).
+
+        Returns (on success): a list of {life, focus, focus_id, project, project_id, priority
+            ("1"|"2"|"3"|""), open_count (incomplete children), blocked_count (children blocked by an
+            open DEPENDS-ON upstream), next_tickle (earliest open due date, incl. overdue, or ""),
+            updated (project modified date)}, sorted by life → focus → project.
+        Returns (on empty portfolio): [].
+        """
+        client: RTMClient = await get_client()
+        result = await client.call("rtm.tasks.getList", filter="status:incomplete")
+        parsed = parse_tasks_response(result)
+        # Localise dates to the account timezone (cached settings read) — RTM returns UTC, so a BST
+        # due/modified would otherwise render a day early. None on failure → safe raw-UTC fallback.
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_index(parsed, include_someday=include_someday, timezone=tz)
+        )
 
     @mcp.tool()
     async def gtd_apply_canvas_commit(
