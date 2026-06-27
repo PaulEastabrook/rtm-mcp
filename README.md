@@ -304,11 +304,12 @@ you just created elsewhere is picked up without waiting for the cache to expire.
     `{focus_id, focus, life}` — **including foci with zero active projects**, which the per-project
     rows can never surface; sorted `life` → `focus`.
   - `actions`: every incomplete child under an active project (actions, waiting-fors and calendar
-    entries — all jumpable; not `#test`) as `{action_id, name, project_id, project, focus, life, due,
-    priority, blocked}` for fast cockpit search / jump-to **and the "What's hot" band** — `due`
-    (own due/chase/calendar date, localised, `""` if none), `priority` (`"1"|"2"|"3"|""`) and
-    `blocked` (open `DEPENDS-ON` upstream, same thin-graph judgement as `blocked_count`); sorted
-    `life` → `focus` → `project` → `name`.
+    entries — all jumpable; not `#test`) as `{action_id, name, project_id, project, focus, life,
+    type, due, priority, blocked}` for fast cockpit search / jump-to **and the "What's hot" band** —
+    `type` (`"action"|"waiting_for"|"calendar"`, the same `gtd_project_canvas` `r.k` classification,
+    so a cross-project result gets the right glyph), `due` (own due/chase/calendar date, localised,
+    `""` if none), `priority` (`"1"|"2"|"3"|""`) and `blocked` (open `DEPENDS-ON` upstream, same
+    thin-graph judgement as `blocked_count`); sorted `life` → `focus` → `project` → `name`.
 
   Counts are vault-free — the enriched overlay stays gtd-side. The response is an object (was a bare
   list pre-1.10.0) but backward-compatible for the existing navigator, which reads `data.projects`.

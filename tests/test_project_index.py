@@ -270,6 +270,7 @@ class TestActions:
             "project",
             "focus",
             "life",
+            "type",
             "due",
             "priority",
             "blocked",
@@ -322,6 +323,23 @@ class TestActions:
 class TestActionUrgencyFields:
     def _by_id(self, **kwargs):
         return {a["action_id"]: a for a in build_actions(_portfolio(), **kwargs)}
+
+    def test_type_matches_canvas_classification(self):
+        # same r.k classification gtd_project_canvas applies: #waiting_for → waiting_for,
+        # #calendar_entry → calendar, otherwise action.
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("act", name="A next action", parent=P1, tags=["action"]),
+            _t("wf", name="A chase", parent=P1, tags=["waiting_for"]),
+            _t("cal", name="A calendar item", parent=P1, tags=["calendar_entry"]),
+            _t("bare", name="Untagged child", parent=P1, tags=[]),
+        ]
+        by_id = {a["action_id"]: a for a in build_actions(parsed)}
+        assert by_id["act"]["type"] == "action"
+        assert by_id["wf"]["type"] == "waiting_for"
+        assert by_id["cal"]["type"] == "calendar"
+        assert by_id["bare"]["type"] == "action"  # default kind
 
     def test_due_carried_and_empty_when_absent(self):
         parsed = [

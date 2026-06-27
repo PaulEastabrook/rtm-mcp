@@ -121,9 +121,9 @@ This server provides full access to Remember The Milk's task management features
   plan-graph), next_tickle (earliest open due, incl. overdue) and updated. foci: every #focus area
   (same gate) as {focus_id, focus, life}, including foci with no active projects. actions: every
   incomplete child under an active project (not #test) as {action_id, name, project_id, project,
-  focus, life, due, priority, blocked} for cockpit search/jump-to and the What's-hot band (due
-  localised or "", priority "1"|"2"|"3"|"", blocked per the thin plan-graph). Backward-compatible
-  for the navigator (reads data.projects).
+  focus, life, type, due, priority, blocked} for cockpit search/jump-to and the What's-hot band
+  (type action|waiting_for|calendar per the canvas r.k, due localised or "", priority "1"|"2"|"3"|"",
+  blocked per the thin plan-graph). Backward-compatible for the navigator (reads data.projects).
 - gtd_apply_canvas_commit: Constrained write — the single governed write surface for a
   project-plan-canvas commit (adds/edits/completes/removes/execute/notes). execute is a
   durable now/later split: now/quick → #ai_progress_requested; later →

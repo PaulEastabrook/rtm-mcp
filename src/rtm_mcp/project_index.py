@@ -15,6 +15,7 @@ Area-of-Focus, the project priority, and the modified date come from the project
 
 from typing import Any
 
+from .canvas_seed import map_kind
 from .plan_graph import build_graph
 from .project_plan import (
     _LIFE_TAGS,
@@ -170,8 +171,11 @@ def build_actions(
     (and its `focus`/`life`) — a child can only be reached via an active project, so there are no
     dangling-project rows; a child of a top-level project inherits `focus="(unfiled)"`.
 
-    Each row also carries the urgency signal the cockpit's "What's hot" band triages on, read off
-    work already done for the per-project counts:
+    Each row also carries the item kind plus the urgency signal the cockpit's "What's hot" band and
+    find/search results render, read off work already done for the per-project counts:
+    - `type` — the item kind `"action"|"waiting_for"|"calendar"`, the SAME classification the canvas
+      applies (`canvas_seed.map_kind`, i.e. `gtd_project_canvas`'s `r.k`), so the UI picks the right
+      glyph (dot / clock / calendar) for a cross-project action result.
     - `due` — the item's own due/chase/calendar date, localised to the account tz (RTM returns UTC),
       "" when none; overdue is just a `due` earlier than today, derived consumer-side.
     - `priority` — RTM priority in the same `"1"|"2"|"3"|""` encoding as the project rows.
@@ -183,7 +187,7 @@ def build_actions(
         action's `due` matches the project `next_tickle` / canvas date convention).
 
     Returns a list (sorted by life → focus → project → name for deterministic, grouped output) of
-        {action_id, name, project_id, project, focus, life, due, priority, blocked}.
+        {action_id, name, project_id, project, focus, life, type, due, priority, blocked}.
     """
     by_id = {t["id"]: t for t in parsed}
     out: list[dict[str, Any]] = []
@@ -207,7 +211,8 @@ def build_actions(
         # `blocked_count` are one and the same judgement.
         judgement = build_graph(env["header"], rows).get("judgement", {})
         for r in rows:
-            if _TEST_TAG in (r.get("tags") or []):
+            row_tags = r.get("tags") or []
+            if _TEST_TAG in row_tags:
                 continue
             out.append(
                 {
@@ -217,6 +222,7 @@ def build_actions(
                     "project": project_name,
                     "focus": focus,
                     "life": life,
+                    "type": map_kind(row_tags),  # canvas r.k classification
                     "due": r["due"],  # already localised by build_envelope
                     "priority": _priority_code(by_id.get(r["id"], {})),
                     "blocked": bool(judgement.get(r["id"], {}).get("blocked")),
