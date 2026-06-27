@@ -1233,11 +1233,27 @@ class TestGtdProjectIndex:
         actions = data["actions"]
         assert {a["action_id"] for a in actions} == {"101", "102"}
         a = next(a for a in actions if a["action_id"] == "101")
-        assert set(a) == {"action_id", "name", "project_id", "project", "focus", "life"}
+        assert set(a) == {
+            "action_id",
+            "name",
+            "project_id",
+            "project",
+            "focus",
+            "life",
+            "due",
+            "priority",
+            "blocked",
+        }
         assert a["project_id"] == PROJECT_ID
         assert a["project"] == "Open days"
         assert a["focus"] == "Sam — University"
         assert a["life"] == "personal"
+        # urgency signal: 101 has a due, no priority, and is the upstream (not blocked); 102 is
+        # blocked by 101.
+        assert a["due"] == "2026-07-03"
+        assert a["priority"] == ""
+        assert a["blocked"] is False
+        assert next(x for x in actions if x["action_id"] == "102")["blocked"] is True
 
     @pytest.mark.asyncio
     async def test_read_only_call_surface(self, gtd_tools):

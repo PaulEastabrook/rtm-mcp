@@ -43,6 +43,13 @@ def _life(tags: list[str]) -> str:
     return next((tg for tg in tags if tg in _LIFE_TAGS), "")
 
 
+def _priority_code(task: dict[str, Any]) -> str:
+    """A task's raw RTM priority coerced to the navigator encoding `"1"|"2"|"3"|""` (RTM's "N",
+    or anything else, → "")."""
+    pr = str(task.get("priority") or "N")
+    return pr if pr in _PRIORITY_CODES else ""
+
+
 def _active(tags: list[str], completed: Any, *, include_someday: bool) -> bool:
     """The shared active-portfolio lifecycle gate (used for both projects and foci): NOT completed,
     NOT `#test`, `#hold` always excluded, `#someday` excluded unless opted in. The caller layers on
@@ -100,9 +107,6 @@ def build_index(
         focus = (parent.get("name") or "") if parent else "(unfiled)"
         focus_id = parent["id"] if parent else ""
 
-        pr = str(proj.get("priority") or "N")
-        priority = pr if pr in _PRIORITY_CODES else ""
-
         out.append(
             {
                 "life": life,
@@ -110,7 +114,7 @@ def build_index(
                 "focus_id": focus_id,
                 "project": proj.get("name") or "",
                 "project_id": pid,
-                "priority": priority,
+                "priority": _priority_code(proj),
                 "open_count": open_count,
                 "blocked_count": blocked_count,
                 "next_tickle": next_tickle,
@@ -166,11 +170,20 @@ def build_actions(
     (and its `focus`/`life`) — a child can only be reached via an active project, so there are no
     dangling-project rows; a child of a top-level project inherits `focus="(unfiled)"`.
 
-    timezone: forwarded to `build_envelope` for date localisation parity with the canvas (the row
-        shape used here carries no date, but the reconstruction is shared, so we pass it through).
+    Each row also carries the urgency signal the cockpit's "What's hot" band triages on, read off
+    work already done for the per-project counts:
+    - `due` — the item's own due/chase/calendar date, localised to the account tz (RTM returns UTC),
+      "" when none; overdue is just a `due` earlier than today, derived consumer-side.
+    - `priority` — RTM priority in the same `"1"|"2"|"3"|""` encoding as the project rows.
+    - `blocked` — True iff the action has an OPEN `DEPENDS-ON` upstream within its project's own rows,
+      the same thin plan-graph judgement that feeds each project's `blocked_count` (cross-project /
+      completed upstreams don't count).
+
+    timezone: forwarded to `build_envelope` for date localisation parity with the canvas (so each
+        action's `due` matches the project `next_tickle` / canvas date convention).
 
     Returns a list (sorted by life → focus → project → name for deterministic, grouped output) of
-        {action_id, name, project_id, project, focus, life}.
+        {action_id, name, project_id, project, focus, life, due, priority, blocked}.
     """
     by_id = {t["id"]: t for t in parsed}
     out: list[dict[str, Any]] = []
@@ -189,7 +202,11 @@ def build_actions(
         project_name = proj.get("name") or ""
 
         env = build_envelope(parsed, pid, timezone=timezone)
-        for r in env["rows"]:
+        rows = env["rows"]
+        # Same thin plan-graph as build_index — so per-action `blocked` and the project's
+        # `blocked_count` are one and the same judgement.
+        judgement = build_graph(env["header"], rows).get("judgement", {})
+        for r in rows:
             if _TEST_TAG in (r.get("tags") or []):
                 continue
             out.append(
@@ -200,6 +217,9 @@ def build_actions(
                     "project": project_name,
                     "focus": focus,
                     "life": life,
+                    "due": r["due"],  # already localised by build_envelope
+                    "priority": _priority_code(by_id.get(r["id"], {})),
+                    "blocked": bool(judgement.get(r["id"], {}).get("blocked")),
                 }
             )
 

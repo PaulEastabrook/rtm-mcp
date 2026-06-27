@@ -263,7 +263,17 @@ class TestActions:
 
     def test_field_set_and_attribution(self):
         a = next(a for a in build_actions(_portfolio()) if a["action_id"] == "101")
-        assert set(a) == {"action_id", "name", "project_id", "project", "focus", "life"}
+        assert set(a) == {
+            "action_id",
+            "name",
+            "project_id",
+            "project",
+            "focus",
+            "life",
+            "due",
+            "priority",
+            "blocked",
+        }
         assert a["name"] == "Attend webinar"
         assert a["project_id"] == P1
         assert a["project"] == "Open days"
@@ -307,3 +317,83 @@ class TestActions:
         ]
         names = [a["name"] for a in build_actions(parsed)]
         assert names == ["Alpha", "Beta"]
+
+
+class TestActionUrgencyFields:
+    def _by_id(self, **kwargs):
+        return {a["action_id"]: a for a in build_actions(_portfolio(), **kwargs)}
+
+    def test_due_carried_and_empty_when_absent(self):
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("d", name="Dated", parent=P1, due="2026-07-03T00:00:00Z", tags=["action"]),
+            _t("u", name="Undated", parent=P1, tags=["action"]),
+        ]
+        by_id = {a["action_id"]: a for a in build_actions(parsed)}
+        assert by_id["d"]["due"] == "2026-07-03"
+        assert by_id["u"]["due"] == ""
+
+    def test_due_localised_to_account_tz(self):
+        # due at 23:00Z → next calendar day in Europe/London (BST), matching the next_tickle /
+        # canvas date convention; a raw [:10] would wrongly yield the prior day.
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("d", name="BST due", parent=P1, due="2026-06-20T23:00:00Z", tags=["action"]),
+        ]
+        local = build_actions(parsed, timezone="Europe/London")[0]
+        assert local["due"] == "2026-06-21"
+        raw = build_actions(parsed)[0]  # no tz → raw-UTC fallback
+        assert raw["due"] == "2026-06-20"
+
+    def test_priority_encoding(self):
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("p1", name="High", parent=P1, priority="1", tags=["action"]),
+            _t("pn", name="None", parent=P1, priority="N", tags=["action"]),
+        ]
+        by_id = {a["action_id"]: a for a in build_actions(parsed)}
+        assert by_id["p1"]["priority"] == "1"
+        assert by_id["pn"]["priority"] == ""
+
+    def test_blocked_matches_plan_graph(self):
+        # 102 depends on the open sibling 101 → blocked; 101 has no upstream → not blocked. Same
+        # judgement that gives the project blocked_count == 1.
+        by_id = self._by_id()
+        assert by_id["102"]["blocked"] is True
+        assert by_id["101"]["blocked"] is False
+
+    def test_blocked_false_when_upstream_not_in_project_rows(self):
+        # an upstream that is completed or cross-project is not in the fetched incomplete rows, so
+        # the edge resolves to nothing → not blocked (consistent with blocked_count).
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t(
+                "201",
+                name="Waiting on external",
+                parent=P1,
+                tags=["action"],
+                notes=[_depends_on("999999")],  # upstream absent from the fetched set
+            ),
+        ]
+        assert build_actions(parsed)[0]["blocked"] is False
+
+    def test_waiting_for_and_calendar_carry_due(self):
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("wf", name="Hear back", parent=P1, due="2026-07-15T00:00:00Z", tags=["waiting_for"]),
+            _t(
+                "cal",
+                name="Open day visit",
+                parent=P1,
+                due="2026-07-20T00:00:00Z",
+                tags=["calendar"],
+            ),
+        ]
+        by_id = {a["action_id"]: a for a in build_actions(parsed)}
+        assert by_id["wf"]["due"] == "2026-07-15"  # chase/tickle date
+        assert by_id["cal"]["due"] == "2026-07-20"  # calendar date

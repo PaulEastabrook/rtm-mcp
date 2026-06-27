@@ -253,7 +253,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
           focus list, INCLUDING focus areas with zero active projects (which the per-project rows
           can never surface on their own).
         - actions: every incomplete child under an active project (actions, waiting-fors, and
-          calendar entries — all jumpable), NOT #test. Each carries its project/focus/life context.
+          calendar entries — all jumpable), NOT #test. Each carries its project/focus/life context
+          plus the urgency signal the "What's hot" band triages on: due, priority, blocked.
 
         Args:
             include_someday: include #someday projects AND foci in the portfolio (default False;
@@ -265,7 +266,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 DEPENDS-ON upstream), next_tickle (earliest open due date, incl. overdue, or ""),
                 updated (project modified date)}], sorted by life → focus → project;
             foci: [{focus_id, focus, life}], sorted by life → focus;
-            actions: [{action_id, name, project_id, project, focus, life}], sorted by
+            actions: [{action_id, name, project_id, project, focus, life, due
+                (YYYY-MM-DD localised, or ""), priority ("1"|"2"|"3"|""), blocked (bool)}], sorted by
                 life → focus → project → name.
         Returns (on empty portfolio): {"projects": [], "foci": [], "actions": []}.
         """
