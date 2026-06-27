@@ -1130,11 +1130,12 @@ class TestGtdCreateProject:
 
 
 def _index_account():
-    """A portfolio: AREA_ID area → one active project (two children, one blocked) + a someday
-    project under the same area."""
+    """A portfolio: AREA_ID area (a #focus) → one active project (two children, one blocked) + a
+    someday project under the same area; plus an empty #focus area with no active projects."""
     return _getlist(
         [
-            _ts("tsArea", AREA_ID, "Sam — University"),
+            _ts("tsArea", AREA_ID, "Sam — University", tags=["personal", "focus"]),
+            _ts("tsEmpty", "areaEmpty", "Line management", tags=["work", "focus"]),
             _ts("tsP", PROJECT_ID, "Open days", parent=AREA_ID, tags=["personal", "project"]),
             _ts(
                 "ts1", "101", "Attend webinar", parent=PROJECT_ID, due="2026-07-03", tags=["action"]
@@ -1168,14 +1169,24 @@ def _index_account():
 
 class TestGtdProjectIndex:
     @pytest.mark.asyncio
-    async def test_returns_list_of_project_rows(self, gtd_tools):
+    async def test_returns_projects_foci_actions_object(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(return_value=_index_account())
 
         result = await tools["gtd_project_index"](FakeContext())
         data = result["data"]
-        assert isinstance(data, list)
-        row = next(r for r in data if r["project_id"] == PROJECT_ID)
+        assert set(data) == {"projects", "foci", "actions"}
+        assert isinstance(data["projects"], list)
+        assert isinstance(data["foci"], list)
+        assert isinstance(data["actions"], list)
+
+    @pytest.mark.asyncio
+    async def test_project_row_field_set(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_index_account())
+
+        data = (await tools["gtd_project_index"](FakeContext()))["data"]
+        row = next(r for r in data["projects"] if r["project_id"] == PROJECT_ID)
         assert set(row) == {
             "life",
             "focus",
@@ -1198,6 +1209,37 @@ class TestGtdProjectIndex:
         ]  # earliest open due (deterministic; exact value covered in pure test)
 
     @pytest.mark.asyncio
+    async def test_foci_includes_empty_focus_area(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_index_account())
+
+        data = (await tools["gtd_project_index"](FakeContext()))["data"]
+        foci = {f["focus_id"]: f for f in data["foci"]}
+        # both #focus areas appear, including the one with no active projects
+        assert set(foci) == {AREA_ID, "areaEmpty"}
+        assert foci[AREA_ID] == {
+            "focus_id": AREA_ID,
+            "focus": "Sam — University",
+            "life": "personal",
+        }
+        assert foci["areaEmpty"]["life"] == "work"
+
+    @pytest.mark.asyncio
+    async def test_actions_under_active_project(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_index_account())
+
+        data = (await tools["gtd_project_index"](FakeContext()))["data"]
+        actions = data["actions"]
+        assert {a["action_id"] for a in actions} == {"101", "102"}
+        a = next(a for a in actions if a["action_id"] == "101")
+        assert set(a) == {"action_id", "name", "project_id", "project", "focus", "life"}
+        assert a["project_id"] == PROJECT_ID
+        assert a["project"] == "Open days"
+        assert a["focus"] == "Sam — University"
+        assert a["life"] == "personal"
+
+    @pytest.mark.asyncio
     async def test_read_only_call_surface(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(return_value=_index_account())
@@ -1214,7 +1256,7 @@ class TestGtdProjectIndex:
         client.call = AsyncMock(return_value=_index_account())
 
         default = await tools["gtd_project_index"](FakeContext())
-        assert {r["project_id"] for r in default["data"]} == {PROJECT_ID}
+        assert {r["project_id"] for r in default["data"]["projects"]} == {PROJECT_ID}
 
         with_someday = await tools["gtd_project_index"](FakeContext(), include_someday=True)
-        assert {r["project_id"] for r in with_someday["data"]} == {PROJECT_ID, "sd1"}
+        assert {r["project_id"] for r in with_someday["data"]["projects"]} == {PROJECT_ID, "sd1"}

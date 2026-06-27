@@ -289,16 +289,26 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   project-level `frame.files`) gain a `meta` block from the artefact's companion metadata
   (title/type/status/dates/authors/tags) when a read-only AI Memory vault is configured
   (`RTM_VAULT_ROOT` / `AI_MEMORY_DIR`, or the host default); absent vault or companion → no `meta`.
-- `gtd_project_index` - **Read-only.** The active-project **portfolio index** that backs the canvas
-  navigator (the Phase C cockpit picker). Returns one row per `#project` (incomplete, not `#test`;
-  `#hold` always excluded, `#someday` excluded unless `include_someday=True`) with `life`, the parent
-  Area-of-Focus (`focus` / `focus_id`; a top-level project is kept as `"(unfiled)"`, never dropped),
-  `priority`, `open_count` (incomplete children), `blocked_count` (children blocked by an open
-  `DEPENDS-ON` upstream — the same thin `plan_graph` judgement `gtd_project_canvas` applies),
-  `next_tickle` (earliest open due date, including overdue, or `""`), and `updated`. One
-  `rtm.tasks.getList` (plus the session-cached settings read for the timezone); no write, no timeline.
-  Returns a list sorted `life` → `focus` → `project`, or `[]` when none. Counts are vault-free — the
-  enriched overlay stays gtd-side.
+- `gtd_project_index` - **Read-only.** The active-project **portfolio** that backs the canvas
+  navigator (the Phase C cockpit picker). Returns an object `{projects, foci, actions}` — all three
+  collections sourced from one `rtm.tasks.getList` (plus the session-cached settings read for the
+  timezone); no write, no timeline.
+  - `projects`: one row per `#project` (incomplete, not `#test`; `#hold` always excluded, `#someday`
+    excluded unless `include_someday=True`) with `life`, the parent Area-of-Focus (`focus` /
+    `focus_id`; a top-level project is kept as `"(unfiled)"`, never dropped), `priority`,
+    `open_count` (incomplete children), `blocked_count` (children blocked by an open `DEPENDS-ON`
+    upstream — the same thin `plan_graph` judgement `gtd_project_canvas` applies), `next_tickle`
+    (earliest open due date, including overdue, or `""`), and `updated`; sorted `life` → `focus` →
+    `project`.
+  - `foci`: every active Area of Focus (`#focus`, same `#test`/`#hold`/`#someday` gate) as
+    `{focus_id, focus, life}` — **including foci with zero active projects**, which the per-project
+    rows can never surface; sorted `life` → `focus`.
+  - `actions`: every incomplete child under an active project (actions, waiting-fors and calendar
+    entries — all jumpable; not `#test`) as `{action_id, name, project_id, project, focus, life}`
+    for fast cockpit search / jump-to; sorted `life` → `focus` → `project` → `name`.
+
+  Counts are vault-free — the enriched overlay stays gtd-side. The response is an object (was a bare
+  list pre-1.10.0) but backward-compatible for the existing navigator, which reads `data.projects`.
 - `gtd_apply_canvas_commit` - **Constrained write.** The single governed write surface for a
   canvas commit (adds / edits / completes / removes / execute / notes). `execute` is a durable
   now/later split: `now`/`quick` write `#ai_progress_requested`; `later` writes

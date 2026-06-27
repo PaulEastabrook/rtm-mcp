@@ -30,8 +30,26 @@ from .project_plan import (
 _SOMEDAY_TAG = "someday"
 _HOLD_TAG = "hold"
 
+# An Area of Focus carries the `#focus` tag — the marker the navigator uses to list every focus,
+# including those with no active projects (so empty foci still render as group headers).
+_FOCUS_TAG = "focus"
+
 # RTM numeric priorities the navigator renders; anything else (RTM's "N") maps to "".
 _PRIORITY_CODES = {"1", "2", "3"}
+
+
+def _life(tags: list[str]) -> str:
+    """The first life-context tag on a task, or '' when none is present."""
+    return next((tg for tg in tags if tg in _LIFE_TAGS), "")
+
+
+def _active(tags: list[str], completed: Any, *, include_someday: bool) -> bool:
+    """The shared active-portfolio lifecycle gate (used for both projects and foci): NOT completed,
+    NOT `#test`, `#hold` always excluded, `#someday` excluded unless opted in. The caller layers on
+    the membership tag (`#project` for the portfolio, `#focus` for areas)."""
+    if completed or _TEST_TAG in tags or _HOLD_TAG in tags:
+        return False
+    return include_someday or _SOMEDAY_TAG not in tags
 
 
 def build_index(
@@ -59,9 +77,9 @@ def build_index(
 
     for proj in parsed:
         tags = proj.get("tags") or []
-        if _PROJECT_TAG not in tags or _TEST_TAG in tags or proj.get("completed"):
-            continue
-        if _HOLD_TAG in tags or (_SOMEDAY_TAG in tags and not include_someday):
+        if _PROJECT_TAG not in tags or not _active(
+            tags, proj.get("completed"), include_someday=include_someday
+        ):
             continue
 
         pid = proj["id"]
@@ -76,7 +94,7 @@ def build_index(
         dues = [r["due"] for r in rows if r.get("due")]
         next_tickle = min(dues) if dues else ""
 
-        life = next((tg for tg in tags if tg in _LIFE_TAGS), "")
+        life = _life(tags)
 
         parent = by_id.get(str(proj.get("parent_task_id") or ""))
         focus = (parent.get("name") or "") if parent else "(unfiled)"
@@ -101,4 +119,89 @@ def build_index(
         )
 
     out.sort(key=lambda r: (r["life"], r["focus"].lower(), r["project"].lower()))
+    return out
+
+
+def build_foci(
+    parsed: list[dict[str, Any]],
+    *,
+    include_someday: bool = False,
+) -> list[dict[str, Any]]:
+    """Flat parsed tasks → every active Area of Focus (the complete focus list).
+
+    Selection: incomplete tasks tagged `#focus`, NOT `#test`; `#hold` always excluded, `#someday`
+    excluded unless `include_someday` — the same lifecycle gate as the project portfolio, applied to
+    areas. This is what lets the navigator render a focus that currently has zero active projects:
+    `build_index` is one-row-per-project (so a project-less focus never appears there), whereas this
+    list is sourced from the `#focus` tag directly.
+
+    Returns a list (sorted by life → focus for deterministic output) of {focus_id, focus, life}.
+    """
+    out: list[dict[str, Any]] = []
+    for t in parsed:
+        tags = t.get("tags") or []
+        if _FOCUS_TAG not in tags or not _active(
+            tags, t.get("completed"), include_someday=include_someday
+        ):
+            continue
+        out.append({"focus_id": t["id"], "focus": t.get("name") or "", "life": _life(tags)})
+
+    out.sort(key=lambda r: (r["life"], r["focus"].lower()))
+    return out
+
+
+def build_actions(
+    parsed: list[dict[str, Any]],
+    *,
+    include_someday: bool = False,
+    timezone: str | None = None,
+) -> list[dict[str, Any]]:
+    """Flat parsed tasks → every incomplete action under an active project (the cockpit's search /
+    jump-to index).
+
+    An "action" here is any incomplete child the board shows — actions, waiting-fors, and calendar
+    entries alike — because the cockpit search treats them all as jumpable items. The parent project
+    must be active (the same selection as `build_index`); an individual child tagged `#test` is
+    skipped even under an active project. Every emitted row carries a real `project_id`/`project`
+    (and its `focus`/`life`) — a child can only be reached via an active project, so there are no
+    dangling-project rows; a child of a top-level project inherits `focus="(unfiled)"`.
+
+    timezone: forwarded to `build_envelope` for date localisation parity with the canvas (the row
+        shape used here carries no date, but the reconstruction is shared, so we pass it through).
+
+    Returns a list (sorted by life → focus → project → name for deterministic, grouped output) of
+        {action_id, name, project_id, project, focus, life}.
+    """
+    by_id = {t["id"]: t for t in parsed}
+    out: list[dict[str, Any]] = []
+
+    for proj in parsed:
+        tags = proj.get("tags") or []
+        if _PROJECT_TAG not in tags or not _active(
+            tags, proj.get("completed"), include_someday=include_someday
+        ):
+            continue
+
+        pid = proj["id"]
+        life = _life(tags)
+        parent = by_id.get(str(proj.get("parent_task_id") or ""))
+        focus = (parent.get("name") or "") if parent else "(unfiled)"
+        project_name = proj.get("name") or ""
+
+        env = build_envelope(parsed, pid, timezone=timezone)
+        for r in env["rows"]:
+            if _TEST_TAG in (r.get("tags") or []):
+                continue
+            out.append(
+                {
+                    "action_id": r["id"],
+                    "name": r["name"],
+                    "project_id": pid,
+                    "project": project_name,
+                    "focus": focus,
+                    "life": life,
+                }
+            )
+
+    out.sort(key=lambda r: (r["life"], r["focus"].lower(), r["project"].lower(), r["name"].lower()))
     return out
