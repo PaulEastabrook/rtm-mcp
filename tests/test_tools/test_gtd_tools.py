@@ -1127,3 +1127,94 @@ class TestGtdCreateProject:
         methods = [c.args[0] for c in client.call.call_args_list if c.args]
         assert methods[0] == "rtm.tasks.getList"
         assert methods.count("rtm.tasks.getList") == 1
+
+
+def _index_account():
+    """A portfolio: AREA_ID area → one active project (two children, one blocked) + a someday
+    project under the same area."""
+    return _getlist(
+        [
+            _ts("tsArea", AREA_ID, "Sam — University"),
+            _ts("tsP", PROJECT_ID, "Open days", parent=AREA_ID, tags=["personal", "project"]),
+            _ts(
+                "ts1", "101", "Attend webinar", parent=PROJECT_ID, due="2026-07-03", tags=["action"]
+            ),
+            _ts(
+                "ts2",
+                "102",
+                "Book travel",
+                parent=PROJECT_ID,
+                due="2026-06-10",
+                tags=["action"],
+                notes=[
+                    {
+                        "id": "n",
+                        "created": "2026-06-01T00:00:00Z",
+                        "title": "",
+                        "$t": 'DEPENDS-ON\n  task_id: "101"\nStatus: active\n',
+                    }
+                ],
+            ),
+            _ts(
+                "tsSD",
+                "sd1",
+                "Someday idea",
+                parent=AREA_ID,
+                tags=["personal", "project", "someday"],
+            ),
+        ]
+    )
+
+
+class TestGtdProjectIndex:
+    @pytest.mark.asyncio
+    async def test_returns_list_of_project_rows(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_index_account())
+
+        result = await tools["gtd_project_index"](FakeContext())
+        data = result["data"]
+        assert isinstance(data, list)
+        row = next(r for r in data if r["project_id"] == PROJECT_ID)
+        assert set(row) == {
+            "life",
+            "focus",
+            "focus_id",
+            "project",
+            "project_id",
+            "priority",
+            "open_count",
+            "blocked_count",
+            "next_tickle",
+            "updated",
+        }
+        assert row["life"] == "personal"
+        assert row["focus"] == "Sam — University"
+        assert row["focus_id"] == AREA_ID
+        assert row["open_count"] == 2
+        assert row["blocked_count"] == 1
+        assert row[
+            "next_tickle"
+        ]  # earliest open due (deterministic; exact value covered in pure test)
+
+    @pytest.mark.asyncio
+    async def test_read_only_call_surface(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_index_account())
+
+        await tools["gtd_project_index"](FakeContext())
+
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"]  # exactly one read; no writes/timeline
+        client.record_transaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_include_someday_passthrough(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_index_account())
+
+        default = await tools["gtd_project_index"](FakeContext())
+        assert {r["project_id"] for r in default["data"]} == {PROJECT_ID}
+
+        with_someday = await tools["gtd_project_index"](FakeContext(), include_someday=True)
+        assert {r["project_id"] for r in with_someday["data"]} == {PROJECT_ID, "sd1"}

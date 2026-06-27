@@ -8,6 +8,7 @@ of one algorithm. This test pins THIS repo's engine to a shared golden
 
 Regenerate the golden ONLY when both engines change in lockstep, and update BOTH copies.
 """
+
 import json
 import os
 
