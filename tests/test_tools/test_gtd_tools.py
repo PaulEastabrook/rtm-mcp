@@ -1240,6 +1240,7 @@ class TestGtdProjectIndex:
             "project",
             "focus",
             "life",
+            "type",
             "due",
             "priority",
             "blocked",
@@ -1248,8 +1249,9 @@ class TestGtdProjectIndex:
         assert a["project"] == "Open days"
         assert a["focus"] == "Sam — University"
         assert a["life"] == "personal"
-        # urgency signal: 101 has a due, no priority, and is the upstream (not blocked); 102 is
-        # blocked by 101.
+        # type + urgency signal: 101 is an #action, has a due, no priority, and is the upstream
+        # (not blocked); 102 is blocked by 101.
+        assert a["type"] == "action"
         assert a["due"] == "2026-07-03"
         assert a["priority"] == ""
         assert a["blocked"] is False
