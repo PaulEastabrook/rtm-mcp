@@ -176,6 +176,59 @@ def resolve_project(parsed: list[dict[str, Any]], project_name: str) -> dict[str
     return {"project": matches[0]}
 
 
+def resolve_focus(parsed: list[dict[str, Any]], focus: str) -> dict[str, Any]:
+    """Resolve an Area of Focus (by id or name) to parent a new project under.
+
+    Areas of focus carry no marker tag — they are the parent tasks of `#project` tasks (the
+    `focus area → project → action` hierarchy). Resolution:
+        - a `focus` that matches a task id → that task (an explicit parent the caller named);
+        - otherwise the name is matched (exact, case-insensitive; then substring) among the areas
+          of focus = parents of incomplete, `project`-tagged, non-`test` tasks.
+
+    Mirrors `resolve_project`'s three-shape return:
+        {"focus": <task>}                          — unambiguous match
+        {"candidates": [{id, name, list_id}, ...]} — >1 name match (caller disambiguates)
+        {"error": "..."}                           — no match (actionable; never create loose)
+    """
+    by_id = {t["id"]: t for t in parsed}
+    focus = (focus or "").strip()
+    if not focus:
+        return {
+            "error": "Provide frame.focus — the Area of Focus name or id to nest the project under."
+        }
+
+    if focus in by_id:
+        return {"focus": by_id[focus]}
+
+    area_ids = {
+        str(t.get("parent_task_id") or "")
+        for t in parsed
+        if _PROJECT_TAG in (t.get("tags") or [])
+        and _TEST_TAG not in (t.get("tags") or [])
+        and not t.get("completed")
+        and t.get("parent_task_id")
+    }
+    areas = [by_id[a] for a in area_ids if a in by_id]
+
+    name_lower = focus.lower()
+    exact = [t for t in areas if (t.get("name") or "").lower() == name_lower]
+    matches = exact or [t for t in areas if name_lower in (t.get("name") or "").lower()]
+
+    if not matches:
+        return {
+            "error": f"No Area of Focus matching '{focus}'. Pass frame.focus as an area task id, "
+            "or check the name with list_tasks(filter='tag:project') to see existing areas."
+        }
+    if len(matches) > 1:
+        return {
+            "candidates": [
+                {"id": t["id"], "name": t.get("name") or "", "list_id": t.get("list_id") or ""}
+                for t in matches
+            ]
+        }
+    return {"focus": matches[0]}
+
+
 def build_envelope(
     parsed: list[dict[str, Any]], project_id: str, timezone: str | None = None
 ) -> dict[str, Any]:

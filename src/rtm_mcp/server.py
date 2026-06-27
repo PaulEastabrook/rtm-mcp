@@ -119,6 +119,15 @@ This server provides full access to Remember The Milk's task management features
   both). Validates the whole commit up-front (cross-project, strict-tag gate,
   Processed/non-smart list, destructive-confirm) and writes nothing if rejected; applies
   durable-first. Identify the project by project_id.
+- gtd_create_project: Constrained write — the create-sibling of gtd_apply_canvas_commit:
+  builds a NEW project from a canvas draft (frame {life, focus, name, outcome} + items[]),
+  creating the project task under the resolved Area of Focus and its child items parented in
+  dependency order, with tags/priorities/dates/estimates, DEPENDS-ON notes (in-draft deps →
+  new RTM ids), execute progression signals, create-then-complete for already-done items, an
+  INCEPTION note, and the #ai_project_needs_finalise mark (must exist in the account under
+  strict-tag mode). Validates up-front (strict-tag gate, item types/execute/deps) and writes
+  nothing if rejected. Identify the destination area by frame.focus (name or area task id;
+  ambiguous name → candidates).
 
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
