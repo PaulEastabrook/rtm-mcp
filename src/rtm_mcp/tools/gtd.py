@@ -35,7 +35,7 @@ from ..companion import enrich_files, resolve_vault_root
 from ..lookup import resolve_list_id
 from ..parsers import parse_tasks_response, priority_to_code
 from ..plan_graph import build_graph
-from ..project_index import build_index
+from ..project_index import build_actions, build_foci, build_index
 from ..project_plan import build_envelope, resolve_focus, resolve_project
 from ..response_builder import build_response, get_transaction_info
 from ..strict_tags import enforce_strict_tags
@@ -232,30 +232,42 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ctx: Context,
         include_someday: bool = False,
     ) -> dict[str, Any]:
-        """GTD — return the active-project portfolio index: one row per project with at-a-glance
-        state (open / blocked counts + next tickle), grouped by life → focus. The data source for
-        the project-plan-canvas navigator (the Phase C cockpit picker); a read-sibling of
-        gtd_project_plan / gtd_project_canvas.
+        """GTD — return the active-project portfolio for the cockpit navigator: per-project rows
+        (open / blocked counts + next tickle, grouped by life → focus), the complete focus list, and
+        a flat action index for fast search / jump-to. The data source for the project-plan-canvas
+        navigator (the Phase C cockpit picker); a read-sibling of gtd_project_plan /
+        gtd_project_canvas.
 
         Read-only. One signed rtm.tasks.getList (status:incomplete) plus a session-cached
-        rtm.settings.getList for the account timezone; no write, no timeline. Counts are vault-free —
-        derived from the THIN plan-graph over each project's rows (the same blocked judgement
-        gtd_project_canvas applies), so cross-project / completed upstreams don't count as blockers.
-        Dates are localised to the account timezone (RTM returns UTC).
+        rtm.settings.getList for the account timezone; no write, no timeline. All three collections
+        come from that single read — projects, #focus areas, and action rows are all in the result.
+        Counts are vault-free — derived from the THIN plan-graph over each project's rows (the same
+        blocked judgement gtd_project_canvas applies), so cross-project / completed upstreams don't
+        count as blockers. Dates are localised to the account timezone (RTM returns UTC).
 
-        Selection: incomplete tasks tagged #project, NOT #test; #hold always excluded, #someday
-        excluded unless include_someday=True. A project with no Area-of-Focus parent is kept with
-        focus="(unfiled)", focus_id="" — never dropped.
+        Selection:
+        - projects: incomplete tasks tagged #project, NOT #test; #hold always excluded, #someday
+          excluded unless include_someday=True. A project with no Area-of-Focus parent is kept with
+          focus="(unfiled)", focus_id="" — never dropped.
+        - foci: incomplete tasks tagged #focus (the same #test/#hold/#someday gate) — the complete
+          focus list, INCLUDING focus areas with zero active projects (which the per-project rows
+          can never surface on their own).
+        - actions: every incomplete child under an active project (actions, waiting-fors, and
+          calendar entries — all jumpable), NOT #test. Each carries its project/focus/life context.
 
         Args:
-            include_someday: include #someday projects in the portfolio (default False; #hold stays
-                excluded regardless).
+            include_someday: include #someday projects AND foci in the portfolio (default False;
+                #hold stays excluded regardless).
 
-        Returns (on success): a list of {life, focus, focus_id, project, project_id, priority
-            ("1"|"2"|"3"|""), open_count (incomplete children), blocked_count (children blocked by an
-            open DEPENDS-ON upstream), next_tickle (earliest open due date, incl. overdue, or ""),
-            updated (project modified date)}, sorted by life → focus → project.
-        Returns (on empty portfolio): [].
+        Returns (on success): an object {projects, foci, actions} where
+            projects: [{life, focus, focus_id, project, project_id, priority ("1"|"2"|"3"|""),
+                open_count (incomplete children), blocked_count (children blocked by an open
+                DEPENDS-ON upstream), next_tickle (earliest open due date, incl. overdue, or ""),
+                updated (project modified date)}], sorted by life → focus → project;
+            foci: [{focus_id, focus, life}], sorted by life → focus;
+            actions: [{action_id, name, project_id, project, focus, life}], sorted by
+                life → focus → project → name.
+        Returns (on empty portfolio): {"projects": [], "foci": [], "actions": []}.
         """
         client: RTMClient = await get_client()
         result = await client.call("rtm.tasks.getList", filter="status:incomplete")
@@ -264,7 +276,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # due/modified would otherwise render a day early. None on failure → safe raw-UTC fallback.
         tz = await client.get_timezone()
         return build_response(
-            data=build_index(parsed, include_someday=include_someday, timezone=tz)
+            data={
+                "projects": build_index(parsed, include_someday=include_someday, timezone=tz),
+                "foci": build_foci(parsed, include_someday=include_someday),
+                "actions": build_actions(parsed, include_someday=include_someday, timezone=tz),
+            }
         )
 
     @mcp.tool()

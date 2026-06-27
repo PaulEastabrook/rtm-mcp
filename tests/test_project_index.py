@@ -1,6 +1,6 @@
 """Tests for the portfolio-index builder (src/rtm_mcp/project_index.py)."""
 
-from rtm_mcp.project_index import build_index
+from rtm_mcp.project_index import build_actions, build_foci, build_index
 
 AREA1 = "area1"
 AREA2 = "area2"
@@ -51,16 +51,18 @@ def _depends_on(upstream_id):
     )
 
 
-def _area(id, name):
-    return _t(id, name=name)
+def _area(id, name, life=None, tags=None):
+    return _t(
+        id, name=name, tags=tags if tags is not None else (["focus"] + ([life] if life else []))
+    )
 
 
 def _portfolio():
     """A small multi-project account: one active project under AREA1 with three incomplete
     children (one blocked, dates incl. an overdue one), plus excluded projects."""
     return [
-        _area(AREA1, "Sam — University"),
-        _area(AREA2, "Work — Platform"),
+        _area(AREA1, "Sam — University", life="personal"),
+        _area(AREA2, "Work — Platform", life="work"),
         _t(
             P1,
             name="Open days",
@@ -213,3 +215,95 @@ class TestSort:
         order = [r["project_id"] for r in build_index(parsed)]
         # personal sorts before work
         assert order == ["pproj", "wproj"]
+
+
+class TestFoci:
+    def test_lists_all_focus_areas_including_empty(self):
+        # AREA2 has only excluded projects under it (someday/hold/test/done) → no active project,
+        # yet it must still appear in the focus list because it carries #focus.
+        ids = {f["focus_id"] for f in build_foci(_portfolio())}
+        assert ids == {AREA1, AREA2}
+
+    def test_field_set(self):
+        foci = build_foci(_portfolio())
+        assert all(set(f) == {"focus_id", "focus", "life"} for f in foci)
+
+    def test_life_from_tag(self):
+        by_id = {f["focus_id"]: f for f in build_foci(_portfolio())}
+        assert by_id[AREA1]["life"] == "personal"
+        assert by_id[AREA2]["life"] == "work"
+
+    def test_test_tag_excluded(self):
+        parsed = [_area("aT", "Test focus", tags=["focus", "work", "test"])]
+        assert build_foci(parsed) == []
+
+    def test_hold_excluded(self):
+        parsed = [_area("aH", "Held focus", tags=["focus", "work", "hold"])]
+        assert build_foci(parsed) == []
+
+    def test_someday_gated_by_include_someday(self):
+        parsed = [_area("aS", "Someday focus", tags=["focus", "work", "someday"])]
+        assert build_foci(parsed) == []
+        assert {f["focus_id"] for f in build_foci(parsed, include_someday=True)} == {"aS"}
+
+    def test_untagged_area_not_a_focus(self):
+        # an Area-of-Focus parent that carries no #focus tag is NOT listed (the membership marker).
+        parsed = [_area("aP", "Plain area", tags=[])]
+        assert build_foci(parsed) == []
+
+    def test_sorted_by_life_then_focus(self):
+        order = [f["focus_id"] for f in build_foci(_portfolio())]
+        assert order == [AREA1, AREA2]  # personal before work
+
+
+class TestActions:
+    def test_lists_incomplete_children_of_active_project(self):
+        actions = build_actions(_portfolio())
+        assert {a["action_id"] for a in actions} == {"101", "102", "103"}
+
+    def test_field_set_and_attribution(self):
+        a = next(a for a in build_actions(_portfolio()) if a["action_id"] == "101")
+        assert set(a) == {"action_id", "name", "project_id", "project", "focus", "life"}
+        assert a["name"] == "Attend webinar"
+        assert a["project_id"] == P1
+        assert a["project"] == "Open days"
+        assert a["focus"] == "Sam — University"
+        assert a["life"] == "personal"
+
+    def test_test_tagged_action_excluded(self):
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("a1", name="Real", parent=P1, tags=["action"]),
+            _t("a2", name="Hidden", parent=P1, tags=["action", "test"]),
+        ]
+        assert {a["action_id"] for a in build_actions(parsed)} == {"a1"}
+
+    def test_action_under_excluded_project_not_emitted(self):
+        # children under a #someday project are not emitted by default.
+        parsed = [
+            _area(AREA2, "Work — Platform", life="work"),
+            _t("ps", name="Someday idea", parent=AREA2, tags=["work", "project", "someday"]),
+            _t("sa", name="Someday action", parent="ps", tags=["action"]),
+        ]
+        assert build_actions(parsed) == []
+        assert {a["action_id"] for a in build_actions(parsed, include_someday=True)} == {"sa"}
+
+    def test_top_level_project_action_is_unfiled(self):
+        parsed = [
+            _t("top", name="Loose project", tags=["work", "project"]),
+            _t("ta", name="Loose action", parent="top", tags=["action"]),
+        ]
+        a = build_actions(parsed)[0]
+        assert a["focus"] == "(unfiled)"
+        assert a["project"] == "Loose project"
+
+    def test_sorted_grouped_deterministically(self):
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("b", name="Beta", parent=P1, tags=["action"]),
+            _t("a", name="Alpha", parent=P1, tags=["action"]),
+        ]
+        names = [a["name"] for a in build_actions(parsed)]
+        assert names == ["Alpha", "Beta"]
