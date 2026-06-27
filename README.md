@@ -294,8 +294,11 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   `#ai_progress_deferred` (the two are mutually exclusive — switching state drops the stale
   sibling). Validates the whole commit up-front and writes nothing if anything is rejected
   (cross-project id, non-canonical tag via the strict-tag gate, smart-list target, unconfirmed
-  destructive op), then applies durable-first and records each transaction. Identify the project
-  by `project_id`.
+  destructive op), then applies durable-first and records each transaction. On any successful
+  (non-empty) commit it also stamps `#ai_overlay_refresh_needed` on the project — the durable signal
+  the gtd-side finalise engine drains to recompute the persisted plan-graph overlay (so a pure
+  edit/reorder/note commit refreshes the enriched tier too, not only `execute` commits). That tag
+  must exist in the RTM account under strict-tag mode. Identify the project by `project_id`.
 - `gtd_create_project` - **Constrained write.** The create-sibling of `gtd_apply_canvas_commit`:
   builds a **new** project from a canvas draft (`frame` `{life, focus, name, outcome}` + `items[]`).
   Resolves the destination Area of Focus from `frame.focus` (a name — matched against the parents of

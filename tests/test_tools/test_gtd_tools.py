@@ -811,6 +811,7 @@ class TestGtdApplyCanvasCommit:
                 "ai_progress_requested",
                 "ai_deferred_pending_unblock",
                 "ai_conversation",
+                "ai_overlay_refresh_needed",  # provisioned (Piece 0b); ai_progress_deferred absent
             }  # note: ai_progress_deferred deliberately absent
         )
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
@@ -821,6 +822,39 @@ class TestGtdApplyCanvasCommit:
         assert "rejected" not in result["data"]
         addtags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
         assert "ai_progress_requested" in addtags.kwargs["tags"]
+
+    @pytest.mark.asyncio
+    async def test_successful_commit_stamps_overlay_refresh_mark(self, gtd_tools):
+        """Piece 0b: any successful commit stamps #ai_overlay_refresh_needed on the project (so the
+        gtd-side finalise engine refreshes the persisted overlay even for a non-execute commit)."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, edits={"c1": {"priority": "1"}}
+        )
+        stamp = [
+            c
+            for c in client.call.call_args_list
+            if c.args[0] == "rtm.tasks.addTags"
+            and c.kwargs.get("tags") == "ai_overlay_refresh_needed"
+        ]
+        assert len(stamp) == 1
+        assert stamp[0].kwargs["task_id"] == PROJECT_ID  # stamped on the project, not an item
+
+    @pytest.mark.asyncio
+    async def test_zero_apply_commit_does_not_stamp_overlay_refresh(self, gtd_tools):
+        """A commit that applied nothing made no plan change → no overlay-refresh stamp."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](FakeContext(), project_id=PROJECT_ID)
+        assert result["data"]["applied"] == []
+        stamped = any(
+            c.args[0] == "rtm.tasks.addTags" and c.kwargs.get("tags") == "ai_overlay_refresh_needed"
+            for c in client.call.call_args_list
+        )
+        assert not stamped
 
 
 # ── gtd_create_project ───────────────────────────────────────────────────────

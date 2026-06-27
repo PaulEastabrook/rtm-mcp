@@ -5,6 +5,7 @@ from rtm_mcp.canvas_commit import (
     AI_DEFERRED,
     AI_PROGRESS,
     AI_PROGRESS_DEFERRED,
+    OVERLAY_REFRESH,
     classifiers_to_tags,
     collect_commit_tags,
     execute_progress_tags,
@@ -82,6 +83,24 @@ class TestCollectCommitTags:
 
     def test_empty_ops_no_tags(self):
         assert collect_commit_tags({}) == set()
+
+
+class TestOverlayRefreshGate:
+    def test_present_for_each_actionable_op(self):
+        # Piece 0b: any non-empty commit will stamp #ai_overlay_refresh_needed, so the gate must
+        # include it for every actionable op kind — including completes-only / removes-only.
+        for ops in (
+            {"adds": [{"type": "action", "text": "x"}]},
+            {"edits": {"c1": {"priority": "1"}}},
+            {"execute": {"c1": "now"}},
+            {"notes": {"c1": {"type": "X", "text": "y"}}},
+            {"completes": ["c1"]},
+            {"removes": ["c1"]},
+        ):
+            assert OVERLAY_REFRESH in collect_commit_tags(ops), ops
+
+    def test_absent_for_empty_ops(self):
+        assert OVERLAY_REFRESH not in collect_commit_tags({})
 
 
 PLAN_IDS = {"c1", "c2"}

@@ -337,12 +337,25 @@ canvas commit — safe by construction (artifacts call connectors without prompt
   exclusive, so switching state drops the stale sibling via `removeTags` so an item never carries
   both; `#ai_deferred_pending_unblock` is still added when the item is blocked — it does **not**
   execute AI work), `notes`, then `completes` / `removes` (RTM soft-delete), then a `COMMIT` audit
-  note on the project. Each write records its transaction (so `batch_undo` works); per-op failures
-  are captured and the batch continues. (`#ai_progress_deferred` is a **new** tag — under strict-tag
-  mode a `later` commit is rejected with a guided error until it's provisioned in RTM; the gate
-  requires it only when a `later` is actually present, so `now`/`quick` commits stay
+  note on the project, and finally — on **any** non-empty commit — the **overlay-refresh mark**
+  `#ai_overlay_refresh_needed` (`addTags`) is stamped on the project (Piece 0b; inside `if applied:`,
+  so a zero-apply commit stamps nothing). Each write records its transaction (so `batch_undo`
+  works); per-op failures are captured and the batch continues. (`#ai_progress_deferred` is a **new**
+  tag — under strict-tag mode a `later` commit is rejected with a guided error until it's provisioned
+  in RTM; the gate requires it only when a `later` is actually present, so `now`/`quick` commits stay
   backward-compatible. `gtd_project_canvas` mirrors this on read via `canvas_seed.map_prog` → the
   per-row `prog` field.)
+- *Overlay-refresh mark (Piece 0b):* the enriched plan-graph overlay (the persisted AI-Memory DAG,
+  written gtd-side by `plan_graph_refresh.py`) goes stale after a commit that carries no `execute`
+  (a pure edit / reorder / note / complete / remove), because the progression engine drains the
+  `#ai_progress_requested` work-list and stops on an empty list without refreshing. So every
+  non-empty commit stamps `#ai_overlay_refresh_needed` (`collect_commit_tags` includes it in the
+  up-front gate); the gtd-side `gtd-project-finalise` engine drains it (recompute + persist the
+  overlay, then `removeTags`). The commit-path twin of `canvas_create.FINALISE_MARK` — same
+  blackboard pattern, server stays vault-free. It is a **new** tag: under strict-tag mode it must be
+  provisioned in RTM **before this server version is activated**, else the gate rejects every
+  non-empty commit. (Only the *enriched* tier is affected — the thin graph is always recomputed
+  server-side on read.)
 - *Discipline:* tag writes use a **closed canonical classifier→tag mapping** (`canvas_commit`) +
   the strict-tag existence gate — the server holds no taxonomy (see Strict-Tag Mode). `order` is
   accepted but a **v1 no-op** (RTM has no sibling-order field; the `manual_order` pin needs vault
@@ -486,7 +499,7 @@ call-surface assertion, strict-tag rejection setup) are canonical in
 
 This inventory is the canonical per-file test count (keep it in sync — CONTRIBUTING.md § 9).
 
-Test files (512 tests total):
+Test files (516 tests total):
 - `tests/test_client.py` — client signing, API calls, settings + account-tag caching, transaction log, 503 retry, connection retry, POST/GET split (39 tests)
 - `tests/test_config.py` — config load/save, file fallback, corrupt JSON, strict-tag toggle (12 tests)
 - `tests/test_strict_tags.py` — strict-tag guard: normalize/split/SmartAdd-extract + enforce_strict_tags (off / reject / live-refetch) (12 tests)
@@ -494,11 +507,11 @@ Test files (512 tests total):
 - `tests/test_canvas_seed.py` — canvas mapper: kind/priority/context/comms, `map_prog` tri-state + per-row `prog` emit, parse_note (dash/colon forms, body-omit), parse_file filtering, map_row, build_seed frame + sibling-deps + history placement + v1 `frame.files` from project files (20 tests)
 - `tests/test_plan_graph.py` — plan-graph engine: DEPENDS-ON edges + blocked, quick-from-tag (and blocked/waiting-for guards), tiered topological order, cycle fallback, fingerprint stability (11 tests)
 - `tests/test_canvas_overlay.py` — apply_graph (reorder + quick + sorted deps, no blocked/order field) and lean_seed (body-strip, cap, honest nc) (5 tests)
-- `tests/test_canvas_commit.py` — closed classifier→tag mapping, `execute_progress_tags` now/later split, collect_commit_tags (later pulls deferred into gate; now-only stays backward-compatible), validate_commit rejection paths (cross-project, destructive-confirm, unknown type, invalid execute, smart-list) (17 tests)
+- `tests/test_canvas_commit.py` — closed classifier→tag mapping, `execute_progress_tags` now/later split, collect_commit_tags (later pulls deferred into gate; now-only stays backward-compatible), overlay-refresh gate (present for each actionable op incl. completes/removes-only; absent for empty ops), validate_commit rejection paths (cross-project, destructive-confirm, unknown type, invalid execute, smart-list) (19 tests)
 - `tests/test_canvas_create.py` — create-side pure helpers: `item_id` (explicit/index/empty), `project_tags` (life + project + ai_conversation + finalise mark), `collect_create_tags` (project tags; later pulls deferred into gate; now-only backward-compat; no-execute omits progress tags), `validate_create` rejection paths (missing_name, invalid_life, unknown_add_type, invalid_execute, unknown_dep, dep-by-index) (18 tests)
 - `tests/test_companion.py` — companion reader: parse_frontmatter (scalars/quote-strip, block + inline lists, empty-scalar drop, closing-fence stop), companion_candidates ordering, resolve_vault_root (explicit/host-default/marker), resolve_companion_meta (5 forms + precedence + containment + non-artefact skip), enrich_files (30 tests)
 - `tests/test_tool_params.py` — shared complex-param coercion: `coerce_json` (parse/passthrough/blank/invalid) + Annotated types (string→structured via BeforeValidator, clean single-typed schema, no `anyOf`) (11 tests)
-- `tests/test_tools/test_gtd_tools.py` — gtd_project_plan + gtd_project_canvas (seed shape, read-only call surface, lean cap, name/ambiguity/not-found, per-row `prog` from progression tags, BST due renders local day + no-tz fallback, companion `file.meta` + `frame.files` from a tmp vault, no-meta-when-absent) + gtd_apply_canvas_commit (staged-commit apply, JSON-string ops defensive path, now/later execute split + stale-sibling drop both directions, `later` strict-gate rejection + `now` backward-compat, all four rejection-without-write paths) + gtd_create_project (project + children in dep order under the area, DEPENDS-ON note → producer's new id, finalise-mark + life + #project on the project, INCEPTION note, undoable; create-then-complete; now/later execute split + blocked→deferred; JSON-string params; focus ambiguity/miss without writes; missing-name + finalise-mark-absent strict rejection without writes; now-only backward-compat; reads once before writing) via FakeMCP (41 tests)
+- `tests/test_tools/test_gtd_tools.py` — gtd_project_plan + gtd_project_canvas (seed shape, read-only call surface, lean cap, name/ambiguity/not-found, per-row `prog` from progression tags, BST due renders local day + no-tz fallback, companion `file.meta` + `frame.files` from a tmp vault, no-meta-when-absent) + gtd_apply_canvas_commit (staged-commit apply, JSON-string ops defensive path, now/later execute split + stale-sibling drop both directions, `later` strict-gate rejection + `now` backward-compat, all four rejection-without-write paths, overlay-refresh mark stamped on successful commit + not on zero-apply) + gtd_create_project (project + children in dep order under the area, DEPENDS-ON note → producer's new id, finalise-mark + life + #project on the project, INCEPTION note, undoable; create-then-complete; now/later execute split + blocked→deferred; JSON-string params; focus ambiguity/miss without writes; missing-name + finalise-mark-absent strict rejection without writes; now-only backward-compat; reads once before writing) via FakeMCP (43 tests)
 - `tests/test_exceptions.py` — error code mapping including subtask codes 4040-4090 (16 tests)
 - `tests/test_rate_limiter.py` — token bucket acquire/refill/pause, rate limit stats (14 tests)
 - `tests/test_response_builder.py` — envelope builder, transaction info, record_and_build_response, parsers (40 tests)
