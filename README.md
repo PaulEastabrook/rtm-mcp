@@ -12,7 +12,7 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Default-List Aware**: `add_task` without a list routes to your configured RTM default list (not the built-in Inbox); `get_lists` surfaces the `smart`/`locked`/`archived` flags so callers can pick a writable target
 - **Strict-Tag Mode** (on by default): the server refuses to apply any tag that doesn't already exist in your account — stopping accidental tag creation at the source, with a guided error that tells the caller how to recover. Set `RTM_STRICT_TAGS=0` to disable.
 - **Batched project read** (`gtd_project_plan`): a whole project plan — project, all descendant items, and every note — in one read-only call (vs `1+N`), as the `project-plan-seed` envelope the GTD canvas consumes. The first of the server's `gtd_`-prefixed domain compositions.
-- **Project-plan canvas tools** (`gtd_project_canvas` + `gtd_apply_canvas_commit`): a read-only canvas seed with the deterministic plan-graph overlay applied (ordering, blocking, quick-wins), and a single governed write surface that validates a whole canvas commit up-front and writes nothing if anything is rejected.
+- **Project-plan canvas tools** (`gtd_project_canvas` + `gtd_apply_canvas_commit` + `gtd_create_project`): a read-only canvas seed with the deterministic plan-graph overlay applied (ordering, blocking, quick-wins), a single governed write surface that validates a whole canvas commit up-front and writes nothing if anything is rejected, and a create-sibling that builds a brand-new project (task + dependency-ordered children + notes/tags + finalise mark) from a canvas draft in one governed call.
 - **Undo and Batch Undo**: All write operations return transaction IDs; undo one or many operations with `batch_undo`
 - **Timeline Introspection**: Session transaction log with `get_timeline_info` for reviewing write history
 - **Token Bucket Rate Limiting**: Burst to 3 RPS, sustain ~0.9 RPS with configurable safety margin
@@ -296,6 +296,20 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   (cross-project id, non-canonical tag via the strict-tag gate, smart-list target, unconfirmed
   destructive op), then applies durable-first and records each transaction. Identify the project
   by `project_id`.
+- `gtd_create_project` - **Constrained write.** The create-sibling of `gtd_apply_canvas_commit`:
+  builds a **new** project from a canvas draft (`frame` `{life, focus, name, outcome}` + `items[]`).
+  Resolves the destination Area of Focus from `frame.focus` (a name — matched against the parents of
+  existing `#project` tasks — or an area task id; ambiguous names return a candidate list, and an
+  unknown focus is rejected rather than creating loose), then creates the project task under it and
+  each child item parented in dependency order, with tags / priorities / dates / estimates,
+  `DEPENDS-ON` notes (in-draft `deps` → the created RTM ids, so the canvas shows the dependency
+  graph on first load), `execute` progression signals, create-then-complete for already-`done`
+  items, an `INCEPTION` note, and the `#ai_project_needs_finalise` mark that triggers the gtd-side
+  discipline tail. Validates up-front (strict-tag gate, item types / execute values / deps) and
+  writes nothing if rejected; records each transaction (undoable via `batch_undo`). Children are
+  created directly under their parent (`rtm.tasks.add` with `parent_task_id`), so no staging list is
+  used. **Note:** `#ai_project_needs_finalise` must exist in the RTM account (strict-tag mode), or
+  every create is rejected — provision it once.
 
 #### Tool naming convention
 Bare verbs (`add_task`, `list_tasks`, `get_task_notes`) are **generic RTM primitives** —

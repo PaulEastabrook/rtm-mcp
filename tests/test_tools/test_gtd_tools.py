@@ -821,3 +821,275 @@ class TestGtdApplyCanvasCommit:
         assert "rejected" not in result["data"]
         addtags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
         assert "ai_progress_requested" in addtags.kwargs["tags"]
+
+
+# ── gtd_create_project ───────────────────────────────────────────────────────
+
+
+def _create_account():
+    """Account read for create: an Area of Focus (AREA_ID, 'Personal') that already has a project
+    under it, so resolve_focus can find the area by name."""
+    return _getlist(
+        [
+            _ts("tsArea", AREA_ID, "Personal", parent=""),
+            _ts(
+                "tsExisting",
+                "p_existing",
+                "Existing project",
+                parent=AREA_ID,
+                tags=["personal", "project"],
+            ),
+        ]
+    )
+
+
+def _create_dispatch(account):
+    """side_effect for client.call: the account read, then DISTINCT ids per rtm.tasks.add (new1,
+    new2, ...) so the in-draft→new-id mapping and DEPENDS-ON notes can be verified; a generic
+    transaction for every other write."""
+    counter = {"n": 0}
+
+    async def _call(method, **kwargs):
+        if method == "rtm.tasks.getList":
+            return account
+        if method == "rtm.tasks.add":
+            counter["n"] += 1
+            i = counter["n"]
+            return {
+                "transaction": {"id": f"txadd{i}", "undoable": "1"},
+                "list": {
+                    "id": LIST_ID,
+                    "taskseries": [
+                        _ts(
+                            f"tsNew{i}",
+                            f"new{i}",
+                            kwargs.get("name", ""),
+                            parent=kwargs.get("parent_task_id", ""),
+                        )
+                    ],
+                },
+            }
+        return {"transaction": {"id": f"tx_{method.rsplit('.', 1)[-1]}", "undoable": "1"}}
+
+    return _call
+
+
+class TestGtdCreateProject:
+    @pytest.mark.asyncio
+    async def test_creates_project_and_children_in_dep_order(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_create_project"](
+            FakeContext(),
+            frame={
+                "life": "personal",
+                "focus": "Personal",
+                "name": "New Project",
+                "outcome": "Win",
+            },
+            items=[
+                {"id": "c", "type": "action", "text": "Consumer", "deps": ["p"]},
+                {"id": "p", "type": "action", "text": "Producer"},
+            ],
+        )
+        data = result["data"]
+        assert "rejected" not in data
+        # project = first add (new1); children created producer-first (new2=p, new3=c)
+        assert data["project_id"] == "new1"
+        assert data["created"] == ["new2", "new3"]
+        assert data["url"].endswith(f"/{LIST_ID}/{AREA_ID}/new1")
+
+        adds = [c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.add"]
+        assert adds[0].kwargs["parent_task_id"] == AREA_ID  # project under the area
+        assert all(a.kwargs["parent_task_id"] == "new1" for a in adds[1:])  # children under project
+        assert [a.kwargs["name"] for a in adds[1:]] == ["Producer", "Consumer"]  # dep order
+
+        proj_tags = next(
+            c
+            for c in client.call.call_args_list
+            if c.args[0] == "rtm.tasks.setTags" and c.kwargs.get("task_id") == "new1"
+        )
+        assert {"project", "personal", "ai_project_needs_finalise"} <= set(
+            proj_tags.kwargs["tags"].split(",")
+        )
+
+        dep_note = next(
+            c
+            for c in client.call.call_args_list
+            if c.args[0] == "rtm.tasks.notes.add" and c.kwargs.get("note_title") == "DEPENDS-ON"
+        )
+        assert dep_note.kwargs["task_id"] == "new3"  # attached to the consumer
+        assert 'task_id: "new2"' in dep_note.kwargs["note_text"]  # producer's NEW id
+
+        inception = next(
+            c
+            for c in client.call.call_args_list
+            if c.args[0] == "rtm.tasks.notes.add" and c.kwargs.get("note_title") == "INCEPTION"
+        )
+        assert inception.kwargs["task_id"] == "new1"
+        assert "Win" in inception.kwargs["note_text"]
+
+        assert client.record_transaction.called  # undoable via batch_undo
+
+    @pytest.mark.asyncio
+    async def test_done_item_created_then_completed(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_create_project"](
+            FakeContext(),
+            frame={"life": "work", "focus": "Personal", "name": "P"},
+            items=[{"id": "d", "type": "action", "text": "Already done", "done": True}],
+        )
+        data = result["data"]
+        assert "rejected" not in data
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert "rtm.tasks.complete" in methods
+        assert data["completed"] == ["new2"]  # project=new1, the done child=new2
+
+    @pytest.mark.asyncio
+    async def test_execute_now_and_blocked_deferred(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_create_project"](
+            FakeContext(),
+            frame={"life": "personal", "focus": "Personal", "name": "P"},
+            items=[
+                {"id": "p", "type": "action", "text": "Producer", "execute": "later"},
+                {"id": "c", "type": "action", "text": "Consumer", "deps": ["p"], "execute": "now"},
+            ],
+        )
+        data = result["data"]
+        assert "rejected" not in data
+        addtags = [c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags"]
+        by_task = {c.kwargs["task_id"]: c.kwargs["tags"] for c in addtags}
+        assert "ai_progress_deferred" in by_task["new2"]  # producer 'later'
+        assert "ai_progress_requested" in by_task["new3"]  # consumer 'now'
+        assert "ai_deferred_pending_unblock" in by_task["new3"]  # but blocked by the open producer
+        assert data["progressed"] == {"p": "later", "c": "now"}
+
+    @pytest.mark.asyncio
+    async def test_accepts_json_string_params(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_create_project"](
+            FakeContext(),
+            frame='{"life": "personal", "focus": "Personal", "name": "P"}',
+            items='[{"id": "a", "type": "action", "text": "A"}]',
+        )
+        data = result["data"]
+        assert "rejected" not in data
+        assert data["created"] == ["new2"]
+
+    @pytest.mark.asyncio
+    async def test_ambiguous_focus_returns_candidates_no_writes(self, gtd_tools):
+        tools, client = gtd_tools
+        account = _getlist(
+            [
+                _ts("tsA1", "fa1", "Family", parent=""),
+                _ts("tsA2", "fa2", "Family", parent=""),
+                _ts("tsPa", "pa", "P A", parent="fa1", tags=["project"]),
+                _ts("tsPb", "pb", "P B", parent="fa2", tags=["project"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_create_dispatch(account))
+
+        result = await tools["gtd_create_project"](
+            FakeContext(),
+            frame={"life": "personal", "focus": "Family", "name": "P"},
+            items=[{"type": "action", "text": "A"}],
+        )
+        assert {c["id"] for c in result["data"]["candidates"]} == {"fa1", "fa2"}
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_focus_miss_errors_no_writes(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_create_project"](
+            FakeContext(),
+            frame={"life": "personal", "focus": "Nonexistent Area", "name": "P"},
+            items=[{"type": "action", "text": "A"}],
+        )
+        assert "error" in result["data"]
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_missing_name_rejected_no_writes(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_create_project"](
+            FakeContext(),
+            frame={"life": "personal", "focus": "Personal"},  # no name
+            items=[{"type": "action", "text": "A"}],
+        )
+        data = result["data"]
+        assert data["created"] == []
+        assert "missing_name" in {r.get("reason") for r in data["rejected"]}
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_finalise_mark_absent_no_writes(self, gtd_tools):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=True)
+        client.get_account_tags = AsyncMock(
+            return_value={"personal", "project", "ai_conversation", "action"}
+        )  # missing ai_project_needs_finalise
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_create_project"](
+            FakeContext(),
+            frame={"life": "personal", "focus": "Personal", "name": "P"},
+            items=[{"type": "action", "text": "A"}],
+        )
+        data = result["data"]
+        assert data["created"] == []
+        assert "non_canonical_tag" in {r.get("reason") for r in data["rejected"]}
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_now_only_create_backward_compat(self, gtd_tools):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=True)
+        client.get_account_tags = AsyncMock(
+            return_value={
+                "personal",
+                "project",
+                "ai_conversation",
+                "ai_project_needs_finalise",
+                "action",
+                "ai_progress_requested",
+                "ai_deferred_pending_unblock",
+            }  # ai_progress_deferred deliberately absent
+        )
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_create_project"](
+            FakeContext(),
+            frame={"life": "personal", "focus": "Personal", "name": "P"},
+            items=[{"id": "a", "type": "action", "text": "A", "execute": "now"}],
+        )
+        assert "rejected" not in result["data"]
+
+    @pytest.mark.asyncio
+    async def test_reads_account_once_before_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        await tools["gtd_create_project"](
+            FakeContext(),
+            frame={"life": "personal", "focus": "Personal", "name": "P"},
+            items=[{"type": "action", "text": "A"}],
+        )
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods[0] == "rtm.tasks.getList"
+        assert methods.count("rtm.tasks.getList") == 1

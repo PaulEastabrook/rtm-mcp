@@ -4,6 +4,7 @@ from rtm_mcp.config import RTM_WEB_BASE_URL
 from rtm_mcp.project_plan import (
     SCHEMA,
     build_envelope,
+    resolve_focus,
     resolve_project,
 )
 
@@ -271,6 +272,50 @@ class TestResolveProject:
         ]
         res = resolve_project(parsed, "Open days")
         assert res["project"]["id"] == "p1"
+
+
+class TestResolveFocus:
+    def _parsed(self):
+        # Areas of focus carry no marker tag — they are the PARENTS of #project tasks.
+        return [
+            _t("a1", name="Personal"),
+            _t("a2", name="Work"),
+            _t("p1", name="Proj A", parent="a1", tags=["project", "personal"]),
+            _t("p2", name="Proj B", parent="a2", tags=["project", "work"]),
+        ]
+
+    def test_by_name(self):
+        assert resolve_focus(self._parsed(), "Personal")["focus"]["id"] == "a1"
+
+    def test_by_id(self):
+        # an explicit parent id the caller names resolves directly (even with no project under it)
+        assert resolve_focus(self._parsed(), "a2")["focus"]["id"] == "a2"
+
+    def test_substring_match(self):
+        assert resolve_focus(self._parsed(), "person")["focus"]["id"] == "a1"
+
+    def test_ambiguous_name_returns_candidates(self):
+        parsed = [
+            _t("a1", name="Family"),
+            _t("a2", name="Family"),
+            _t("p1", name="P1", parent="a1", tags=["project"]),
+            _t("p2", name="P2", parent="a2", tags=["project"]),
+        ]
+        res = resolve_focus(parsed, "Family")
+        assert {c["id"] for c in res["candidates"]} == {"a1", "a2"}
+
+    def test_no_match_is_actionable_error(self):
+        res = resolve_focus(self._parsed(), "Ghost")
+        assert "error" in res
+        assert "list_tasks" in res["error"]
+
+    def test_empty_focus_error(self):
+        assert "error" in resolve_focus(self._parsed(), "")
+
+    def test_area_without_projects_not_matched_by_name(self):
+        # an area with no project under it is not in the derived area set — pass its id instead
+        parsed = [_t("a9", name="Empty Area")]
+        assert "error" in resolve_focus(parsed, "Empty Area")
 
 
 def h_perma(env):
