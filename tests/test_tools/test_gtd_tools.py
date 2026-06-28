@@ -1390,8 +1390,15 @@ class TestGtdChatPost:
         title, body = add.kwargs["note_title"], add.kwargs["note_text"]
         assert body == "do it\n\nMode: act"
 
-        # Feed the authored note back through the read tool — the mode round-trips.
-        note = {"id": "n1", "title": title, "$t": body, "created": "2026-06-28T14:30:00Z"}
+        # Feed the authored note back through the read tool in the shape real getList returns —
+        # title field empty, the grammar title as the body's first line (title\nmessage). The mode
+        # still round-trips.
+        note = {
+            "id": "n1",
+            "title": "",
+            "$t": f"{title}\n{body}",
+            "created": "2026-06-28T14:30:00Z",
+        }
         client.call = AsyncMock(return_value=_chat_target_tree(notes=[note]))
         thread = await tools["gtd_chat_thread"](FakeContext(), task_id="c1")
         turn = thread["data"]["turns"][0]
@@ -1446,23 +1453,24 @@ class TestGtdChatPost:
 
 class TestGtdChatThread:
     def _thread_notes(self):
+        # Real getList shape: title field empty; the grammar title is the body's first line.
         return [
             {
                 "id": "a",
-                "title": "2026-06-28 10:00 — CHAT — me — Attend webinar",
-                "$t": "first",
+                "title": "",
+                "$t": "2026-06-28 10:00 — CHAT — me — Attend webinar\nfirst",
                 "created": "2026-06-28T10:00:00Z",
             },
             {
                 "id": "doc",
-                "title": "DEPENDS-ON",
-                "$t": "not a chat",
+                "title": "",
+                "$t": "DEPENDS-ON\nnot a chat",
                 "created": "2026-06-28T11:00:00Z",
             },
             {
                 "id": "b",
-                "title": "2026-06-28 12:00 — CHAT — ai — Attend webinar",
-                "$t": "second",
+                "title": "",
+                "$t": "2026-06-28 12:00 — CHAT — ai — Attend webinar\nsecond",
                 "created": "2026-06-28T12:00:00Z",
             },
         ]
