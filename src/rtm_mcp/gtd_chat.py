@@ -97,14 +97,22 @@ def parse_body(body: str) -> tuple[str, str | None]:
 def parse_turn(note: dict[str, Any]) -> dict[str, Any] | None:
     """Parse one RTM note dict into a CHAT turn, or ``None`` if it is not a CHAT note.
 
+    The CHAT title is the **first line of the note body**, not the note's ``title`` field: the RTM
+    API has no separate note-title field, so the write path stores ``title\\nmessage`` in the single
+    body field and ``rtm.tasks.getList`` returns an empty ``title``. We therefore split the body on
+    its first newline — line 1 is the candidate title (run the CHAT selector against it) and lines
+    2..N are the message text (then strip a trailing ``Mode:`` footer as usual). A single-line body
+    (title only, no message) yields a turn with empty ``text`` — valid, not dropped.
+
     Returns ``{note_id, role, scope, text, created}`` plus ``mode`` when a footer is present.
     Robust to notes authored by either ``gtd_chat_post`` or a worker's direct ``add_note`` call,
     and to both note-body shapes (``$t`` and ``body``) via ``parsers.extract_note_body``.
     """
-    parsed = parse_chat_title(note.get("title") or "")
+    first_line, _, rest = (extract_note_body(note) or "").partition("\n")
+    parsed = parse_chat_title(first_line)
     if not parsed:
         return None
-    text, mode = parse_body(extract_note_body(note))
+    text, mode = parse_body(rest)
     turn: dict[str, Any] = {
         "note_id": note.get("id"),
         "role": parsed["role"],

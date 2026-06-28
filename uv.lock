@@ -1583,7 +1583,7 @@ wheels = [
 
 [[package]]
 name = "rtm-mcp"
-version = "1.14.0"
+version = "1.14.1"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },

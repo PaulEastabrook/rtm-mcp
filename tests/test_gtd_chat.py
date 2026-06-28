@@ -18,7 +18,11 @@ STAMP = "2026-06-28 14:30"
 
 
 def _note(note_id, title, body, created):
-    return {"id": note_id, "title": title, "$t": body, "created": created}
+    """A note in the shape real `rtm.tasks.getList` returns: the `title` field is ALWAYS empty; the
+    grammar title is the FIRST LINE of the body, the message on the lines after (RTM stores
+    `title\\nmessage` in the single body field — there is no separate note-title field)."""
+    full = f"{title}\n{body}" if body else title
+    return {"id": note_id, "title": "", "$t": full, "created": created}
 
 
 class TestTitleGrammar:
@@ -94,11 +98,12 @@ class TestParseTurn:
         assert turn["text"] == "here you go"
 
     def test_body_key_variant(self):
-        # Worker-authored notes may carry the body under "body" rather than "$t".
+        # Worker-authored notes may carry the body under "body" rather than "$t"; the grammar is
+        # still the first line of that body.
         note = {
             "id": "n3",
-            "title": format_chat_title(STAMP, "ai", "s"),
-            "body": "via body key",
+            "title": "",
+            "body": f"{format_chat_title(STAMP, 'ai', 's')}\nvia body key",
             "created": "t",
         }
         turn = parse_turn(note)
@@ -107,6 +112,61 @@ class TestParseTurn:
 
     def test_non_chat_note_returns_none(self):
         assert parse_turn(_note("n", "INCEPTION", "x", "t")) is None
+
+    def test_title_in_body_first_line_not_title_field(self):
+        # Regression: real getList returns title="" with the grammar as the body's first line. The
+        # parser must read the body, never the (always-empty) title field. This shape returned
+        # turns:[] before the fix.
+        note = {
+            "id": "1",
+            "title": "",
+            "$t": "2026-06-28 22:02 — CHAT — me — project\nhello there",
+            "created": "2026-06-28T21:02:20Z",
+        }
+        turn = parse_turn(note)
+        assert turn is not None
+        assert turn["role"] == "me"
+        assert turn["scope"] == "project"
+        assert turn["text"] == "hello there"
+
+    def test_title_field_is_ignored(self):
+        # A populated title field must NOT be parsed: only the body's first line counts. Here the
+        # title field carries the grammar but the body's first line does not → not a CHAT turn.
+        note = {
+            "id": "x",
+            "title": format_chat_title(STAMP, "me", "scope"),
+            "$t": "just a plain message, no grammar",
+            "created": "t",
+        }
+        assert parse_turn(note) is None
+
+    def test_single_line_body_yields_turn_with_empty_text(self):
+        # Title only, no message line — a valid turn with empty text (must not be dropped).
+        note = {
+            "id": "s",
+            "title": "",
+            "$t": format_chat_title(STAMP, "ai", "scope"),
+            "created": "t",
+        }
+        turn = parse_turn(note)
+        assert turn is not None
+        assert turn["role"] == "ai"
+        assert turn["text"] == ""
+        assert "mode" not in turn
+
+    def test_mode_footer_on_realistic_shape(self):
+        # The Mode footer (last body line) is stripped from text and surfaced, with the grammar in
+        # the body's first line.
+        note = {
+            "id": "m",
+            "title": "",
+            "$t": "2026-06-28 22:02 — CHAT — me — project\nprogress this\n\nMode: act",
+            "created": "t",
+        }
+        turn = parse_turn(note)
+        assert turn is not None
+        assert turn["text"] == "progress this"
+        assert turn["mode"] == "act"
 
 
 class TestBuildThread:

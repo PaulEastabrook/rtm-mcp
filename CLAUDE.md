@@ -485,9 +485,13 @@ turn = one RTM note on the target task, title `YYYY-MM-DD HH:MM — CHAT — <ro
 (space-em-dash-space separators; timestamp localised to the account tz). `<role>` ∈ `me` (Paul) |
 `ai` (worker reply); `<scope>` is a display label (the attachment task is the real scope). Body =
 the message; a `me` turn's posture `mode` (`discuss`|`act`) is a trailing `Mode: <mode>` footer line
-that round-trips on read. A note is a CHAT turn iff its title matches
-`^\d{4}-\d{2}-\d{2} \d{2}:\d{2} — CHAT — (me|ai) — ` — robust to notes authored by either tool (the
-worker may use `add_note` directly with the same grammar).
+that round-trips on read. **The title is the FIRST LINE of the note body, not a separate field** —
+the RTM API has no note-title field, so the write stores `title\nmessage` in the single body field and
+`rtm.tasks.getList` returns an empty `title`. A note is a CHAT turn iff its **body's first line**
+matches `^\d{4}-\d{2}-\d{2} \d{2}:\d{2} — CHAT — (me|ai) — ` (line 1 = title, lines 2..N = message);
+`parse_turn` splits the body on the first newline accordingly — robust to notes authored by either
+tool (the worker may use `add_note` directly with the same grammar). (Parsing the always-empty
+`title` field instead was the v1.14.1 bug that returned an empty thread.)
 
 **`gtd_chat_post` (governed write).** Validate-then-apply, nothing written on rejection. It
 validates `role`/`mode`, resolves the task by id from **one** `rtm.tasks.getList` (`status:incomplete`
@@ -615,7 +619,7 @@ call-surface assertion, strict-tag rejection setup) are canonical in
 
 This inventory is the canonical per-file test count (keep it in sync — CONTRIBUTING.md § 9).
 
-Test files (603 tests total):
+Test files (607 tests total):
 - `tests/test_client.py` — client signing, API calls, settings + account-tag caching, transaction log, 503 retry, connection retry, POST/GET split (39 tests)
 - `tests/test_config.py` — config load/save, file fallback, corrupt JSON, strict-tag toggle (12 tests)
 - `tests/test_strict_tags.py` — strict-tag guard: normalize/split/SmartAdd-extract + enforce_strict_tags (off / reject / live-refetch) (12 tests)
@@ -626,7 +630,7 @@ Test files (603 tests total):
 - `tests/test_canvas_overlay.py` — apply_graph (reorder + quick + sorted deps, no blocked/order field) and lean_seed (body-strip, cap, honest nc) (5 tests)
 - `tests/test_canvas_commit.py` — closed classifier→tag mapping, `execute_progress_tags` now/later split, collect_commit_tags (later pulls deferred into gate; now-only stays backward-compatible), overlay-refresh gate (present for each actionable op incl. completes/removes-only; absent for empty ops), validate_commit rejection paths (cross-project, destructive-confirm, unknown type, invalid execute, smart-list) (19 tests)
 - `tests/test_canvas_create.py` — create-side pure helpers: `item_id` (explicit/index/empty), `project_tags` (life + project + ai_conversation + finalise mark), `collect_create_tags` (project tags; later pulls deferred into gate; now-only backward-compat; no-execute omits progress tags), `validate_create` rejection paths (missing_name, invalid_life, unknown_add_type, invalid_execute, unknown_dep, dep-by-index) (18 tests)
-- `tests/test_gtd_chat.py` — CHAT-note pure helpers: `format_chat_title`/`parse_chat_title` round-trip (+ non-CHAT/`ai`-role/empty/bad-role → None), `append_mode_footer`/`parse_body` round-trip (with/without mode; footer only on the final line; discuss), `parse_turn` (CHAT vs non-CHAT, mode present omits-key-when-absent, `$t` vs `body` body keys), `build_thread` (filters non-CHAT, oldest-first sort, out-of-order input, `since` filter, empty, single-dict normalised), `local_stamp` (shape + tz fallback), tag constants (19 tests)
+- `tests/test_gtd_chat.py` — CHAT-note pure helpers: `format_chat_title`/`parse_chat_title` round-trip (+ non-CHAT/`ai`-role/empty/bad-role → None), `append_mode_footer`/`parse_body` round-trip (with/without mode; footer only on the final line; discuss), `parse_turn` (title from the body's FIRST LINE — real getList shape, title field empty/ignored; CHAT vs non-CHAT, mode present omits-key-when-absent, `$t` vs `body` body keys, single-line body → empty text, mode footer on realistic shape), `build_thread` (filters non-CHAT, oldest-first sort, out-of-order input, `since` filter, empty, single-dict normalised), `local_stamp` (shape + tz fallback), tag constants (23 tests)
 - `tests/test_companion.py` — companion reader: parse_frontmatter (scalars/quote-strip, block + inline lists, empty-scalar drop, closing-fence stop), companion_candidates ordering, resolve_vault_root (explicit/host-default/marker), resolve_companion_meta (5 forms + precedence + containment + non-artefact skip), enrich_files (30 tests)
 - `tests/test_tool_params.py` — shared complex-param coercion: `coerce_json` (parse/passthrough/blank/invalid) + Annotated types (string→structured via BeforeValidator, clean single-typed schema, no `anyOf`) (11 tests)
 - `tests/test_tools/test_gtd_tools.py` — gtd_project_plan + gtd_project_canvas (seed shape, read-only call surface, lean cap, name/ambiguity/not-found, per-row `prog` from progression tags, BST due renders local day + no-tz fallback, companion `file.meta` + `frame.files` from a tmp vault, no-meta-when-absent) + gtd_apply_canvas_commit (staged-commit apply, JSON-string ops defensive path, now/later execute split + stale-sibling drop both directions, `later` strict-gate rejection + `now` backward-compat, all four rejection-without-write paths, overlay-refresh mark stamped on successful commit + not on zero-apply) + gtd_create_project (project + children in dep order under the area, DEPENDS-ON note → producer's new id, finalise-mark + life + #project on the project, INCEPTION note, undoable; create-then-complete; now/later execute split + blocked→deferred; JSON-string params; focus ambiguity/miss without writes; missing-name + finalise-mark-absent strict rejection without writes; now-only backward-compat; reads once before writing) + gtd_project_index ({projects, foci, actions} object shape, project-row field-set + life/focus/focus_id + open/blocked counts + ai_quick/ai_now/ai_later, foci incl. empty focus area, actions under active project field-set + attribution + type/due/priority/blocked, read-only call surface + no transaction, include_someday passthrough) + gtd_chat_post (me-turn posts a CHAT note with the title grammar + adds #ai_chat_requested,#ai_chat; ai-turn removes #ai_chat_requested and never adds; task_id resolves series/list internally; mode footer round-trips into gtd_chat_thread; invalid role/mode + task-not-found rejected without writing; strict-tag rejection writes nothing) + gtd_chat_thread (only CHAT turns oldest-first, since filter, `requested` reflects the tag, empty thread, read-only call surface + no transaction) via FakeMCP (62 tests)
