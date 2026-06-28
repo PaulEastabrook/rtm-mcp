@@ -248,7 +248,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         Selection:
         - projects: incomplete tasks tagged #project, NOT #test; #hold always excluded, #someday
           excluded unless include_someday=True. A project with no Area-of-Focus parent is kept with
-          focus="(unfiled)", focus_id="" — never dropped.
+          focus="(unfiled)", focus_id="" — never dropped. Each row also carries the AI-progressible
+          tallies the navigator's 4th sort lens ranks on: ai_quick / ai_now / ai_later (counts of
+          quick-win / progress-now / progress-later items, the same classification gtd_project_canvas
+          applies).
         - foci: incomplete tasks tagged #focus (the same #test/#hold/#someday gate) — the complete
           focus list, INCLUDING focus areas with zero active projects (which the per-project rows
           can never surface on their own).
@@ -266,7 +269,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             projects: [{life, focus, focus_id, project, project_id, priority ("1"|"2"|"3"|""),
                 open_count (incomplete children), blocked_count (children blocked by an open
                 DEPENDS-ON upstream), next_tickle (earliest open due date, incl. overdue, or ""),
-                updated (project modified date)}], sorted by life → focus → project;
+                updated (project modified date), ai_quick / ai_now / ai_later (incomplete
+                quick-win / progress-now / progress-later counts, mirroring gtd_project_canvas)}],
+                sorted by life → focus → project;
             foci: [{focus_id, focus, life}], sorted by life → focus;
             actions: [{action_id, name, project_id, project, focus, life, type
                 ("action"|"waiting_for"|"calendar"), due (YYYY-MM-DD localised, or ""), priority

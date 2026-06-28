@@ -298,8 +298,10 @@ you just created elsewhere is picked up without waiting for the cache to expire.
     `focus_id`; a top-level project is kept as `"(unfiled)"`, never dropped), `priority`,
     `open_count` (incomplete children), `blocked_count` (children blocked by an open `DEPENDS-ON`
     upstream — the same thin `plan_graph` judgement `gtd_project_canvas` applies), `next_tickle`
-    (earliest open due date, including overdue, or `""`), and `updated`; sorted `life` → `focus` →
-    `project`.
+    (earliest open due date, including overdue, or `""`), `updated`, and the AI-progressible tallies
+    `ai_quick` / `ai_now` / `ai_later` (counts of unblocked 2-minute quick wins / `progress-now` /
+    `progress-later` items — the same classification `gtd_project_canvas` applies, so the navigator's
+    4th "AI" sort lens ranks on their sum); sorted `life` → `focus` → `project`.
   - `foci`: every active Area of Focus (`#focus`, same `#test`/`#hold`/`#someday` gate) as
     `{focus_id, focus, life}` — **including foci with zero active projects**, which the per-project
     rows can never surface; sorted `life` → `focus`.

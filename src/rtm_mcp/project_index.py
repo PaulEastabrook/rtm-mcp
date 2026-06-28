@@ -15,7 +15,7 @@ Area-of-Focus, the project priority, and the modified date come from the project
 
 from typing import Any
 
-from .canvas_seed import map_kind
+from .canvas_seed import map_kind, map_prog
 from .plan_graph import build_graph
 from .project_plan import (
     _LIFE_TAGS,
@@ -78,7 +78,13 @@ def build_index(
 
     Returns a list (sorted by life → focus → project for deterministic output) of:
         {life, focus, focus_id, project, project_id, priority, open_count, blocked_count,
-         next_tickle, updated}.
+         next_tickle, updated, ai_quick, ai_now, ai_later}.
+
+    The three ai_* counts are the navigator's AI-progressible sort lens, tallied off the SAME
+    classification the canvas uses (so they can't disagree with an open plan): ai_quick = rows the
+    thin plan-graph judges `quick_ready` (canvas r.quick — unblocked 2-minute #quick_win actions);
+    ai_now = rows flagged #ai_progress_requested (canvas r.prog "now", blocked ones excluded);
+    ai_later = rows flagged #ai_progress_deferred (canvas r.prog "later", may be blocked).
     """
     by_id = {t["id"]: t for t in parsed}
     out: list[dict[str, Any]] = []
@@ -102,6 +108,19 @@ def build_index(
         dues = [r["due"] for r in rows if r.get("due")]
         next_tickle = min(dues) if dues else ""
 
+        # AI-progressible tallies for the navigator's 4th sort lens — the SAME classification the
+        # canvas applies (so index and an open plan never disagree): quick_ready from the thin
+        # plan-graph (the canvas's r.quick), and the progression tri-state from map_prog (r.prog).
+        # quick/now are unblocked by construction (now is filtered defensively); later may be blocked.
+        ai_quick = sum(1 for r in rows if judgement.get(r["id"], {}).get("quick_ready"))
+        ai_now = sum(
+            1
+            for r in rows
+            if map_prog(r.get("tags") or []) == "now"
+            and not judgement.get(r["id"], {}).get("blocked")
+        )
+        ai_later = sum(1 for r in rows if map_prog(r.get("tags") or []) == "later")
+
         life = _life(tags)
 
         parent = by_id.get(str(proj.get("parent_task_id") or ""))
@@ -120,6 +139,9 @@ def build_index(
                 "blocked_count": blocked_count,
                 "next_tickle": next_tickle,
                 "updated": _norm_date(proj.get("modified"), timezone),
+                "ai_quick": ai_quick,
+                "ai_now": ai_now,
+                "ai_later": ai_later,
             }
         )
 

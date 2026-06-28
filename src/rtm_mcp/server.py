@@ -118,7 +118,9 @@ This server provides full access to Remember The Milk's task management features
   #project (incomplete, not #test; #hold always excluded, #someday excluded unless
   include_someday=True) carrying life, the parent Area-of-Focus (focus/focus_id), priority,
   open_count, blocked_count (children blocked by an open DEPENDS-ON upstream, via the thin
-  plan-graph), next_tickle (earliest open due, incl. overdue) and updated. foci: every #focus area
+  plan-graph), next_tickle (earliest open due, incl. overdue), updated, and ai_quick/ai_now/ai_later
+  (quick-win / progress-now / progress-later counts, mirroring gtd_project_canvas — the navigator's
+  AI sort lens). foci: every #focus area
   (same gate) as {focus_id, focus, life}, including foci with no active projects. actions: every
   incomplete child under an active project (not #test) as {action_id, name, project_id, project,
   focus, life, type, due, priority, blocked} for cockpit search/jump-to and the What's-hot band
