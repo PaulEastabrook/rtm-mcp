@@ -1,6 +1,10 @@
 """Tests for the portfolio-index builder (src/rtm_mcp/project_index.py)."""
 
+from rtm_mcp.canvas_overlay import apply_graph
+from rtm_mcp.canvas_seed import build_seed
+from rtm_mcp.plan_graph import build_graph
 from rtm_mcp.project_index import build_actions, build_foci, build_index
+from rtm_mcp.project_plan import build_envelope
 
 AREA1 = "area1"
 AREA2 = "area2"
@@ -143,6 +147,9 @@ class TestShape:
             "blocked_count",
             "next_tickle",
             "updated",
+            "ai_quick",
+            "ai_now",
+            "ai_later",
         }
 
     def test_project_name(self):
@@ -202,6 +209,113 @@ class TestCounts:
             _t("a1", name="Undated", parent=P1, tags=["action"]),
         ]
         assert _p1(build_index(parsed))["next_tickle"] == ""
+
+
+class TestAIProgressCounts:
+    def test_ai_quick_counts_unblocked_quick_win_actions(self):
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("q1", name="Quick action", parent=P1, tags=["action", "quick_win"]),
+            _t("q2", name="Quick calendar", parent=P1, tags=["calendar_entry", "quick_win"]),
+        ]
+        assert _p1(build_index(parsed))["ai_quick"] == 2
+
+    def test_ai_quick_excludes_blocked_quick_win(self):
+        # a quick-win blocked by an open upstream is not do-able now → not counted (quick_ready
+        # already requires unblocked, matching the canvas quickReady predicate). Numeric ids: the
+        # DEPENDS-ON task_id is extracted with a digits-only regex.
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("201", name="Upstream", parent=P1, tags=["action"]),
+            _t(
+                "202",
+                name="Blocked quick",
+                parent=P1,
+                tags=["action", "quick_win"],
+                notes=[_depends_on("201")],
+            ),
+        ]
+        row = _p1(build_index(parsed))
+        assert row["ai_quick"] == 0
+        assert row["blocked_count"] == 1
+
+    def test_ai_quick_excludes_waiting_for_quick_win(self):
+        # structural guard: a waiting-for is never quick even if mis-tagged #quick_win.
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("w", name="Chase", parent=P1, tags=["waiting_for", "quick_win"]),
+        ]
+        assert _p1(build_index(parsed))["ai_quick"] == 0
+
+    def test_ai_now_counts_progress_requested_excludes_blocked(self):
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("n1", name="Now item", parent=P1, tags=["action", "ai_progress_requested"]),
+            _t("301", name="Upstream", parent=P1, tags=["action"]),
+            _t(
+                "302",
+                name="Blocked now",
+                parent=P1,
+                tags=["action", "ai_progress_requested"],
+                notes=[_depends_on("301")],
+            ),
+        ]
+        assert _p1(build_index(parsed))["ai_now"] == 1
+
+    def test_ai_later_counts_progress_deferred_including_blocked(self):
+        # "later" means queued-until-unblocked, so a blocked later IS counted.
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("l1", name="Later item", parent=P1, tags=["action", "ai_progress_deferred"]),
+            _t("401", name="Upstream", parent=P1, tags=["action"]),
+            _t(
+                "402",
+                name="Blocked later",
+                parent=P1,
+                tags=["action", "ai_progress_deferred"],
+                notes=[_depends_on("401")],
+            ),
+        ]
+        # both deferred items counted (later = queued-until-unblocked); 402 is genuinely blocked.
+        result = build_index(parsed)
+        assert _p1(result)["ai_later"] == 2
+        assert _p1(result)["blocked_count"] == 1
+
+    def test_zero_when_no_ai_flagged_work(self):
+        # present (not absent) and zero for a project with no AI-flagged items.
+        row = _p1(build_index(_portfolio()))
+        assert row["ai_quick"] == 0
+        assert row["ai_now"] == 0
+        assert row["ai_later"] == 0
+
+    def test_counts_match_canvas_classification(self):
+        # one source of truth: the index counts equal the tallies over the canvas seed built via the
+        # pure path (build_envelope → build_seed → build_graph → apply_graph).
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("q", name="Quick", parent=P1, tags=["action", "quick_win"]),
+            _t("n", name="Now", parent=P1, tags=["action", "ai_progress_requested"]),
+            _t("l", name="Later", parent=P1, tags=["action", "ai_progress_deferred"]),
+            _t("plain", name="Plain", parent=P1, tags=["action"]),
+        ]
+        env = build_envelope(parsed, P1)
+        seed = apply_graph(
+            build_seed(env["header"], env["rows"]), build_graph(env["header"], env["rows"])
+        )
+        canvas_quick = sum(1 for it in seed["seed"] if it.get("quick"))
+        canvas_now = sum(1 for it in seed["seed"] if it.get("prog") == "now")
+        canvas_later = sum(1 for it in seed["seed"] if it.get("prog") == "later")
+
+        row = _p1(build_index(parsed))
+        assert row["ai_quick"] == canvas_quick == 1
+        assert row["ai_now"] == canvas_now == 1
+        assert row["ai_later"] == canvas_later == 1
 
 
 class TestSort:

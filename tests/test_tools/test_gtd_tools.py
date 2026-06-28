@@ -1138,7 +1138,12 @@ def _index_account():
             _ts("tsEmpty", "areaEmpty", "Line management", tags=["work", "focus"]),
             _ts("tsP", PROJECT_ID, "Open days", parent=AREA_ID, tags=["personal", "project"]),
             _ts(
-                "ts1", "101", "Attend webinar", parent=PROJECT_ID, due="2026-07-03", tags=["action"]
+                "ts1",
+                "101",
+                "Attend webinar",
+                parent=PROJECT_ID,
+                due="2026-07-03",
+                tags=["action", "quick_win"],  # unblocked quick win → ai_quick
             ),
             _ts(
                 "ts2",
@@ -1198,6 +1203,9 @@ class TestGtdProjectIndex:
             "blocked_count",
             "next_tickle",
             "updated",
+            "ai_quick",
+            "ai_now",
+            "ai_later",
         }
         assert row["life"] == "personal"
         assert row["focus"] == "Sam — University"
@@ -1207,6 +1215,10 @@ class TestGtdProjectIndex:
         assert row[
             "next_tickle"
         ]  # earliest open due (deterministic; exact value covered in pure test)
+        # AI-progressible tallies: 101 is an unblocked #quick_win action; nothing now/later.
+        assert row["ai_quick"] == 1
+        assert row["ai_now"] == 0
+        assert row["ai_later"] == 0
 
     @pytest.mark.asyncio
     async def test_foci_includes_empty_focus_area(self, gtd_tools):
