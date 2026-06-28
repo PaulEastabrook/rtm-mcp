@@ -1,5 +1,6 @@
 """Tests for GTD domain tools (gtd_project_plan) via mocked RTM client."""
 
+import re
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
@@ -1290,3 +1291,232 @@ class TestGtdProjectIndex:
 
         with_someday = await tools["gtd_project_index"](FakeContext(), include_someday=True)
         assert {r["project_id"] for r in with_someday["data"]["projects"]} == {PROJECT_ID, "sd1"}
+
+
+# ── gtd_chat_post / gtd_chat_thread ──────────────────────────────────────────
+
+CHAT_TITLE_RE = r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} — CHAT — (me|ai) — Attend webinar$"
+
+
+def _chat_target_tree(tags=None, notes=None):
+    """A getList tree carrying the chat target task c1 (taskseries ts1) under the project."""
+    return _getlist(
+        [
+            _ts("tsP", PROJECT_ID, "Sam's university open days", parent=AREA_ID, tags=["project"]),
+            _ts("ts1", "c1", "Attend webinar", parent=PROJECT_ID, tags=tags, notes=notes),
+        ]
+    )
+
+
+def _chat_dispatch(tree, note_id="n_new"):
+    """side_effect for client.call: tree for reads, a note dict for notes.add, tx for tag ops."""
+
+    async def _call(method, **kwargs):
+        if method == "rtm.tasks.getList":
+            return tree
+        if method == "rtm.tasks.notes.add":
+            return {
+                "transaction": {"id": "txnote", "undoable": "1"},
+                "note": {"id": note_id, "created": "2026-06-28T14:30:00Z"},
+            }
+        return {"transaction": {"id": f"tx_{method.rsplit('.', 1)[-1]}", "undoable": "1"}}
+
+    return _call
+
+
+class TestGtdChatPost:
+    @pytest.mark.asyncio
+    async def test_me_turn_posts_note_and_adds_tags(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_chat_dispatch(_chat_target_tree()))
+
+        result = await tools["gtd_chat_post"](
+            FakeContext(), task_id="c1", text="please progress", role="me"
+        )
+
+        add = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add")
+        assert re.match(CHAT_TITLE_RE, add.kwargs["note_title"])  # scope defaults to task name
+        assert "— me —" in add.kwargs["note_title"]
+        assert add.kwargs["note_text"] == "please progress"
+
+        tag = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
+        assert tag.kwargs["tags"] == "ai_chat_requested,ai_chat"
+        assert tag.kwargs["task_id"] == "c1"
+
+        data = result["data"]
+        assert data["role"] == "me"
+        assert data["tag_changes"] == ["+ai_chat_requested", "+ai_chat"]
+        assert data["note"]["id"] == "n_new"
+        assert data["errors"] == []
+        client.record_transaction.assert_called()  # transactions recorded for batch_undo
+
+    @pytest.mark.asyncio
+    async def test_ai_turn_removes_requested_tag(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_chat_dispatch(_chat_target_tree()))
+
+        result = await tools["gtd_chat_post"](
+            FakeContext(), task_id="c1", text="here is your answer", role="ai"
+        )
+
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert "rtm.tasks.removeTags" in methods
+        assert "rtm.tasks.addTags" not in methods  # ai turn never adds
+        rem = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.removeTags")
+        assert rem.kwargs["tags"] == "ai_chat_requested"
+        assert result["data"]["tag_changes"] == ["-ai_chat_requested"]
+
+    @pytest.mark.asyncio
+    async def test_task_id_resolves_series_and_list(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_chat_dispatch(_chat_target_tree()))
+
+        await tools["gtd_chat_post"](FakeContext(), task_id="c1", text="x", role="me")
+
+        add = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add")
+        assert add.kwargs["task_id"] == "c1"
+        assert add.kwargs["taskseries_id"] == "ts1"
+        assert add.kwargs["list_id"] == LIST_ID
+
+    @pytest.mark.asyncio
+    async def test_mode_footer_round_trips_into_thread(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_chat_dispatch(_chat_target_tree()))
+
+        await tools["gtd_chat_post"](
+            FakeContext(), task_id="c1", text="do it", role="me", mode="act"
+        )
+        add = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add")
+        title, body = add.kwargs["note_title"], add.kwargs["note_text"]
+        assert body == "do it\n\nMode: act"
+
+        # Feed the authored note back through the read tool — the mode round-trips.
+        note = {"id": "n1", "title": title, "$t": body, "created": "2026-06-28T14:30:00Z"}
+        client.call = AsyncMock(return_value=_chat_target_tree(notes=[note]))
+        thread = await tools["gtd_chat_thread"](FakeContext(), task_id="c1")
+        turn = thread["data"]["turns"][0]
+        assert turn["mode"] == "act"
+        assert turn["text"] == "do it"
+
+    @pytest.mark.asyncio
+    async def test_invalid_role_rejected_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_chat_dispatch(_chat_target_tree()))
+
+        result = await tools["gtd_chat_post"](FakeContext(), task_id="c1", text="x", role="bot")
+        assert "error" in result["data"]
+        client.call.assert_not_called()  # rejected before any read/write
+
+    @pytest.mark.asyncio
+    async def test_invalid_mode_rejected_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_chat_dispatch(_chat_target_tree()))
+
+        result = await tools["gtd_chat_post"](
+            FakeContext(), task_id="c1", text="x", role="me", mode="ponder"
+        )
+        assert "error" in result["data"]
+        client.call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_task_not_found(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_chat_dispatch(_chat_target_tree()))
+
+        result = await tools["gtd_chat_post"](FakeContext(), task_id="nope", text="x", role="me")
+        assert "error" in result["data"]
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"]  # resolved (and missed); nothing written
+
+    @pytest.mark.asyncio
+    async def test_strict_tag_rejection_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=True, vault_root=None)
+        client.get_account_tags = AsyncMock(return_value={"ai_chat"})  # missing ai_chat_requested
+        client.call = AsyncMock(side_effect=_chat_dispatch(_chat_target_tree()))
+
+        result = await tools["gtd_chat_post"](FakeContext(), task_id="c1", text="x", role="me")
+
+        assert result["data"]["strict_tag_mode"] is True
+        assert "ai_chat_requested" in result["data"]["rejected_tags"]
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert "rtm.tasks.notes.add" not in methods  # nothing written
+        assert "rtm.tasks.addTags" not in methods
+
+
+class TestGtdChatThread:
+    def _thread_notes(self):
+        return [
+            {
+                "id": "a",
+                "title": "2026-06-28 10:00 — CHAT — me — Attend webinar",
+                "$t": "first",
+                "created": "2026-06-28T10:00:00Z",
+            },
+            {
+                "id": "doc",
+                "title": "DEPENDS-ON",
+                "$t": "not a chat",
+                "created": "2026-06-28T11:00:00Z",
+            },
+            {
+                "id": "b",
+                "title": "2026-06-28 12:00 — CHAT — ai — Attend webinar",
+                "$t": "second",
+                "created": "2026-06-28T12:00:00Z",
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_returns_only_chat_turns_oldest_first(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_chat_target_tree(notes=self._thread_notes()))
+
+        result = await tools["gtd_chat_thread"](FakeContext(), task_id="c1")
+        turns = result["data"]["turns"]
+        assert [t["note_id"] for t in turns] == ["a", "b"]
+        assert [t["role"] for t in turns] == ["me", "ai"]
+        assert result["data"]["task_id"] == "c1"
+
+    @pytest.mark.asyncio
+    async def test_since_filters(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_chat_target_tree(notes=self._thread_notes()))
+
+        result = await tools["gtd_chat_thread"](
+            FakeContext(), task_id="c1", since="2026-06-28T11:30:00Z"
+        )
+        assert [t["note_id"] for t in result["data"]["turns"]] == ["b"]
+
+    @pytest.mark.asyncio
+    async def test_requested_reflects_tag(self, gtd_tools):
+        tools, client = gtd_tools
+
+        client.call = AsyncMock(
+            return_value=_chat_target_tree(tags=["action", "ai_chat_requested"])
+        )
+        on = await tools["gtd_chat_thread"](FakeContext(), task_id="c1")
+        assert on["data"]["requested"] is True
+
+        client.call = AsyncMock(return_value=_chat_target_tree(tags=["action"]))
+        off = await tools["gtd_chat_thread"](FakeContext(), task_id="c1")
+        assert off["data"]["requested"] is False
+
+    @pytest.mark.asyncio
+    async def test_no_chat_notes_returns_empty(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_chat_target_tree())
+
+        result = await tools["gtd_chat_thread"](FakeContext(), task_id="c1")
+        assert result["data"]["turns"] == []
+
+    @pytest.mark.asyncio
+    async def test_read_only_call_surface(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_chat_target_tree(notes=self._thread_notes()))
+
+        await tools["gtd_chat_thread"](FakeContext(), task_id="c1")
+
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"]  # one read; no writes/timeline
+        client.record_transaction.assert_not_called()
