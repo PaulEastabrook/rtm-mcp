@@ -144,6 +144,19 @@ This server provides full access to Remember The Milk's task management features
   strict-tag mode). Validates up-front (strict-tag gate, item types/execute/deps) and writes
   nothing if rejected. Identify the destination area by frame.focus (name or area task id;
   ambiguous name → candidates).
+- gtd_chat_post: Constrained write — post one turn of the in-board AI conversation surface
+  (the CHAT note class) to a task and manage the worker's drain signal in one signed call. A
+  "me" turn (Paul) stamps #ai_chat_requested + #ai_chat; an "ai" turn (the worker reply)
+  removes #ai_chat_requested and leaves #ai_chat. The note is titled
+  "YYYY-MM-DD HH:MM — CHAT — <role> — <scope>" (localised); a "me" turn's mode (discuss|act) is
+  recorded as a body footer. Pass only task_id (series/list resolved internally from one
+  getList). Tag adds pass the strict-tag gate — #ai_chat_requested / #ai_chat must exist in the
+  account (provision once); a missing tag rejects with nothing written.
+- gtd_chat_thread: Read-only — return just the CHAT turns for a task (the cheap poll path vs
+  re-reading the whole canvas). One rtm.tasks.getList; no write, no timeline. Returns
+  {task_id, turns:[{note_id, role, scope, mode?, text, created}], requested} — turns oldest-first,
+  non-CHAT notes excluded; `requested` is whether #ai_chat_requested is set (a "thinking…" state
+  without a second call). `since` (ISO-8601) returns only later turns for incremental polling.
 
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,

@@ -32,13 +32,23 @@ from ..canvas_overlay import apply_graph, lean_seed
 from ..canvas_seed import build_seed
 from ..client import RTMClient
 from ..companion import enrich_files, resolve_vault_root
+from ..gtd_chat import (
+    AI_CHAT,
+    AI_CHAT_REQUESTED,
+    VALID_MODES,
+    VALID_ROLES,
+    append_mode_footer,
+    build_thread,
+    format_chat_title,
+    local_stamp,
+)
 from ..lookup import resolve_list_id
 from ..parsers import parse_tasks_response, priority_to_code
 from ..plan_graph import build_graph
 from ..project_index import build_actions, build_foci, build_index
 from ..project_plan import build_envelope, resolve_focus, resolve_project
 from ..response_builder import build_response, get_transaction_info
-from ..strict_tags import enforce_strict_tags
+from ..strict_tags import enforce_strict_tags, normalize_tag
 from ..tool_params import JsonObjArray, JsonObject, JsonStrArray, coerce_json
 from ..urls import build_task_url
 
@@ -925,3 +935,172 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             },
             timeline_id=client.timeline_id,
         )
+
+    @mcp.tool()
+    async def gtd_chat_post(
+        ctx: Context,
+        task_id: str,
+        text: str,
+        role: str = "me",
+        scope: str | None = None,
+        mode: str | None = None,
+    ) -> dict[str, Any]:
+        """GTD — post one turn of the in-board AI conversation surface (the CHAT note class) to a
+        task and manage the worker's drain signal in ONE signed call. The board's governed write
+        path for the project-plan-canvas chat: Paul types an instruction (role "me"); a headless
+        worker session replies (role "ai"). They converse through RTM notes — the system of record —
+        never a live session.
+
+        The turn is one note on the target task, titled `YYYY-MM-DD HH:MM — CHAT — <role> — <scope>`
+        (localised to the account timezone), body = the message text. It is governed: a "me" turn
+        also stamps #ai_chat_requested (the worker's durable work-list signal) + #ai_chat (has-a-
+        thread marker); an "ai" turn removes #ai_chat_requested (the turn is answered) and leaves
+        #ai_chat. Pass only the task_id you have — taskseries_id + list_id are resolved internally
+        from one rtm.tasks.getList. Records each write's transaction (undoable via batch_undo).
+
+        Args:
+            task_id: the target task id (a project or an item — from gtd_project_index / list_tasks).
+            text: the message body (plain; markdown allowed).
+            role: "me" (Paul's turn, default) or "ai" (the worker's reply).
+            scope: optional short display label for the title; defaults to the task name.
+            mode: optional posture for a "me" turn — "discuss" | "act" — recorded as a body footer
+                so the worker knows the requested posture (ignored for "ai" turns).
+
+        The #ai_chat_requested / #ai_chat tag writes pass the strict-tag existence gate — both must
+        exist in the RTM account (provision once, account-side); a missing tag yields the guided
+        error with NOTHING written. Tag removal ("ai" turn) is never gated.
+
+        Returns (on success): {"note": {id, title, created}, "task_id", "role", "tag_changes": [...],
+            "errors": [...]} with the note's transaction_id for undo.
+        Returns (on bad input / strict-tag rejection — nothing written): {"error": "...", ...}.
+        """
+        client: RTMClient = await get_client()
+
+        if role not in VALID_ROLES:
+            return build_response(
+                data={"error": f"role must be one of {sorted(VALID_ROLES)}; got {role!r}."}
+            )
+        if mode is not None and mode not in VALID_MODES:
+            return build_response(
+                data={
+                    "error": f"mode must be one of {sorted(VALID_MODES)} or omitted; got {mode!r}."
+                }
+            )
+        eff_mode = mode if role == "me" else None
+
+        # Resolve the task by id from one read (active items — chat lives on incomplete work).
+        result = await client.call("rtm.tasks.getList", filter="status:incomplete")
+        parsed = parse_tasks_response(result)
+        task = next((t for t in parsed if t["id"] == str(task_id)), None)
+        if task is None:
+            return build_response(
+                data={
+                    "error": f"Task {task_id} not found among active tasks. Pass the task id of an "
+                    "incomplete project or item (from gtd_project_index or list_tasks)."
+                }
+            )
+        ids = {
+            "task_id": task["id"],
+            "taskseries_id": task["taskseries_id"],
+            "list_id": task["list_id"],
+        }
+        scope_label = scope or task.get("name") or ""
+
+        # Strict-tag existence gate — only the "me" turn ADDS tags; reject before any write.
+        if role == "me":
+            gate = await enforce_strict_tags(
+                client, [AI_CHAT_REQUESTED, AI_CHAT], tool="gtd_chat_post"
+            )
+            if gate:
+                return build_response(data=gate)
+
+        tz = await client.get_timezone()
+        title = format_chat_title(local_stamp(tz), role, scope_label)
+        body = append_mode_footer(text, eff_mode)
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+
+        async def _write(method: str, label: str, **kwargs: Any) -> dict[str, Any] | None:
+            try:
+                res = await client.call(method, require_timeline=True, **kwargs)
+                tx_id, undoable = get_transaction_info(res)
+                if tx_id:
+                    client.record_transaction(tx_id, method, undoable, label)
+                applied.append({"op": label, "transaction_id": tx_id})
+                return res
+            except Exception as exc:  # batch resilience: record the failure and continue
+                errors.append({"op": label, "error": str(exc)})
+                return None
+
+        note_res = await _write(
+            "rtm.tasks.notes.add", "chat-note", note_title=title, note_text=body, **ids
+        )
+        note = (note_res or {}).get("note", {}) if note_res else {}
+
+        if role == "me":
+            await _write(
+                "rtm.tasks.addTags", "chat-requested", tags=f"{AI_CHAT_REQUESTED},{AI_CHAT}", **ids
+            )
+            tag_changes = [f"+{AI_CHAT_REQUESTED}", f"+{AI_CHAT}"]
+        else:
+            await _write("rtm.tasks.removeTags", "chat-answered", tags=AI_CHAT_REQUESTED, **ids)
+            tag_changes = [f"-{AI_CHAT_REQUESTED}"]
+
+        note_tx, note_undoable = get_transaction_info(note_res or {})
+        return build_response(
+            data={
+                "note": {
+                    "id": note.get("id"),
+                    "title": note.get("title") or title,
+                    "created": note.get("created"),
+                },
+                "task_id": ids["task_id"],
+                "role": role,
+                "tag_changes": tag_changes,
+                "errors": errors,
+            },
+            transaction_id=note_tx,
+            transaction_undoable=note_undoable if note_tx else None,
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool()
+    async def gtd_chat_thread(
+        ctx: Context,
+        task_id: str,
+        since: str | None = None,
+    ) -> dict[str, Any]:
+        """GTD — return just the CHAT turns for a task: the cheap poll path for the in-board AI
+        conversation surface (vs re-reading the whole canvas). The read-sibling of gtd_chat_post.
+
+        Read-only. One signed rtm.tasks.getList; no write, no timeline, no settings read. Resolves
+        the task by id, parses its CHAT notes (non-CHAT notes excluded) into turns oldest-first, and
+        reports whether the worker's drain signal is currently raised.
+
+        Args:
+            task_id: the target task id (a project or an item).
+            since: optional ISO-8601 timestamp — return only turns created strictly after it
+                (incremental poll).
+
+        Returns (on success): {"task_id", "turns": [{note_id, role, scope, mode?, text, created}...],
+            "requested": bool} — turns oldest-first; `requested` is whether #ai_chat_requested is set
+            (lets the board show a "thinking…" state without a second call). `created` is RTM's
+            value (UTC); the localised display stamp lives in the note title.
+        Returns (on miss / bad input): {"error": "..."}.
+        """
+        client: RTMClient = await get_client()
+        result = await client.call("rtm.tasks.getList", filter="status:incomplete")
+        parsed = parse_tasks_response(result)
+        task = next((t for t in parsed if t["id"] == str(task_id)), None)
+        if task is None:
+            return build_response(
+                data={
+                    "error": f"Task {task_id} not found among active tasks. Pass the task id of an "
+                    "incomplete project or item (from gtd_project_index or list_tasks)."
+                }
+            )
+
+        turns = build_thread(task.get("notes") or [], since=since)
+        requested = AI_CHAT_REQUESTED in {normalize_tag(t) for t in (task.get("tags") or [])}
+        return build_response(data={"task_id": task["id"], "turns": turns, "requested": requested})

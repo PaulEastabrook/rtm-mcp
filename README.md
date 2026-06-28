@@ -14,6 +14,7 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Batched project read** (`gtd_project_plan`): a whole project plan — project, all descendant items, and every note — in one read-only call (vs `1+N`), as the `project-plan-seed` envelope the GTD canvas consumes. The first of the server's `gtd_`-prefixed domain compositions.
 - **Project-plan canvas tools** (`gtd_project_canvas` + `gtd_apply_canvas_commit` + `gtd_create_project`): a read-only canvas seed with the deterministic plan-graph overlay applied (ordering, blocking, quick-wins), a single governed write surface that validates a whole canvas commit up-front and writes nothing if anything is rejected, and a create-sibling that builds a brand-new project (task + dependency-ordered children + notes/tags + finalise mark) from a canvas draft in one governed call.
 - **Portfolio index** (`gtd_project_index`): a read-only roll-up of every active `#project` — life, parent Area-of-Focus, and at-a-glance open/blocked counts + next tickle — in one call, backing the canvas navigator (the Phase C cockpit project picker).
+- **In-board conversation surface** (`gtd_chat_post` + `gtd_chat_thread`): the governed post + cheap-poll path for the project-plan-canvas's AI chat — a new `CHAT` note class on the target task, with the worker's drain-signal tags managed in the same signed call. The board and a headless worker session converse through RTM notes (the system of record), not a live session.
 - **Undo and Batch Undo**: All write operations return transaction IDs; undo one or many operations with `batch_undo`
 - **Timeline Introspection**: Session transaction log with `get_timeline_info` for reviewing write history
 - **Token Bucket Rate Limiting**: Burst to 3 RPS, sustain ~0.9 RPS with configurable safety margin
@@ -340,6 +341,22 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   created directly under their parent (`rtm.tasks.add` with `parent_task_id`), so no staging list is
   used. **Note:** `#ai_project_needs_finalise` must exist in the RTM account (strict-tag mode), or
   every create is rejected — provision it once.
+- `gtd_chat_post` - **Constrained write.** Post one turn of the in-board AI conversation surface
+  (the **`CHAT`** note class) to a task and manage the worker's drain signal in one signed call.
+  Paul types an instruction (`role` `"me"`); a headless worker session replies (`role` `"ai"`) —
+  they converse through RTM notes, the system of record, not a live session. The turn is one note
+  titled `YYYY-MM-DD HH:MM — CHAT — <role> — <scope>` (localised to the account tz), body = the
+  message; a `"me"` turn's `mode` (`discuss`|`act`) is recorded as a body footer. A `"me"` turn also
+  stamps `#ai_chat_requested` (the worker's work-list signal) + `#ai_chat` (has-a-thread marker); an
+  `"ai"` turn removes `#ai_chat_requested` and leaves `#ai_chat`. Pass only `task_id` (series/list
+  resolved internally from one read). Tag adds pass the strict-tag gate — `#ai_chat_requested` /
+  `#ai_chat` must exist in the account (provision once); a missing tag rejects with nothing written.
+- `gtd_chat_thread` - **Read-only.** The cheap poll path for the conversation surface (vs
+  re-reading the whole canvas) and the read-sibling of `gtd_chat_post`. One `rtm.tasks.getList`; no
+  write, no timeline. Returns `{task_id, turns: [{note_id, role, scope, mode?, text, created}],
+  requested}` — turns oldest-first, non-`CHAT` notes excluded; `requested` is whether
+  `#ai_chat_requested` is currently set (so the board can show a "thinking…" state without a second
+  call). `since` (ISO-8601) returns only turns created after it, for incremental polling.
 
 #### Tool naming convention
 Bare verbs (`add_task`, `list_tasks`, `get_task_notes`) are **generic RTM primitives** —
