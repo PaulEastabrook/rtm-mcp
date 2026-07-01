@@ -150,6 +150,8 @@ class TestShape:
             "ai_quick",
             "ai_now",
             "ai_later",
+            "chat_count",
+            "chat_review_count",
         }
 
     def test_project_name(self):
@@ -316,6 +318,76 @@ class TestAIProgressCounts:
         assert row["ai_quick"] == canvas_quick == 1
         assert row["ai_now"] == canvas_now == 1
         assert row["ai_later"] == canvas_later == 1
+
+
+class TestConversationCounts:
+    def _proj(self, children):
+        return [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            *children,
+        ]
+
+    def test_counts_incomplete_ai_chat_and_review(self):
+        # Acceptance #1: two #ai_chat items (one also #ai_output_review_needed) + one COMPLETED
+        # #ai_chat item → chat_count 2, chat_review_count 1 (completed excluded).
+        parsed = self._proj(
+            [
+                _t("c1", "Chat one", parent=P1, tags=["action", "ai_chat"]),
+                _t(
+                    "c2",
+                    "Chat two",
+                    parent=P1,
+                    tags=["action", "ai_chat", "ai_output_review_needed"],
+                ),
+                _t(
+                    "c3",
+                    "Done chat",
+                    parent=P1,
+                    tags=["action", "ai_chat"],
+                    completed="2026-06-01T00:00:00Z",
+                ),
+            ]
+        )
+        row = _p1(build_index(parsed))
+        assert row["chat_count"] == 2
+        assert row["chat_review_count"] == 1
+
+    def test_zero_when_no_conversation_items(self):
+        # Acceptance #2.
+        row = _p1(build_index(self._proj([_t("a1", "Plain", parent=P1, tags=["action"])])))
+        assert row["chat_count"] == 0
+        assert row["chat_review_count"] == 0
+
+    def test_review_is_subset_not_additive(self):
+        # an item tagged both counts ONCE in chat_count and once in chat_review_count.
+        parsed = self._proj(
+            [_t("c1", "Both", parent=P1, tags=["action", "ai_chat", "ai_output_review_needed"])]
+        )
+        row = _p1(build_index(parsed))
+        assert row["chat_count"] == 1
+        assert row["chat_review_count"] == 1
+
+    def test_project_scoped_conversation_counts_the_project(self):
+        # a project task carrying the tags itself is one more subject.
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(
+                P1,
+                name="Open days",
+                parent=AREA1,
+                tags=["personal", "project", "ai_chat", "ai_output_review_needed"],
+            ),
+            _t("c1", "Item chat", parent=P1, tags=["action", "ai_chat"]),
+        ]
+        row = _p1(build_index(parsed))
+        assert row["chat_count"] == 2  # the project + one item
+        assert row["chat_review_count"] == 1  # the project
+
+    def test_always_present_zero_not_absent(self):
+        row = _p1(build_index(_portfolio()))
+        assert row["chat_count"] == 0
+        assert row["chat_review_count"] == 0
 
 
 class TestSort:

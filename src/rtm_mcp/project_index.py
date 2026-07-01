@@ -16,6 +16,7 @@ Area-of-Focus, the project priority, and the modified date come from the project
 from typing import Any
 
 from .canvas_seed import map_kind, map_prog
+from .gtd_chat import AI_CHAT, AI_OUTPUT_REVIEW_NEEDED
 from .plan_graph import build_graph
 from .project_plan import (
     _LIFE_TAGS,
@@ -78,13 +79,19 @@ def build_index(
 
     Returns a list (sorted by life → focus → project for deterministic output) of:
         {life, focus, focus_id, project, project_id, priority, open_count, blocked_count,
-         next_tickle, updated, ai_quick, ai_now, ai_later}.
+         next_tickle, updated, ai_quick, ai_now, ai_later, chat_count, chat_review_count}.
 
     The three ai_* counts are the navigator's AI-progressible sort lens, tallied off the SAME
     classification the canvas uses (so they can't disagree with an open plan): ai_quick = rows the
     thin plan-graph judges `quick_ready` (canvas r.quick — unblocked 2-minute #quick_win actions);
     ai_now = rows flagged #ai_progress_requested (canvas r.prog "now", blocked ones excluded);
     ai_later = rows flagged #ai_progress_deferred (canvas r.prog "later", may be blocked).
+
+    chat_count / chat_review_count are the per-project conversation counts for the navigator chip +
+    "Conversations" sort lens: chat_count = incomplete items tagged #ai_chat (a conversation is
+    underway); chat_review_count = incomplete items tagged #ai_output_review_needed (AI has replied —
+    Paul's turn). The review count is a subset signal, counted independently; the project task itself
+    counts when it carries the tag. Both are always present (0 when none).
     """
     by_id = {t["id"]: t for t in parsed}
     out: list[dict[str, Any]] = []
@@ -121,6 +128,23 @@ def build_index(
         )
         ai_later = sum(1 for r in rows if map_prog(r.get("tags") or []) == "later")
 
+        # Conversation counts for the navigator chip + "Conversations" sort lens — a standing
+        # per-project count the artifact can't derive for a non-open project (it only loads the open
+        # project's rows). Incomplete only (the read is status:incomplete). `chat_review_count` is a
+        # SUBSET signal (items awaiting review still have a conversation) — counted independently; the
+        # artifact composes the display (total chip, amber when review > 0). The project task itself
+        # counts when it carries the tag (a project-scoped conversation is one more subject).
+        # `not r["completed"]` guards the incomplete-only rule directly (the getList is already
+        # status:incomplete, but build_envelope carries completed children too, so guard here).
+        chat_count = sum(
+            1 for r in rows if AI_CHAT in (r.get("tags") or []) and not r.get("completed")
+        ) + (1 if AI_CHAT in tags else 0)
+        chat_review_count = sum(
+            1
+            for r in rows
+            if AI_OUTPUT_REVIEW_NEEDED in (r.get("tags") or []) and not r.get("completed")
+        ) + (1 if AI_OUTPUT_REVIEW_NEEDED in tags else 0)
+
         life = _life(tags)
 
         parent = by_id.get(str(proj.get("parent_task_id") or ""))
@@ -142,6 +166,8 @@ def build_index(
                 "ai_quick": ai_quick,
                 "ai_now": ai_now,
                 "ai_later": ai_later,
+                "chat_count": chat_count,
+                "chat_review_count": chat_review_count,
             }
         )
 
