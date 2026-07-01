@@ -262,7 +262,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
           focus="(unfiled)", focus_id="" — never dropped. Each row also carries the AI-progressible
           tallies the navigator's 4th sort lens ranks on: ai_quick / ai_now / ai_later (counts of
           quick-win / progress-now / progress-later items, the same classification gtd_project_canvas
-          applies).
+          applies), and the conversation counts chat_count / chat_review_count (incomplete items
+          tagged #ai_chat / #ai_output_review_needed — the navigator chip + Conversations sort lens).
         - foci: incomplete tasks tagged #focus (the same #test/#hold/#someday gate) — the complete
           focus list, INCLUDING focus areas with zero active projects (which the per-project rows
           can never surface on their own).
@@ -281,8 +282,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 open_count (incomplete children), blocked_count (children blocked by an open
                 DEPENDS-ON upstream), next_tickle (earliest open due date, incl. overdue, or ""),
                 updated (project modified date), ai_quick / ai_now / ai_later (incomplete
-                quick-win / progress-now / progress-later counts, mirroring gtd_project_canvas)}],
-                sorted by life → focus → project;
+                quick-win / progress-now / progress-later counts, mirroring gtd_project_canvas),
+                chat_count / chat_review_count (incomplete #ai_chat / #ai_output_review_needed
+                items)}], sorted by life → focus → project;
             foci: [{focus_id, focus, life}], sorted by life → focus;
             actions: [{action_id, name, project_id, project, focus, life, type
                 ("action"|"waiting_for"|"calendar"), due (YYYY-MM-DD localised, or ""), priority

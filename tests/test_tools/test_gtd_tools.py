@@ -1207,6 +1207,8 @@ class TestGtdProjectIndex:
             "ai_quick",
             "ai_now",
             "ai_later",
+            "chat_count",
+            "chat_review_count",
         }
         assert row["life"] == "personal"
         assert row["focus"] == "Sam — University"
@@ -1220,6 +1222,33 @@ class TestGtdProjectIndex:
         assert row["ai_quick"] == 1
         assert row["ai_now"] == 0
         assert row["ai_later"] == 0
+        # conversation counts: no #ai_chat items in this fixture.
+        assert row["chat_count"] == 0
+        assert row["chat_review_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_project_chat_counts(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsA", AREA_ID, "Sam — University", tags=["personal", "focus"]),
+                _ts("tsP", PROJECT_ID, "Open days", parent=AREA_ID, tags=["personal", "project"]),
+                _ts("ts1", "101", "Chatting", parent=PROJECT_ID, tags=["action", "ai_chat"]),
+                _ts(
+                    "ts2",
+                    "102",
+                    "Awaiting review",
+                    parent=PROJECT_ID,
+                    tags=["action", "ai_chat", "ai_output_review_needed"],
+                ),
+            ]
+        )
+        client.call = AsyncMock(return_value=tree)
+
+        data = (await tools["gtd_project_index"](FakeContext()))["data"]
+        row = next(r for r in data["projects"] if r["project_id"] == PROJECT_ID)
+        assert row["chat_count"] == 2  # both items have #ai_chat
+        assert row["chat_review_count"] == 1  # one awaits review
 
     @pytest.mark.asyncio
     async def test_foci_includes_empty_focus_area(self, gtd_tools):
