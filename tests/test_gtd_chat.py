@@ -6,6 +6,7 @@ from rtm_mcp.gtd_chat import (
     AI_CHAT,
     AI_CHAT_REQUESTED,
     append_mode_footer,
+    build_inflight,
     build_thread,
     format_chat_title,
     local_stamp,
@@ -23,6 +24,23 @@ def _note(note_id, title, body, created):
     `title\\nmessage` in the single body field — there is no separate note-title field)."""
     full = f"{title}\n{body}" if body else title
     return {"id": note_id, "title": "", "$t": full, "created": created}
+
+
+def _chat_note(note_id, role, created):
+    """A realistic CHAT note (title-as-body-first-line) for a task, for last_activity tests."""
+    return _note(note_id, format_chat_title(STAMP, role, "scope"), "hi", created)
+
+
+def _task(task_id, name="Task", parent="", tags=None, notes=None, completed=None):
+    """A parsed task in the shape parse_tasks_response emits (subset build_inflight reads)."""
+    return {
+        "id": task_id,
+        "name": name,
+        "parent_task_id": parent or None,
+        "tags": tags or [],
+        "notes": notes or [],
+        "completed": completed,
+    }
 
 
 class TestTitleGrammar:
@@ -204,6 +222,162 @@ class TestBuildThread:
         turns = build_thread(single)
         assert len(turns) == 1
         assert turns[0]["note_id"] == "a"
+
+
+class TestBuildInflight:
+    AREA = "area1"
+    PROJ = "proj1"
+    PROJ2 = "proj2"
+
+    def _portfolio(self):
+        """Two projects under an area; project PROJ has a project-scope thread + three item threads
+        (one per status) + several excluded items; PROJ2 has one item thread (cross-project)."""
+        return [
+            _task(self.AREA, "Focus area", tags=["focus"]),
+            _task(self.PROJ, "Alpha", parent=self.AREA, tags=["project", "ai_chat"]),
+            _task(self.PROJ2, "Beta", parent=self.AREA, tags=["project"]),
+            # PROJ item threads — one per status
+            _task(
+                "i_flight",
+                "Draft it",
+                parent=self.PROJ,
+                tags=["action", "ai_chat", "ai_chat_requested"],
+                notes=[_chat_note("n1", "me", "2026-06-29T10:00:00Z")],
+            ),
+            _task(
+                "i_review",
+                "Review it",
+                parent=self.PROJ,
+                tags=["action", "ai_chat", "ai_output_review_needed"],
+            ),
+            _task("i_open", "Chatting", parent=self.PROJ, tags=["action", "ai_chat"]),
+            # excluded: no #ai_chat / #test / completed
+            _task("i_nochat", "No chat", parent=self.PROJ, tags=["action"]),
+            _task("i_test", "Test", parent=self.PROJ, tags=["action", "ai_chat", "test"]),
+            _task(
+                "i_done",
+                "Done",
+                parent=self.PROJ,
+                tags=["action", "ai_chat"],
+                completed="2026-06-01T00:00:00Z",
+            ),
+            # cross-project item thread under PROJ2
+            _task("i_beta", "Beta item", parent=self.PROJ2, tags=["action", "ai_chat"]),
+        ]
+
+    def _by_id(self):
+        return {i["task_id"]: i for i in build_inflight(self._portfolio())["items"]}
+
+    def test_selection_incomplete_ai_chat_not_test(self):
+        ids = set(self._by_id())
+        assert ids == {self.PROJ, "i_flight", "i_review", "i_open", "i_beta"}
+        # excluded: no-chat, #test, completed
+        assert {"i_nochat", "i_test", "i_done"}.isdisjoint(ids)
+
+    def test_count_matches_items(self):
+        out = build_inflight(self._portfolio())
+        assert out["count"] == len(out["items"]) == 5
+
+    def test_status_precedence(self):
+        by_id = self._by_id()
+        assert by_id["i_flight"]["status"] == "in_flight"
+        assert by_id["i_review"]["status"] == "awaiting_review"
+        assert by_id["i_open"]["status"] == "open"
+
+    def test_in_flight_wins_over_review(self):
+        parsed = [
+            _task(self.PROJ, "Alpha", tags=["project"]),
+            _task(
+                "both",
+                "Both signals",
+                parent=self.PROJ,
+                tags=["action", "ai_chat", "ai_chat_requested", "ai_output_review_needed"],
+            ),
+        ]
+        item = next(i for i in build_inflight(parsed)["items"] if i["task_id"] == "both")
+        assert item["status"] == "in_flight"
+
+    def test_scope_project_vs_item(self):
+        by_id = self._by_id()
+        assert by_id[self.PROJ]["scope"] == "project"
+        assert by_id["i_flight"]["scope"] == "item"
+
+    def test_ancestor_project_resolution(self):
+        by_id = self._by_id()
+        # item → nearest #project ancestor
+        assert by_id["i_flight"]["project_id"] == self.PROJ
+        assert by_id["i_flight"]["project_name"] == "Alpha"
+        # a project task resolves to itself
+        assert by_id[self.PROJ]["project_id"] == self.PROJ
+        # cross-project item attributes to its own project
+        assert by_id["i_beta"]["project_id"] == self.PROJ2
+        assert by_id["i_beta"]["project_name"] == "Beta"
+
+    def test_deeply_nested_item_walks_up_to_project(self):
+        parsed = [
+            _task(self.AREA, "Focus", tags=["focus"]),
+            _task(self.PROJ, "Alpha", parent=self.AREA, tags=["project"]),
+            _task("mid", "Mid action", parent=self.PROJ, tags=["action"]),
+            _task("leaf", "Leaf", parent="mid", tags=["action", "ai_chat"]),
+        ]
+        item = build_inflight(parsed)["items"][0]
+        assert item["task_id"] == "leaf"
+        assert item["project_id"] == self.PROJ
+
+    def test_loose_item_without_project_ancestor(self):
+        parsed = [_task("loose", "Loose", tags=["action", "ai_chat"])]
+        item = build_inflight(parsed)["items"][0]
+        assert item["project_id"] == ""
+        assert item["project_name"] == ""
+
+    def test_last_activity_is_latest_chat_note(self):
+        parsed = [
+            _task(self.PROJ, "Alpha", tags=["project"]),
+            _task(
+                "chatty",
+                "Chatty",
+                parent=self.PROJ,
+                tags=["action", "ai_chat"],
+                notes=[
+                    _chat_note("n1", "me", "2026-06-29T10:00:00Z"),
+                    _chat_note("n2", "ai", "2026-06-29T12:00:00Z"),
+                    _note("doc", "INCEPTION", "not a chat", "2026-06-29T23:00:00Z"),  # ignored
+                ],
+            ),
+        ]
+        item = build_inflight(parsed)["items"][0]
+        assert item["last_activity"] == "2026-06-29T12:00:00Z"
+
+    def test_last_activity_empty_when_no_chat_notes(self):
+        by_id = self._by_id()
+        assert by_id["i_open"]["last_activity"] == ""  # tagged #ai_chat but no CHAT note yet
+
+    def test_ordering_status_then_recency(self):
+        parsed = [
+            _task(self.PROJ, "Alpha", tags=["project"]),
+            _task("open1", "Open", parent=self.PROJ, tags=["action", "ai_chat"]),
+            _task(
+                "flight_old",
+                "Old flight",
+                parent=self.PROJ,
+                tags=["action", "ai_chat", "ai_chat_requested"],
+                notes=[_chat_note("a", "me", "2026-06-29T09:00:00Z")],
+            ),
+            _task(
+                "flight_new",
+                "New flight",
+                parent=self.PROJ,
+                tags=["action", "ai_chat", "ai_chat_requested"],
+                notes=[_chat_note("b", "me", "2026-06-29T18:00:00Z")],
+            ),
+        ]
+        order = [i["task_id"] for i in build_inflight(parsed)["items"]]
+        # both in_flight before the open one; within in_flight the more recent activity first
+        assert order == ["flight_new", "flight_old", "open1"]
+
+    def test_empty(self):
+        assert build_inflight([]) == {"items": [], "count": 0}
+        assert build_inflight([_task("x", "No chat", tags=["action"])]) == {"items": [], "count": 0}
 
 
 class TestLocalStamp:

@@ -25,10 +25,15 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .parsers import ensure_list, extract_note_body
+from .project_plan import _PROJECT_TAG, _TEST_TAG, _ancestor_chain
+from .strict_tags import normalize_tag
 
 # Drain-signal tags (bare RTM names — no '#'). Account-provisioned; never minted here.
 AI_CHAT_REQUESTED = "ai_chat_requested"  # worker work-list signal (a me-turn awaits a reply)
 AI_CHAT = "ai_chat"  # has-a-thread marker (left in place once a thread exists)
+# Read-only status signal (also account-provisioned, never minted here): the worker has produced
+# output that awaits Paul's review. Read by gtd_chat_inflight to derive the "awaiting_review" state.
+AI_OUTPUT_REVIEW_NEEDED = "ai_output_review_needed"
 
 VALID_ROLES = frozenset({"me", "ai"})
 VALID_MODES = frozenset({"discuss", "act"})
@@ -155,3 +160,79 @@ def build_thread(notes: Any, *, since: str | None = None) -> list[dict[str, Any]
         turns.append(turn)
     turns.sort(key=lambda t: t.get("created") or "")
     return turns
+
+
+# Ordering rank for the live band: active work first, then output awaiting review, then idle threads.
+_STATUS_RANK = {"in_flight": 0, "awaiting_review": 1, "open": 2}
+
+
+def _inflight_status(tags: set[str]) -> str:
+    """Derive an in-flight item's status from its tags (precedence: in_flight > awaiting_review >
+    open). `#ai_chat_requested` = a me-turn awaits the worker; `#ai_output_review_needed` = the
+    worker produced output awaiting review; otherwise a thread merely exists (`#ai_chat`)."""
+    if AI_CHAT_REQUESTED in tags:
+        return "in_flight"
+    if AI_OUTPUT_REVIEW_NEEDED in tags:
+        return "awaiting_review"
+    return "open"
+
+
+def build_inflight(parsed: list[dict[str, Any]]) -> dict[str, Any]:
+    """Flat parsed tasks → the cross-project live-band set for the conversation cockpit (F3).
+
+    Selection: incomplete tasks carrying `#ai_chat` (an open CHAT thread), NOT `#test` — the thread
+    lives on active work, mirroring `gtd_chat_thread`'s resolution discipline. Each item carries the
+    context the band needs to render a chip and load+open it:
+        {task_id, name, scope ("item"|"project"), status ("in_flight"|"awaiting_review"|"open"),
+         project_id, project_name, last_activity}.
+
+    - `scope` = "project" when the task itself carries `#project`, else "item".
+    - `project_id`/`project_name` = the nearest `#project` ancestor (the task itself when it IS a
+      project). Resolved by walking `parent_task_id` via `project_plan._ancestor_chain`. A loose item
+      with no `#project` ancestor keeps `project_id=""`/`project_name=""` (chip shows; can't load).
+    - `last_activity` = the most-recent CHAT note's `created` (RTM's UTC value, not re-localised —
+      the localised display stamp lives in the note title), `""` when there are no CHAT turns.
+
+    Sorted by status (in_flight → awaiting_review → open), then most-recent activity, then name — a
+    deterministic urgency order. Returns `{"items": [...], "count": len(items)}` (empty → count 0).
+    """
+    by_id = {t["id"]: t for t in parsed}
+    items: list[dict[str, Any]] = []
+
+    for t in parsed:
+        tags = {normalize_tag(tg) for tg in (t.get("tags") or [])}
+        if AI_CHAT not in tags or _TEST_TAG in tags or t.get("completed"):
+            continue
+
+        scope = "project" if _PROJECT_TAG in tags else "item"
+        # nearest #project ancestor (self when this task is a project) — root-first chain, so the
+        # first #project-tagged entry is the enclosing project.
+        proj = None
+        for aid in _ancestor_chain(t["id"], by_id):
+            row = by_id.get(aid)
+            if row and _PROJECT_TAG in {normalize_tag(tg) for tg in (row.get("tags") or [])}:
+                proj = row
+                break
+
+        turns = build_thread(t.get("notes") or [])
+        last_activity = turns[-1]["created"] if turns else ""
+
+        items.append(
+            {
+                "task_id": t["id"],
+                "name": t.get("name") or "",
+                "scope": scope,
+                "status": _inflight_status(tags),
+                "project_id": proj["id"] if proj else "",
+                "project_name": (proj.get("name") or "") if proj else "",
+                "last_activity": last_activity or "",
+            }
+        )
+
+    # Stable multi-pass sort (least-significant key first): status asc, then last_activity desc
+    # (most-recent first; undated "" sorts last under reverse), then name asc. No clock dependency,
+    # so the order is deterministic.
+    items.sort(key=lambda i: i["name"].lower())
+    items.sort(key=lambda i: i["last_activity"], reverse=True)
+    items.sort(key=lambda i: _STATUS_RANK.get(i["status"], 9))
+    return {"items": items, "count": len(items)}

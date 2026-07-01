@@ -157,6 +157,13 @@ This server provides full access to Remember The Milk's task management features
   {task_id, turns:[{note_id, role, scope, mode?, text, created}], requested} — turns oldest-first,
   non-CHAT notes excluded; `requested` is whether #ai_chat_requested is set (a "thinking…" state
   without a second call). `since` (ISO-8601) returns only later turns for incremental polling.
+- gtd_chat_inflight: Read-only — the conversation cockpit's cross-project live band: every incomplete
+  item with an open CHAT thread (#ai_chat), across all lists/projects, in one rtm.tasks.getList (no
+  write, no timeline, no settings read). Returns {items:[{task_id, name, scope (item|project), status
+  (in_flight|awaiting_review|open), project_id, project_name, last_activity}], count}, sorted status →
+  recency → name. status from tags (#ai_chat_requested→in_flight; else #ai_output_review_needed→
+  awaiting_review; else open); project_id/name = nearest #project ancestor. Reads existing chat
+  signals — no new tag, vault-free.
 
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,

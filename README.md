@@ -357,6 +357,14 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   requested}` — turns oldest-first, non-`CHAT` notes excluded; `requested` is whether
   `#ai_chat_requested` is currently set (so the board can show a "thinking…" state without a second
   call). `since` (ISO-8601) returns only turns created after it, for incremental polling.
+- `gtd_chat_inflight` - **Read-only.** The conversation cockpit's **cross-project live band**: every
+  incomplete item with an open CHAT thread (`#ai_chat`), across all lists/projects, in one
+  `rtm.tasks.getList` (no write, no timeline, no settings read). Returns `{items: [{task_id, name,
+  scope ("item"|"project"), status ("in_flight"|"awaiting_review"|"open"), project_id, project_name,
+  last_activity}], count}`, sorted status → recency → name. `status` derives from the item's tags
+  (`#ai_chat_requested` → in_flight; else `#ai_output_review_needed` → awaiting_review; else open);
+  `project_id`/`project_name` are the nearest `#project` ancestor. No new tag — reads the existing
+  chat signals; vault-free.
 
 #### Tool naming convention
 Bare verbs (`add_task`, `list_tasks`, `get_task_notes`) are **generic RTM primitives** —

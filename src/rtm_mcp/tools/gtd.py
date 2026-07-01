@@ -38,6 +38,7 @@ from ..gtd_chat import (
     VALID_MODES,
     VALID_ROLES,
     append_mode_footer,
+    build_inflight,
     build_thread,
     format_chat_title,
     local_stamp,
@@ -1104,3 +1105,30 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         turns = build_thread(task.get("notes") or [], since=since)
         requested = AI_CHAT_REQUESTED in {normalize_tag(t) for t in (task.get("tags") or [])}
         return build_response(data={"task_id": task["id"], "turns": turns, "requested": requested})
+
+    @mcp.tool()
+    async def gtd_chat_inflight(ctx: Context) -> dict[str, Any]:
+        """GTD — the conversation cockpit's cross-project live band: every incomplete item with an
+        open CHAT thread (#ai_chat), across all lists/projects, in one read. The per-project canvas
+        only sees its own project; this is the "all my agents working right now" view.
+
+        Read-only. One signed rtm.tasks.getList (status:incomplete); no write, no timeline, no
+        settings read (call surface exactly ["rtm.tasks.getList"]). The broad incomplete read — not a
+        tag-filtered one — is deliberate: each item's enclosing project must be resolved by walking
+        ancestors, and the ancestor project tasks don't themselves carry #ai_chat, so they must be in
+        the result set. Vault-free; reads #ai_chat / #ai_chat_requested / #ai_output_review_needed
+        (all account-provisioned) — writes nothing, introduces no tag.
+
+        Selection: incomplete, #ai_chat, NOT #test. Each item's status derives from its tags
+        (#ai_chat_requested → in_flight; else #ai_output_review_needed → awaiting_review; else open);
+        scope is "project" when the task is itself a #project, else "item"; project_id/project_name
+        are the nearest #project ancestor (the task itself when it is a project).
+
+        Returns (on success): {"items": [{task_id, name, scope ("item"|"project"), status
+            ("in_flight"|"awaiting_review"|"open"), project_id, project_name, last_activity
+            (most-recent CHAT note created, UTC, or "")}], "count": <int>}, sorted by status →
+            most-recent activity → name. Empty portfolio → {"items": [], "count": 0}.
+        """
+        client: RTMClient = await get_client()
+        result = await client.call("rtm.tasks.getList", filter="status:incomplete")
+        return build_response(data=build_inflight(parse_tasks_response(result)))
