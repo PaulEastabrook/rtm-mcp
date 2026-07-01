@@ -1528,3 +1528,77 @@ class TestGtdChatThread:
         methods = [c.args[0] for c in client.call.call_args_list if c.args]
         assert methods == ["rtm.tasks.getList"]  # one read; no writes/timeline
         client.record_transaction.assert_not_called()
+
+
+def _inflight_tree():
+    """Two projects, each with an incomplete #ai_chat item (different statuses), plus an excluded
+    #test chat item — the cross-project shape gtd_chat_inflight rolls up."""
+    chat_note = {
+        "id": "n1",
+        "title": "",  # real getList: title empty, grammar in the body's first line
+        "$t": "2026-06-29 10:00 — CHAT — me — Alpha\nkick it off",
+        "created": "2026-06-29T10:00:00Z",
+    }
+    return _getlist(
+        [
+            _ts("tsA", "pA", "Alpha", parent=AREA_ID, tags=["project"]),
+            _ts(
+                "ts1",
+                "iA",
+                "Draft the thing",
+                parent="pA",
+                tags=["action", "ai_chat", "ai_chat_requested"],
+                notes=[chat_note],
+            ),
+            _ts("tsB", "pB", "Beta", parent=AREA_ID, tags=["project"]),
+            _ts(
+                "ts2",
+                "iB",
+                "Review the output",
+                parent="pB",
+                tags=["action", "ai_chat", "ai_output_review_needed"],
+            ),
+            _ts("tsT", "iT", "Test item", parent="pA", tags=["action", "ai_chat", "test"]),
+        ]
+    )
+
+
+class TestGtdChatInflight:
+    @pytest.mark.asyncio
+    async def test_cross_project_rollup(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_inflight_tree())
+
+        data = (await tools["gtd_chat_inflight"](FakeContext()))["data"]
+        by_id = {i["task_id"]: i for i in data["items"]}
+        assert set(by_id) == {"iA", "iB"}  # #test item excluded
+        assert data["count"] == 2
+
+        assert by_id["iA"]["status"] == "in_flight"
+        assert by_id["iA"]["scope"] == "item"
+        assert by_id["iA"]["project_id"] == "pA"
+        assert by_id["iA"]["project_name"] == "Alpha"
+        assert by_id["iA"]["last_activity"] == "2026-06-29T10:00:00Z"
+
+        assert by_id["iB"]["status"] == "awaiting_review"
+        assert by_id["iB"]["project_id"] == "pB"
+        assert by_id["iB"]["project_name"] == "Beta"
+
+    @pytest.mark.asyncio
+    async def test_empty_portfolio(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([]))
+
+        data = (await tools["gtd_chat_inflight"](FakeContext()))["data"]
+        assert data == {"items": [], "count": 0}
+
+    @pytest.mark.asyncio
+    async def test_read_only_call_surface(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_inflight_tree())
+
+        await tools["gtd_chat_inflight"](FakeContext())
+
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"]  # one read; no writes/timeline/settings
+        client.record_transaction.assert_not_called()
