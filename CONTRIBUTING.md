@@ -224,6 +224,8 @@ re-run `make format` if a ruff bump changes formatting).
    assertion for read tools and every rejection path for write tools (§ 8).
 10. Update all four documentation touchpoints + the test-count inventory (§ 9).
 11. Bump the version (§ 10) and pass the quality gate (§ 11).
+12. Write a **handback debrief** (§ 14) — required when the change ships behaviour a consumer or a
+    future session depends on.
 
 ## 13. Porting a plugin-side reference into the server (byte-compat pattern)
 
@@ -239,6 +241,59 @@ elsewhere (e.g. a `claude-plugins` script), port rather than re-derive:
 - **Prove it with a diff test:** feed one real input through both pipelines and assert the
   outputs are identical.
 
+## 14. Handback debrief (required)
+
+This repo's work arrives as a **hand-off brief** and should leave as a **handback debrief** — a
+self-contained `<scope>-debrief.md` at the repo root, written for whoever picks up the thread next.
+It is a **requirement**, not a courtesy: in the brief → implement → handback loop the consumer is
+usually a *different* session (often another agent, e.g. the `claude-plugins` artifact author), who
+has the brief and the code but **not** your session's context. The debrief closes that loop.
+
+**When required.** Any change that ships behaviour a downstream consumer or a future session depends
+on — a new/changed tool, a bug fix a consumer was blocked on, an additive field another artifact
+reads. **Not required for** pure-internal refactors, formatting, or a change with no external
+consumer (a clear commit message suffices). When in doubt, write one.
+
+**A debrief is not a restatement of the diff or the commit message.** Four properties make it good:
+
+1. **Honest about its verification boundary.** State what was actually run (which tests, lint) *and*,
+   explicitly, what was **not** (e.g. a live smoke that needs a server restart, so you validated
+   in-suite instead). Never imply a check that didn't happen — an overclaiming debrief is worse than
+   none. This is the integrity core.
+2. **Readable cold.** Self-contained; assume the reader has the brief and the code but none of your
+   context.
+3. **About decisions and gotchas, not the diff.** The compounding value is the *why* — especially any
+   **deviation from the brief and why it's still correct** — and the non-obvious trap for the next
+   author (e.g. "`DEPENDS-ON` upstream ids are matched by a digits-only regex, so blocked-test
+   fixtures need numeric ids"; "a CHAT turn's title is the first line of the body, never a title
+   field").
+4. **Actionable at the seams.** The operational steps to activate it (restart, tag provisioning,
+   ordering hazards) and what remains open — say **"consumer — no action"** explicitly when that's
+   true.
+
+**Shape** (frontmatter + these sections; drop any that don't apply — mirrors the § 7 enriched-docstring
+shape):
+
+- **Frontmatter** — `report_type`, `scope`, `implemented_by`, `derived_at`, `target_repo`, `artifact`
+  (PR # + merge & feature commit + version), `relates_to` (the brief / designed-change / predecessor
+  debriefs), `status` (`DONE` / `needs-restart` / `blocked`).
+- **What shipped** — the behaviour delivered, in the consumer's language; a one-paragraph headline.
+- **Design decisions & deviations** — the *why*, and any departure from the brief with its
+  justification.
+- **Membrane / activation** — steps to go live + any ordering hazard; whether it is additive /
+  backward-compatible.
+- **Verification done** — the gate that passed (test count, lint) **and** what was not run, with the
+  reason.
+- **Conventions** — a one-line map to the §§ that governed the change (esp. § 6 tag discipline, § 9
+  lockstep, § 10 version).
+- **Open items / handback** — what remains and who owns it.
+- **Durable lesson / gotcha** — the trap the next author should not re-hit.
+- **Footer** — the source-of-truth pointer (`CLAUDE.md` section + the relevant docstrings) + provenance.
+
+Keep it **scannable**: a reader should get status + open items in ~10 seconds and the decisions in
+~a minute. The debrief is a deliverable of the change (checklist item § 12.12) — commit it with the
+change (or note in the PR why none is needed) and reference it in the PR description.
+
 ---
 
 ## Pull request process
@@ -248,6 +303,8 @@ elsewhere (e.g. a `claude-plugins` script), port rather than re-derive:
 3. Make your changes, conforming to the conventions above.
 4. Pass the quality gate: `make test && make lint`.
 5. Keep documentation in lockstep (§ 9) and bump the version (§ 10).
-6. Commit with a clear, conventional message; push to your fork; open a Pull Request.
+6. Write a handback debrief (§ 14) when the change is consumer-facing — commit it with the change (or
+   note in the PR why none is needed) and reference it in the PR description.
+7. Commit with a clear, conventional message; push to your fork; open a Pull Request.
 
 Open an issue for discussion before making major changes.
