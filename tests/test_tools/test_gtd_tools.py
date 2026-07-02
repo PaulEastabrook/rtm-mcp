@@ -1461,8 +1461,43 @@ class TestGtdChatPost:
 
         result = await tools["gtd_chat_post"](FakeContext(), task_id="nope", text="x", role="me")
         assert "error" in result["data"]
+        assert "not found among active tasks" in result["data"]["error"]
         methods = [c.args[0] for c in client.call.call_args_list if c.args]
-        assert methods == ["rtm.tasks.getList"]  # resolved (and missed); nothing written
+        # incomplete miss → a second read against completed to distinguish; nothing written.
+        assert methods == ["rtm.tasks.getList", "rtm.tasks.getList"]
+
+    @pytest.mark.asyncio
+    async def test_completed_task_rejected_read_only(self, gtd_tools):
+        # A me-turn to a COMPLETED task is refused with a clear read-only error (the worker only
+        # drains incomplete items), after a second lookup — nothing written.
+        tools, client = gtd_tools
+        completed_tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Project", parent=AREA_ID, tags=["project"]),
+                _ts(
+                    "ts1",
+                    "cdone",
+                    "Done item",
+                    parent=PROJECT_ID,
+                    tags=["action", "ai_chat"],
+                    completed="2026-07-01T00:00:00Z",
+                ),
+            ]
+        )
+
+        async def _call(method, **kwargs):
+            if method == "rtm.tasks.getList":
+                # completed read returns the task; incomplete read does not.
+                return completed_tree if "completed" in kwargs.get("filter", "") else _getlist([])
+            return {"transaction": {"id": "tx", "undoable": "1"}}
+
+        client.call = AsyncMock(side_effect=_call)
+
+        result = await tools["gtd_chat_post"](FakeContext(), task_id="cdone", text="x", role="me")
+        assert "completed" in result["data"]["error"]
+        assert "read-only" in result["data"]["error"]
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList", "rtm.tasks.getList"]  # two reads, no write
 
     @pytest.mark.asyncio
     async def test_strict_tag_rejection_writes_nothing(self, gtd_tools):
@@ -1514,6 +1549,34 @@ class TestGtdChatThread:
         assert [t["note_id"] for t in turns] == ["a", "b"]
         assert [t["role"] for t in turns] == ["me", "ai"]
         assert result["data"]["task_id"] == "c1"
+
+    @pytest.mark.asyncio
+    async def test_reads_completed_task_thread(self, gtd_tools):
+        # A prior conversation stays viewable after the task is completed: the read spans
+        # incomplete + completed, returns the turns, and `requested` is False (no pending worker).
+        tools, client = gtd_tools
+        completed_tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Project", parent=AREA_ID, tags=["project"]),
+                _ts(
+                    "ts1",
+                    "c1",
+                    "Attend webinar",
+                    parent=PROJECT_ID,
+                    tags=["action", "ai_chat"],
+                    completed="2026-07-01T00:00:00Z",
+                    notes=self._thread_notes(),
+                ),
+            ]
+        )
+        client.call = AsyncMock(return_value=completed_tree)
+
+        result = await tools["gtd_chat_thread"](FakeContext(), task_id="c1")
+        assert [t["note_id"] for t in result["data"]["turns"]] == ["a", "b"]
+        assert result["data"]["requested"] is False
+        # the resolve read spans incomplete + completed.
+        call = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.getList")
+        assert call.kwargs["filter"] == "status:incomplete OR status:completed"
 
     @pytest.mark.asyncio
     async def test_since_filters(self, gtd_tools):
