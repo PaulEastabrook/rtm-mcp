@@ -991,11 +991,25 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         eff_mode = mode if role == "me" else None
 
-        # Resolve the task by id from one read (active items — chat lives on incomplete work).
+        # Resolve the task by id from one read (active items — chat POSTS live on incomplete work:
+        # the worker only drains #ai_chat_requested on incomplete items, so a me-turn on a completed
+        # task would never get a reply). gtd_chat_thread reads completed too, but posting doesn't.
         result = await client.call("rtm.tasks.getList", filter="status:incomplete")
         parsed = parse_tasks_response(result)
         task = next((t for t in parsed if t["id"] == str(task_id)), None)
         if task is None:
+            # Distinguish "completed (read-only)" from "genuinely missing" with a second read — a
+            # clearer error than the generic not-found. Read-only; nothing is written on either miss.
+            done = parse_tasks_response(
+                await client.call("rtm.tasks.getList", filter="status:completed")
+            )
+            if any(t["id"] == str(task_id) for t in done):
+                return build_response(
+                    data={
+                        "error": f"Task {task_id} is completed — its conversation is read-only "
+                        "(view it with gtd_chat_thread). Reopen the task to continue the thread."
+                    }
+                )
             return build_response(
                 data={
                     "error": f"Task {task_id} not found among active tasks. Pass the task id of an "
@@ -1077,12 +1091,15 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         """GTD — return just the CHAT turns for a task: the cheap poll path for the in-board AI
         conversation surface (vs re-reading the whole canvas). The read-sibling of gtd_chat_post.
 
-        Read-only. One signed rtm.tasks.getList; no write, no timeline, no settings read. Resolves
-        the task by id, parses its CHAT notes (non-CHAT notes excluded) into turns oldest-first, and
-        reports whether the worker's drain signal is currently raised.
+        Read-only. One signed rtm.tasks.getList (spanning incomplete AND completed tasks); no write,
+        no timeline, no settings read. Resolves the task by id, parses its CHAT notes (non-CHAT notes
+        excluded) into turns oldest-first, and reports whether the worker's drain signal is raised.
+        Completed items are included so a prior conversation stays viewable after the task is done
+        (CHAT notes persist); `requested` is naturally False for a completed task (no pending worker),
+        so the board renders the history read-only without a "thinking…" state.
 
         Args:
-            task_id: the target task id (a project or an item).
+            task_id: the target task id (a project or an item, incomplete or completed).
             since: optional ISO-8601 timestamp — return only turns created strictly after it
                 (incremental poll).
 
@@ -1093,14 +1110,16 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         Returns (on miss / bad input): {"error": "..."}.
         """
         client: RTMClient = await get_client()
-        result = await client.call("rtm.tasks.getList", filter="status:incomplete")
+        result = await client.call(
+            "rtm.tasks.getList", filter="status:incomplete OR status:completed"
+        )
         parsed = parse_tasks_response(result)
         task = next((t for t in parsed if t["id"] == str(task_id)), None)
         if task is None:
             return build_response(
                 data={
-                    "error": f"Task {task_id} not found among active tasks. Pass the task id of an "
-                    "incomplete project or item (from gtd_project_index or list_tasks)."
+                    "error": f"Task {task_id} not found. Pass the task id of a project or item "
+                    "(incomplete or completed) — from gtd_project_index or list_tasks."
                 }
             )
 

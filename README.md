@@ -355,11 +355,14 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   resolved internally from one read). Tag adds pass the strict-tag gate — `#ai_chat_requested` /
   `#ai_chat` must exist in the account (provision once); a missing tag rejects with nothing written.
 - `gtd_chat_thread` - **Read-only.** The cheap poll path for the conversation surface (vs
-  re-reading the whole canvas) and the read-sibling of `gtd_chat_post`. One `rtm.tasks.getList`; no
-  write, no timeline. Returns `{task_id, turns: [{note_id, role, scope, mode?, text, created}],
-  requested}` — turns oldest-first, non-`CHAT` notes excluded; `requested` is whether
-  `#ai_chat_requested` is currently set (so the board can show a "thinking…" state without a second
-  call). `since` (ISO-8601) returns only turns created after it, for incremental polling.
+  re-reading the whole canvas) and the read-sibling of `gtd_chat_post`. One `rtm.tasks.getList`
+  (spanning **incomplete + completed**, so a prior conversation stays viewable after the task is
+  done); no write, no timeline. Returns `{task_id, turns: [{note_id, role, scope, mode?, text,
+  created}], requested}` — turns oldest-first, non-`CHAT` notes excluded; `requested` is whether
+  `#ai_chat_requested` is currently set (naturally `False` for a completed task — no pending worker —
+  so the board shows the history read-only). `since` (ISO-8601) returns only turns created after it,
+  for incremental polling. (Posting still requires an incomplete task — `gtd_chat_post` rejects a
+  completed one with a read-only error.)
 - `gtd_chat_inflight` - **Read-only.** The conversation cockpit's **cross-project live band**: every
   incomplete item with an open CHAT thread (`#ai_chat`), across all lists/projects, in one
   `rtm.tasks.getList` (no write, no timeline, no settings read). Returns `{items: [{task_id, name,
