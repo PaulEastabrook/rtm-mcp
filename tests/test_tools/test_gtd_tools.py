@@ -1779,6 +1779,60 @@ class TestGtdChatThread:
         assert result["data"]["turns"] == []
 
     @pytest.mark.asyncio
+    async def test_turns_carry_server_derived_attachments(self, gtd_tools):
+        # Stage 2 (board-chat enrichment § 2.8): an OUTPUT note's FILING path (labelled
+        # continuation form) attaches to the ai turn created at-or-after it, verbatim; a LINK:
+        # trailer parses into links[] and stays in text. The me turn carries empty arrays.
+        tools, client = gtd_tools
+        vault_path = "work/turner-and-townsend/reporting-capability-guidance/output/brief.md"
+        notes = [
+            *self._thread_notes(),
+            {
+                "id": "out1",
+                "title": "",
+                "$t": (
+                    "2026-06-28 — OUTPUT — Commissioning brief drafted\n"
+                    "Drafted the brief.\n\n"
+                    "FILING: filed in the project output folder with companion metadata —\n"
+                    f"{vault_path} (+ .meta.md)"
+                ),
+                "created": "2026-06-28T11:55:00Z",
+            },
+        ]
+        notes[2]["$t"] = (
+            "2026-06-28 12:00 — CHAT — ai — Attend webinar\n"
+            "Drafted it.\n\nLINK: https://x.test/page — Confluence page"
+        )
+        client.call = AsyncMock(return_value=_chat_target_tree(notes=notes))
+
+        result = await tools["gtd_chat_thread"](FakeContext(), task_id="c1")
+        me, ai = result["data"]["turns"]
+        assert me["files"] == [] and me["links"] == []
+        assert ai["files"] == [
+            {"path": vault_path, "label": "Commissioning brief drafted", "note_id": "out1"}
+        ]
+        assert ai["links"] == [{"url": "https://x.test/page", "label": "Confluence page"}]
+        assert "LINK: https://x.test/page — Confluence page" in ai["text"]  # retained in text
+
+    @pytest.mark.asyncio
+    async def test_output_after_last_ai_turn_stays_unattached(self, gtd_tools):
+        # Conservative correlation: a filing with no ai turn after it attaches to nothing.
+        tools, client = gtd_tools
+        notes = [
+            *self._thread_notes(),
+            {
+                "id": "late",
+                "title": "",
+                "$t": "2026-06-28 — OUTPUT — Filed later\nFILING: personal/later.md (+ .meta.md)",
+                "created": "2026-06-28T13:00:00Z",
+            },
+        ]
+        client.call = AsyncMock(return_value=_chat_target_tree(notes=notes))
+
+        result = await tools["gtd_chat_thread"](FakeContext(), task_id="c1")
+        assert all(t["files"] == [] for t in result["data"]["turns"])
+
+    @pytest.mark.asyncio
     async def test_read_only_call_surface(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(return_value=_chat_target_tree(notes=self._thread_notes()))

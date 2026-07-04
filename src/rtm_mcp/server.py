@@ -167,9 +167,15 @@ This server provides full access to Remember The Milk's task management features
 - gtd_chat_thread: Read-only — return just the CHAT turns for a task (the cheap poll path vs
   re-reading the whole canvas). One rtm.tasks.getList (spanning incomplete + completed, so a prior
   conversation stays viewable after the task is done); no write, no timeline. Returns
-  {task_id, turns:[{note_id, role, scope, mode?, text, created}], requested} — turns oldest-first,
-  non-CHAT notes excluded; `requested` is whether #ai_chat_requested is set (a "thinking…" state
-  without a second call; naturally False for a completed task). `since` (ISO-8601) returns only later
+  {task_id, turns:[{note_id, role, scope, mode?, text, created, files, links}], requested} — turns
+  oldest-first, non-CHAT notes excluded; `requested` is whether #ai_chat_requested is set (a
+  "thinking…" state without a second call; naturally False for a completed task). Each turn carries
+  server-derived attachments (always present, [] when none): files = [{path, label, note_id}] from
+  the same task's OUTPUT notes' FILING: lines (vault-relative path verbatim — it equals a FILED:
+  trailer echo, so clients should prefer files[] and suppress their own FILED: parse),
+  time-correlated to the earliest ai turn created at-or-after the filing (a filing after the last
+  ai turn attaches to nothing); links = [{url, label}] from "LINK: <url> — <label>" trailer lines
+  in the turn's own text (trailer lines stay in `text`). `since` (ISO-8601) returns only later
   turns for incremental polling. Posting still requires an incomplete task (gtd_chat_post rejects a
   completed one with a read-only error).
 - gtd_chat_inflight: Read-only — the conversation cockpit's cross-project live band: every incomplete

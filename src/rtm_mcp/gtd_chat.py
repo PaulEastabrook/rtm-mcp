@@ -1,9 +1,12 @@
 """Pure helpers for the GTD in-board AI conversation surface (the ``CHAT`` note class).
 
 Pure (no IO). Backs the ``gtd_chat_post`` / ``gtd_chat_thread`` domain tools: the CHAT-note
-**title grammar**, the posture **mode body-footer** round-trip, the **turn selector/parser**, and
-the two **drain-signal tag** constants. Keeping the grammar parse here (no client) makes every case
-unit-testable directly, matching ``project_plan.py`` / ``canvas_seed.py`` / ``canvas_commit.py``.
+**title grammar**, the posture **mode body-footer** round-trip, the **turn selector/parser**, the
+**turn attachments** (server-derived ``files[]`` from OUTPUT/``FILING:`` notes + ``links[]`` from
+``LINK:`` trailer lines — the gtd plugin's ``note-shape-catalogue.md`` § 3 / ``chat-reply-style.md``
+§ 2 grammars, mirrored server-side), and the two **drain-signal tag** constants. Keeping the
+grammar parse here (no client) makes every case unit-testable directly, matching
+``project_plan.py`` / ``canvas_seed.py`` / ``canvas_commit.py``.
 
 A CHAT turn is one RTM note on the *target task* (the project task for project-scope; the item task
 for item-scope), titled::
@@ -42,6 +45,23 @@ VALID_MODES = frozenset({"discuss", "act"})
 _TITLE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) — CHAT — (me|ai) — (.*)$")
 # Mode footer: a final "Mode: discuss|act" line (case-insensitive on the keyword).
 _MODE_FOOTER_RE = re.compile(r"^Mode:\s*(discuss|act)\s*$", re.IGNORECASE)
+
+# ── Turn-attachment grammars (note-shape-catalogue § 3 / chat-reply-style § 2) ──────────────
+# OUTPUT note title (the body's first line, like every note): "YYYY-MM-DD — OUTPUT — <summary>",
+# HH:MM optional; em-dash canonical, en-dash tolerated on parse (catalogue § 1). The summary
+# becomes the attached files' display label.
+_OUTPUT_TITLE_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?\s*[—–]\s*OUTPUT\s*[—–]\s*(.*)$"  # noqa: RUF001 — en-dash tolerated by design
+)
+# "FILING: <vault-relative path> (+ .meta.md)" — line-anchored inside an OUTPUT note body. The
+# labelled continuation form ends the FILING line with a dash and puts the path on the NEXT line.
+_FILING_LINE_RE = re.compile(r"^FILING:\s*(.*)$")
+_COMPANION_MARKER_RE = re.compile(r"\s*\(\+\s*\.meta\.md\)\s*$")
+# "LINK: <url> — <label>" trailer lines in a turn's own text. The value—label separator is an
+# em/en-dash or hyphen with surrounding whitespace — the same split the board's chatParseTrailer
+# uses, so server- and client-parsed values compare equal.
+_LINK_LINE_RE = re.compile(r"^LINK:\s*(.+)$")
+_TRAILER_SPLIT_RE = re.compile(r"^(.*?)\s+[—–-]\s+(.*)$")  # noqa: RUF001 — en-dash tolerated by design
 
 
 def local_stamp(timezone: str | None) -> str:
@@ -130,6 +150,89 @@ def parse_turn(note: dict[str, Any]) -> dict[str, Any] | None:
     return turn
 
 
+def _clean_filing_path(raw: str) -> str | None:
+    """Normalise one FILING payload → the vault-relative path, or ``None`` when malformed.
+
+    Strips the ``(+ .meta.md)`` companion marker. An absolute (leading ``/``) or backslashed path
+    is malformed per the catalogue — skipped, never "repaired" (the gtd notes-audit owns flagging
+    those); the path must reach the client verbatim so it compares equal to a ``FILED:`` echo.
+    """
+    path = _COMPANION_MARKER_RE.sub("", raw).strip()
+    if not path or path.startswith("/") or "\\" in path:
+        return None
+    return path
+
+
+def parse_filings(body: str) -> list[str]:
+    """Vault-relative paths from the ``FILING:`` lines of one OUTPUT note body.
+
+    Handles both catalogue § 3 forms: the single-line ``FILING: <path> (+ .meta.md)`` and the
+    labelled continuation (a FILING line ending with a dash, the path on the next line). One path
+    per FILING line; malformed paths are skipped.
+    """
+    lines = (body or "").split("\n")
+    paths: list[str] = []
+    i = 0
+    while i < len(lines):
+        m = _FILING_LINE_RE.match(lines[i].strip())
+        if m:
+            rest = m.group(1).strip()
+            if rest.endswith(("—", "–", "-")) and i + 1 < len(lines):  # noqa: RUF001 — en-dash tolerated
+                i += 1
+                rest = lines[i].strip()
+            path = _clean_filing_path(rest)
+            if path:
+                paths.append(path)
+        i += 1
+    return paths
+
+
+def parse_output_note(note: dict[str, Any]) -> dict[str, Any] | None:
+    """Parse one RTM note into a filed-artefact record, or ``None`` if not a filing OUTPUT note.
+
+    Selector: the body's first line (the title — same RTM convention as CHAT) must be an
+    OUTPUT-typed title; FILING lines in any other note type are ignored (catalogue § 3 pins the
+    grammar to OUTPUT notes — historic ``FILING``-typed notes predate the convention and must not
+    match). Returns ``{note_id, label, created, paths}`` with *label* = the title's summary
+    segment; ``None`` when no valid FILING path is present.
+    """
+    first_line, _, rest = (extract_note_body(note) or "").partition("\n")
+    m = _OUTPUT_TITLE_RE.match(first_line.strip())
+    if not m:
+        return None
+    paths = parse_filings(rest)
+    if not paths:
+        return None
+    return {
+        "note_id": note.get("id"),
+        "label": m.group(1).strip(),
+        "created": note.get("created"),
+        "paths": paths,
+    }
+
+
+def parse_links(text: str) -> list[dict[str, str]]:
+    """``LINK: <url> — <label>`` trailer lines from a turn's text → ``[{url, label}]``.
+
+    Line-anchored, uppercase keyword; the value—label separator is an em/en-dash or hyphen with
+    surrounding whitespace (no separator → label ``""``). The trailer lines are left IN the text —
+    the board strips them client-side, and removing them here would break the stage-1 fallback
+    parse on older boards.
+    """
+    links: list[dict[str, str]] = []
+    for line in (text or "").split("\n"):
+        m = _LINK_LINE_RE.match(line.strip())
+        if not m:
+            continue
+        rest = m.group(1).strip()
+        sm = _TRAILER_SPLIT_RE.match(rest)
+        if sm:
+            links.append({"url": sm.group(1).strip(), "label": sm.group(2).strip()})
+        else:
+            links.append({"url": rest, "label": ""})
+    return links
+
+
 def _after(created: str | None, since: str) -> bool:
     """True when note *created* is strictly after *since* (ISO-8601). String-compare fallback."""
     if not created:
@@ -142,23 +245,75 @@ def _after(created: str | None, since: str) -> bool:
         return created > since
 
 
+def _not_after(a: str, b: str) -> bool:
+    """True when *a* <= *b* (ISO-8601 compare, string fallback — RTM values are uniform UTC)."""
+    try:
+        return datetime.fromisoformat(a.replace("Z", "+00:00")) <= datetime.fromisoformat(
+            b.replace("Z", "+00:00")
+        )
+    except Exception:
+        return a <= b
+
+
+def _attach_filings(turns: list[dict[str, Any]], notes: list[dict[str, Any]]) -> None:
+    """Attach filed artefacts from OUTPUT notes to their ``ai`` turns (in place).
+
+    Time-correlation, conservative by design (board-chat enrichment § 2.8): an OUTPUT note
+    attaches to the EARLIEST ``ai`` turn whose ``created`` >= the note's ``created`` — the worker
+    files first, then writes the reply, so the filing falls in the window
+    ``(previous ai turn, this ai turn]``. An OUTPUT note after the last ``ai`` turn (or with no
+    ``created``) attaches to nothing — unattached is correct, never guess. Same-task only:
+    *notes* is the one task's own note collection.
+
+    *turns* must already be sorted oldest-first with ``files`` lists present.
+    """
+    ai_turns = [t for t in turns if t["role"] == "ai" and t.get("created")]
+    if not ai_turns:
+        return
+    for note in notes:
+        out = parse_output_note(note)
+        if out is None or not out.get("created"):
+            continue
+        target = next((t for t in ai_turns if _not_after(out["created"], t["created"])), None)
+        if target is None:
+            continue
+        for path in out["paths"]:
+            target["files"].append({"path": path, "label": out["label"], "note_id": out["note_id"]})
+
+
 def build_thread(notes: Any, *, since: str | None = None) -> list[dict[str, Any]]:
     """Build the CHAT thread for a task: its CHAT turns oldest-first, non-CHAT notes excluded.
 
     *notes* is the raw note collection from a parsed task (``ensure_list``-normalised). When *since*
     is given (ISO-8601), only turns created strictly after it are returned (incremental poll).
+
+    Every turn additionally carries the server-derived attachments (always present, ``[]`` when
+    none — zero-not-absent, like the index counts):
+
+    - ``files``: filed artefacts from the task's OUTPUT/``FILING:`` notes, time-correlated to the
+      ``ai`` turn that reported them (see ``_attach_filings``) as ``{path, label, note_id}`` —
+      *path* is the vault-relative path verbatim (compares equal to a ``FILED:`` trailer echo, so
+      the board can prefer ``files[]`` and suppress its own parse), *label* the OUTPUT note's
+      title summary, *note_id* the OUTPUT note (provenance). Only ``ai`` turns attach files.
+    - ``links``: ``LINK: <url> — <label>`` trailer lines parsed from the turn's own text as
+      ``{url, label}``; the trailer lines stay IN ``text`` (the board strips them client-side).
+
+    Attachment correlation runs over the FULL thread before the *since* filter — a window anchored
+    on an earlier ``ai`` turn must not shift when the poll is incremental.
     """
+    notes_list = [n for n in ensure_list(notes) if isinstance(n, dict)]
     turns: list[dict[str, Any]] = []
-    for note in ensure_list(notes):
-        if not isinstance(note, dict):
-            continue
+    for note in notes_list:
         turn = parse_turn(note)
         if turn is None:
             continue
-        if since and not _after(turn.get("created"), since):
-            continue
+        turn["files"] = []
+        turn["links"] = parse_links(turn["text"])
         turns.append(turn)
     turns.sort(key=lambda t: t.get("created") or "")
+    _attach_filings(turns, notes_list)
+    if since:
+        turns = [t for t in turns if _after(t.get("created"), since)]
     return turns
 
 

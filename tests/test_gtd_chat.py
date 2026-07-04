@@ -12,6 +12,9 @@ from rtm_mcp.gtd_chat import (
     local_stamp,
     parse_body,
     parse_chat_title,
+    parse_filings,
+    parse_links,
+    parse_output_note,
     parse_turn,
 )
 
@@ -222,6 +225,177 @@ class TestBuildThread:
         turns = build_thread(single)
         assert len(turns) == 1
         assert turns[0]["note_id"] == "a"
+
+
+VAULT_PATH = "work/turner-and-townsend/reporting-capability-guidance/output/2026-05-25-brief.md"
+
+
+def _output_note(note_id, created, paths=None, summary="Brief drafted", continuation=False):
+    """A realistic OUTPUT note (title-as-body-first-line) carrying FILING line(s)."""
+    lines = []
+    for p in paths if paths is not None else [VAULT_PATH]:
+        if continuation:
+            lines.append("FILING: filed in the project output folder with companion metadata —")
+            lines.append(f"{p} (+ .meta.md)")
+        else:
+            lines.append(f"FILING: {p} (+ .meta.md)")
+    body = "Drafted the brief.\n\n" + "\n".join(lines) + "\n\nStatus: awaiting review."
+    return _note(note_id, f"2026-05-25 — OUTPUT — {summary}", body, created)
+
+
+class TestParseFilings:
+    def test_single_line_form(self):
+        assert parse_filings(f"prose\nFILING: {VAULT_PATH} (+ .meta.md)\nmore") == [VAULT_PATH]
+
+    def test_labelled_continuation_form(self):
+        body = (
+            "FILING: filed in the project output folder with companion metadata —\n"
+            f"{VAULT_PATH} (+ .meta.md)"
+        )
+        assert parse_filings(body) == [VAULT_PATH]
+
+    def test_companion_marker_optional(self):
+        assert parse_filings(f"FILING: {VAULT_PATH}") == [VAULT_PATH]
+
+    def test_absolute_path_skipped(self):
+        # Malformed per the catalogue — the notes-audit owns flagging it; never "repair" here.
+        assert parse_filings(f"FILING: /{VAULT_PATH} (+ .meta.md)") == []
+
+    def test_backslashed_path_skipped(self):
+        assert parse_filings(r"FILING: work\ttt\output\brief.md (+ .meta.md)") == []
+
+    def test_multiple_filing_lines(self):
+        body = f"FILING: {VAULT_PATH} (+ .meta.md)\nFILING: personal/other/report.md (+ .meta.md)"
+        assert parse_filings(body) == [VAULT_PATH, "personal/other/report.md"]
+
+    def test_empty_and_no_filing(self):
+        assert parse_filings("") == []
+        assert parse_filings("just prose\nno filing here") == []
+
+
+class TestParseOutputNote:
+    def test_output_note_with_filing(self):
+        out = parse_output_note(_output_note("o1", "2026-05-25T16:55:32Z"))
+        assert out == {
+            "note_id": "o1",
+            "label": "Brief drafted",
+            "created": "2026-05-25T16:55:32Z",
+            "paths": [VAULT_PATH],
+        }
+
+    def test_continuation_form_parses(self):
+        out = parse_output_note(_output_note("o2", "t", continuation=True))
+        assert out is not None
+        assert out["paths"] == [VAULT_PATH]
+
+    def test_timestamped_title_variant(self):
+        note = _note("o3", "2026-05-25 16:55 — OUTPUT — Filed", f"FILING: {VAULT_PATH}", "t")
+        out = parse_output_note(note)
+        assert out is not None
+        assert out["label"] == "Filed"
+
+    def test_non_output_note_with_filing_line_ignored(self):
+        # Historic FILING-typed notes (and any other type) predate the convention — the grammar is
+        # pinned to OUTPUT notes only (catalogue § 3).
+        note = _note("f1", "2026-04-06 — FILING — Artefacts filed", f"FILING: {VAULT_PATH}", "t")
+        assert parse_output_note(note) is None
+
+    def test_output_note_without_filing_is_none(self):
+        assert (
+            parse_output_note(_note("o4", "2026-05-25 — OUTPUT — No file", "prose only", "t"))
+            is None
+        )
+
+
+class TestParseLinks:
+    def test_em_dash_separator(self):
+        assert parse_links("LINK: https://x.test/a — Jira issue") == [
+            {"url": "https://x.test/a", "label": "Jira issue"}
+        ]
+
+    def test_en_dash_separator(self):
+        assert parse_links("LINK: https://x.test/a – label") == [  # noqa: RUF001 — en-dash on purpose
+            {"url": "https://x.test/a", "label": "label"}
+        ]
+
+    def test_spaced_hyphen_separator(self):
+        assert parse_links("LINK: https://x.test/a - label") == [
+            {"url": "https://x.test/a", "label": "label"}
+        ]
+
+    def test_no_separator_gives_empty_label(self):
+        assert parse_links("LINK: https://x.test/a") == [{"url": "https://x.test/a", "label": ""}]
+
+    def test_only_line_anchored_uppercase_keyword(self):
+        assert parse_links("see LINK: https://x.test/a — inline mention") == []
+        assert parse_links("link: https://x.test/a — lowercase") == []
+
+    def test_multiple_links_in_order(self):
+        text = "prose\nLINK: https://a.test — A\nLINK: https://b.test — B"
+        assert [link["url"] for link in parse_links(text)] == ["https://a.test", "https://b.test"]
+
+
+class TestBuildThreadAttachments:
+    def _thread(self, extra_notes, ai_text="done"):
+        notes = [
+            _note("m1", format_chat_title(STAMP, "me", "s"), "please", "2026-05-25T10:00:00Z"),
+            _note("a1", format_chat_title(STAMP, "ai", "s"), ai_text, "2026-05-25T17:00:00Z"),
+        ]
+        return build_thread(notes + extra_notes)
+
+    def test_output_before_ai_turn_attaches(self):
+        turns = self._thread([_output_note("o1", "2026-05-25T16:55:32Z")])
+        ai = turns[-1]
+        assert ai["files"] == [{"path": VAULT_PATH, "label": "Brief drafted", "note_id": "o1"}]
+
+    def test_output_created_equal_to_ai_turn_attaches(self):
+        turns = self._thread([_output_note("o1", "2026-05-25T17:00:00Z")])
+        assert turns[-1]["files"][0]["note_id"] == "o1"
+
+    def test_output_after_last_ai_turn_unattached(self):
+        turns = self._thread([_output_note("o1", "2026-05-25T18:00:00Z")])
+        assert all(t["files"] == [] for t in turns)
+
+    def test_two_ai_turns_windows_respected(self):
+        notes = [
+            _note("a1", format_chat_title(STAMP, "ai", "s"), "first", "2026-05-25T12:00:00Z"),
+            _note("a2", format_chat_title(STAMP, "ai", "s"), "second", "2026-05-25T18:00:00Z"),
+            _output_note("early", "2026-05-25T11:00:00Z"),
+            _output_note("mid", "2026-05-25T15:00:00Z", paths=["personal/mid.md"]),
+        ]
+        turns = build_thread(notes)
+        first, second = turns[0], turns[1]
+        assert [f["note_id"] for f in first["files"]] == ["early"]
+        assert [f["note_id"] for f in second["files"]] == ["mid"]
+
+    def test_files_never_attach_to_me_turns(self):
+        turns = self._thread([_output_note("o1", "2026-05-25T09:00:00Z")])
+        me = turns[0]
+        assert me["role"] == "me" and me["files"] == []
+        assert turns[-1]["files"][0]["note_id"] == "o1"  # earliest ai turn >= the filing
+
+    def test_link_trailer_parsed_and_retained_in_text(self):
+        ai_text = "Done — see the page.\n\nLINK: https://x.test/page — Confluence page"
+        turns = self._thread([], ai_text=ai_text)
+        ai = turns[-1]
+        assert ai["links"] == [{"url": "https://x.test/page", "label": "Confluence page"}]
+        assert "LINK: https://x.test/page — Confluence page" in ai["text"]
+
+    def test_turns_without_attachments_carry_empty_arrays(self):
+        turns = self._thread([])
+        assert all(t["files"] == [] and t["links"] == [] for t in turns)
+
+    def test_since_filter_keeps_full_thread_correlation(self):
+        # The OUTPUT correlates to the ai turn even when `since` filters out the earlier me turn —
+        # correlation runs over the full thread, then the filter applies.
+        notes = [
+            _note("m1", format_chat_title(STAMP, "me", "s"), "go", "2026-05-25T10:00:00Z"),
+            _note("a1", format_chat_title(STAMP, "ai", "s"), "done", "2026-05-25T17:00:00Z"),
+            _output_note("o1", "2026-05-25T16:55:32Z"),
+        ]
+        turns = build_thread(notes, since="2026-05-25T12:00:00Z")
+        assert [t["note_id"] for t in turns] == ["a1"]
+        assert turns[0]["files"][0]["path"] == VAULT_PATH
 
 
 class TestBuildInflight:

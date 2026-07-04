@@ -1124,15 +1124,29 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         (CHAT notes persist); `requested` is naturally False for a completed task (no pending worker),
         so the board renders the history read-only without a "thinking…" state.
 
+        Each turn carries server-derived attachments (always present, [] when none):
+        - files: [{path, label, note_id}] — artefacts filed by the worker, parsed from the SAME
+          task's OUTPUT notes' "FILING: <vault-relative path> (+ .meta.md)" lines (single-line and
+          labelled-continuation forms) and time-correlated to the ai turn that reported them (an
+          OUTPUT note attaches to the earliest ai turn created at-or-after it; an OUTPUT note after
+          the last ai turn attaches to nothing). `path` is the vault-relative path VERBATIM — it
+          compares equal to a FILED: trailer echo in the turn text, so a client should prefer
+          files[] and suppress its own FILED: parse when the key is present. `label` is the OUTPUT
+          note's title summary; `note_id` the OUTPUT note (provenance). Only ai turns carry files.
+        - links: [{url, label}] — "LINK: <url> — <label>" trailer lines parsed from the turn's own
+          text (em/en-dash or spaced-hyphen separator; no separator → label ""). The trailer lines
+          remain IN `text` (clients strip them when rendering).
+
         Args:
             task_id: the target task id (a project or an item, incomplete or completed).
             since: optional ISO-8601 timestamp — return only turns created strictly after it
-                (incremental poll).
+                (incremental poll; attachment correlation still runs over the full thread).
 
-        Returns (on success): {"task_id", "turns": [{note_id, role, scope, mode?, text, created}...],
-            "requested": bool} — turns oldest-first; `requested` is whether #ai_chat_requested is set
-            (lets the board show a "thinking…" state without a second call). `created` is RTM's
-            value (UTC); the localised display stamp lives in the note title.
+        Returns (on success): {"task_id", "turns": [{note_id, role, scope, mode?, text, created,
+            files: [{path, label, note_id}], links: [{url, label}]}...], "requested": bool} — turns
+            oldest-first; `requested` is whether #ai_chat_requested is set (lets the board show a
+            "thinking…" state without a second call). `created` is RTM's value (UTC); the localised
+            display stamp lives in the note title.
         Returns (on miss / bad input): {"error": "..."}.
         """
         client: RTMClient = await get_client()

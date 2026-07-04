@@ -364,11 +364,20 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   re-reading the whole canvas) and the read-sibling of `gtd_chat_post`. One `rtm.tasks.getList`
   (spanning **incomplete + completed**, so a prior conversation stays viewable after the task is
   done); no write, no timeline. Returns `{task_id, turns: [{note_id, role, scope, mode?, text,
-  created}], requested}` — turns oldest-first, non-`CHAT` notes excluded; `requested` is whether
-  `#ai_chat_requested` is currently set (naturally `False` for a completed task — no pending worker —
-  so the board shows the history read-only). `since` (ISO-8601) returns only turns created after it,
-  for incremental polling. (Posting still requires an incomplete task — `gtd_chat_post` rejects a
-  completed one with a read-only error.)
+  created, files, links}], requested}` — turns oldest-first, non-`CHAT` notes excluded; `requested`
+  is whether `#ai_chat_requested` is currently set (naturally `False` for a completed task — no
+  pending worker — so the board shows the history read-only). Each turn carries **server-derived
+  attachments** (always present, `[]` when none): `files` = `[{path, label, note_id}]` parsed from
+  the same task's `OUTPUT` notes' `FILING:` lines (both the single-line and labelled-continuation
+  forms; the vault-relative path is passed through **verbatim**, so it compares equal to a `FILED:`
+  trailer echo in the turn text — clients should prefer `files[]` and suppress their own `FILED:`
+  parse when the key is present) and time-correlated to the earliest `ai` turn created at-or-after
+  the filing (a filing after the last `ai` turn attaches to nothing — unattached is correct, never
+  guessed); `links` = `[{url, label}]` from `LINK: <url> — <label>` trailer lines in the turn's own
+  text (the trailer lines stay **in** `text` for older clients that parse them there). `since`
+  (ISO-8601) returns only turns created after it, for incremental polling (attachment correlation
+  still runs over the full thread). (Posting still requires an incomplete task — `gtd_chat_post`
+  rejects a completed one with a read-only error.)
 - `gtd_chat_inflight` - **Read-only.** The conversation cockpit's **cross-project live band**: every
   incomplete item with an open CHAT thread (`#ai_chat`), across all lists/projects, in one
   `rtm.tasks.getList` (no write, no timeline, no settings read). Returns `{items: [{task_id, name,
