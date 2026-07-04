@@ -107,7 +107,9 @@ This server provides full access to Remember The Milk's task management features
   canvas-ready seed ({mode, frame, seed}) with the deterministic plan-graph overlay
   applied (quick, sibling deps, dependency-respecting order). Each row also carries an
   optional prog ("now"/"later", from the #ai_progress_requested / #ai_progress_deferred
-  tags) so the execute pill reflects committed state on reload. File objects (per-action
+  tags) so the execute pill reflects committed state on reload, and redacted (bool, from
+  the item's #redacted tag); frame.redacted is the project's own #redacted state (set/clear
+  via gtd_set_redaction). File objects (per-action
   and project-level frame.files) carry a meta block from the artefact's companion
   metadata when a read-only AI Memory vault is configured (RTM_VAULT_ROOT / AI_MEMORY_DIR
   or the host default); absent vault or companion → no meta. Identify by project_id
@@ -122,11 +124,13 @@ This server provides full access to Remember The Milk's task management features
   (quick-win / progress-now / progress-later counts, mirroring gtd_project_canvas — the navigator's
   AI sort lens), and chat_count/chat_review_count (incomplete #ai_chat / #ai_output_review_needed
   items — the navigator conversation chip + Conversations sort lens). foci: every #focus area
-  (same gate) as {focus_id, focus, life}, including foci with no active projects. actions: every
+  (same gate) as {focus_id, focus, life, redacted (the area's #redacted state — collapses a whole
+  focus to one "Redacted Area of Focus" row)}, including foci with no active projects. actions: every
   incomplete child under an active project (not #test) as {action_id, name, project_id, project,
-  focus, life, type, due, priority, blocked} for cockpit search/jump-to and the What's-hot band
-  (type action|waiting_for|calendar per the canvas r.k, due localised or "", priority "1"|"2"|"3"|"",
-  blocked per the thin plan-graph). Backward-compatible for the navigator (reads data.projects).
+  focus, life, type, due, priority, blocked, redacted} for cockpit search/jump-to and the What's-hot
+  band (type action|waiting_for|calendar per the canvas r.k, due localised or "", priority
+  "1"|"2"|"3"|"", blocked per the thin plan-graph, redacted per the item's #redacted tag). Project
+  rows likewise carry redacted. Backward-compatible for the navigator (reads data.projects).
 - gtd_apply_canvas_commit: Constrained write — the single governed write surface for a
   project-plan-canvas commit (adds/edits/completes/removes/execute/notes). execute is a
   durable now/later split: now/quick → #ai_progress_requested; later →
@@ -168,6 +172,13 @@ This server provides full access to Remember The Milk's task management features
   recency → name. status from tags (#ai_chat_requested→in_flight; else #ai_output_review_needed→
   awaiting_review; else open); project_id/name = nearest #project ancestor. Reads existing chat
   signals — no new tag, vault-free.
+- gtd_set_redaction: Constrained write — mark or unmark a task's #redacted viewing curtain, the
+  single governed surface the sandboxed board is given for redaction (it may not call the bare
+  add_task_tags / remove_task_tags primitives). Resolves the task's triple by task_id from one
+  rtm.tasks.getList (incomplete + completed, so done items redact too); redacted=true → addTags
+  #redacted (strict-tag gated — #redacted must exist in the account); redacted=false → removeTags
+  #redacted (never gated). Records the transaction (undoable). Pairs with the derived `redacted`
+  field on gtd_project_canvas / gtd_project_index. A viewing-layer curtain, not a server-side vault.
 
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,

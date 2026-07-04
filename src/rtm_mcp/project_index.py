@@ -22,6 +22,7 @@ from .project_plan import (
     _LIFE_TAGS,
     _PROJECT_TAG,
     _TEST_TAG,
+    REDACTED_TAG,
     _norm_date,
     build_envelope,
 )
@@ -79,7 +80,9 @@ def build_index(
 
     Returns a list (sorted by life → focus → project for deterministic output) of:
         {life, focus, focus_id, project, project_id, priority, open_count, blocked_count,
-         next_tickle, updated, ai_quick, ai_now, ai_later, chat_count, chat_review_count}.
+         next_tickle, updated, ai_quick, ai_now, ai_later, chat_count, chat_review_count, redacted}.
+
+    `redacted` is the project's own #redacted viewing-curtain state (the navigator locks the row).
 
     The three ai_* counts are the navigator's AI-progressible sort lens, tallied off the SAME
     classification the canvas uses (so they can't disagree with an open plan): ai_quick = rows the
@@ -168,6 +171,9 @@ def build_index(
                 "ai_later": ai_later,
                 "chat_count": chat_count,
                 "chat_review_count": chat_review_count,
+                # Viewing-curtain flag from the project's own #redacted tag — the navigator locks the
+                # row as a placeholder. Additive; the board redacts at project AND item level.
+                "redacted": REDACTED_TAG in tags,
             }
         )
 
@@ -188,7 +194,9 @@ def build_foci(
     `build_index` is one-row-per-project (so a project-less focus never appears there), whereas this
     list is sourced from the `#focus` tag directly.
 
-    Returns a list (sorted by life → focus for deterministic output) of {focus_id, focus, life}.
+    Returns a list (sorted by life → focus for deterministic output) of
+    {focus_id, focus, life, redacted}. `redacted` is the focus task's own #redacted viewing-curtain
+    state — the navigator collapses a redacted area to a single "Redacted Area of Focus" row.
     """
     out: list[dict[str, Any]] = []
     for t in parsed:
@@ -197,7 +205,17 @@ def build_foci(
             tags, t.get("completed"), include_someday=include_someday
         ):
             continue
-        out.append({"focus_id": t["id"], "focus": t.get("name") or "", "life": _life(tags)})
+        out.append(
+            {
+                "focus_id": t["id"],
+                "focus": t.get("name") or "",
+                "life": _life(tags),
+                # Viewing-curtain flag from the focus task's own #redacted tag — the navigator
+                # collapses the whole area to a single "Redacted Area of Focus" row (name + its
+                # projects hidden; the cascade onto projects/actions is client-side).
+                "redacted": REDACTED_TAG in tags,
+            }
+        )
 
     out.sort(key=lambda r: (r["life"], r["focus"].lower()))
     return out
@@ -235,7 +253,9 @@ def build_actions(
         action's `due` matches the project `next_tickle` / canvas date convention).
 
     Returns a list (sorted by life → focus → project → name for deterministic, grouped output) of
-        {action_id, name, project_id, project, focus, life, type, due, priority, blocked}.
+        {action_id, name, project_id, project, focus, life, type, due, priority, blocked, redacted}.
+
+    `redacted` is the action's own #redacted viewing-curtain state (the cockpit locks the result row).
     """
     by_id = {t["id"]: t for t in parsed}
     out: list[dict[str, Any]] = []
@@ -274,6 +294,9 @@ def build_actions(
                     "due": r["due"],  # already localised by build_envelope
                     "priority": _priority_code(by_id.get(r["id"], {})),
                     "blocked": bool(judgement.get(r["id"], {}).get("blocked")),
+                    # Viewing-curtain flag from the action's own #redacted tag (the board redacts at
+                    # item level too) — the cockpit locks the result row.
+                    "redacted": REDACTED_TAG in row_tags,
                 }
             )
 

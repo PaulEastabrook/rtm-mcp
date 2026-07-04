@@ -105,6 +105,18 @@ class TestBuildEnvelope:
         assert h["project"]["files"] == []  # INCEPTION note carries no filed path
         assert h["rowCount"] == 3  # c1, c2, c3 — grandchild excluded
 
+    def test_header_redacted_flag(self):
+        # header.project.redacted derives from the project task's own #redacted tag (drives the
+        # canvas frame's locked screen). Absent tag → False.
+        assert (
+            build_envelope(_sample_parsed(), PROJECT_ID)["header"]["project"]["redacted"] is False
+        )
+        redacted = [
+            _t(PROJECT_ID, parent=AREA_ID, tags=["project", "personal", "redacted"]),
+            _t("c1", parent=PROJECT_ID, tags=["action"]),
+        ]
+        assert build_envelope(redacted, PROJECT_ID)["header"]["project"]["redacted"] is True
+
     def test_project_permalink_includes_absent_ancestor(self):
         env = build_envelope(_sample_parsed(), PROJECT_ID)
         assert h_perma(env) == f"{RTM_WEB_BASE_URL}#list/{LIST_ID}/{AREA_ID}/{PROJECT_ID}"

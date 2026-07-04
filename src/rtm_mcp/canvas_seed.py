@@ -18,6 +18,8 @@ note-scrape fallback, exactly as the reference does without a file-store index.
 import re
 from typing import Any
 
+from .project_plan import REDACTED_TAG
+
 _PRIORITY = {"High": "1", "Medium": "2", "Low": "3", "NoPriority": "", "": ""}
 _CONTEXT_TAGS = ("using_device", "location_office", "location_home", "location_errand")
 _COMMS_TAGS = (
@@ -109,6 +111,14 @@ def map_prog(tags: list[str]) -> str:
     return ""
 
 
+def map_redacted(tags: list[str]) -> bool:
+    """True iff the task carries the #redacted curtain tag — drives the board's locked placeholder
+    (a viewing-layer curtain for casual over-the-shoulder privacy, NOT a server-side vault: the
+    plaintext still flows in the seed; the client hides it). Server-emitted field, additive to the
+    reference build-canvas-seed.py shape (upstream parity is a follow-up, like map_prog)."""
+    return REDACTED_TAG in tags
+
+
 def parse_note(note: dict[str, Any]) -> dict[str, Any]:
     """{date, summary, body?} -> {t: <TYPE>, d: <date>, s: <gist>, b?: <full body>}. Type parsed
     from the journaling first-line; gist is the (one-line) summary minus the date/type prefix; `b`
@@ -170,6 +180,9 @@ def map_row(row: dict[str, Any]) -> dict[str, Any]:
     prog = map_prog(tags)
     if prog:
         item["prog"] = prog
+    # redacted: the board's viewing curtain — always emitted so the client can lock the row without
+    # a second lookup. Additive; absent on older/pre-flag seeds reads as not-redacted.
+    item["redacted"] = map_redacted(tags)
     if item["k"] == "action":
         item["c"] = map_context(tags)
         item["m"] = map_comms(tags)
@@ -218,6 +231,9 @@ def build_seed(
         # url is the project self-link — a SCRIPT-GENERATED permalink (the gtd_project_plan tool's
         # permalink builder), never computed here or by the agent. We only carry it through.
         "url": proj.get("permalink") or "",
+        # redacted: the project's own #redacted state (carried on header.project by build_envelope)
+        # — an open-but-redacted project renders the locked screen without a second lookup.
+        "redacted": bool(proj.get("redacted")),
     }
     # Project-level notes matter for the canvas frame region (pinned Outcome/Now + carousel). Parsed
     # with the SAME parse_note as item notes, so the frame gets {t, d, s, b?} — full bodies included.
