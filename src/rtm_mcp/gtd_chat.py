@@ -4,7 +4,9 @@ Pure (no IO). Backs the ``gtd_chat_post`` / ``gtd_chat_thread`` domain tools: th
 **title grammar**, the posture **mode body-footer** round-trip, the **turn selector/parser**, the
 **turn attachments** (server-derived ``files[]`` from OUTPUT/``FILING:`` notes + ``links[]`` from
 ``LINK:`` trailer lines — the gtd plugin's ``note-shape-catalogue.md`` § 3 / ``chat-reply-style.md``
-§ 2 grammars, mirrored server-side), and the two **drain-signal tag** constants. Keeping the
+§ 2 grammars, mirrored server-side; for a ``#project`` target the FILING scan also covers the
+project's descendant tree via ``project_descendants``, with ``item_id``/``item_name`` provenance),
+and the two **drain-signal tag** constants. Keeping the
 grammar parse here (no client) makes every case unit-testable directly, matching
 ``project_plan.py`` / ``canvas_seed.py`` / ``canvas_commit.py``.
 
@@ -255,22 +257,29 @@ def _not_after(a: str, b: str) -> bool:
         return a <= b
 
 
-def _attach_filings(turns: list[dict[str, Any]], notes: list[dict[str, Any]]) -> None:
+def _attach_filings(
+    turns: list[dict[str, Any]],
+    sources: list[tuple[dict[str, Any], dict[str, str] | None]],
+) -> None:
     """Attach filed artefacts from OUTPUT notes to their ``ai`` turns (in place).
 
     Time-correlation, conservative by design (board-chat enrichment § 2.8): an OUTPUT note
     attaches to the EARLIEST ``ai`` turn whose ``created`` >= the note's ``created`` — the worker
     files first, then writes the reply, so the filing falls in the window
     ``(previous ai turn, this ai turn]``. An OUTPUT note after the last ``ai`` turn (or with no
-    ``created``) attaches to nothing — unattached is correct, never guess. Same-task only:
-    *notes* is the one task's own note collection.
+    ``created``) attaches to nothing — unattached is correct, never guess.
+
+    *sources* is ``(note, provenance)`` pairs: provenance is ``None`` for the target task's own
+    notes (the item-scope v1 shape — no extra fields) or ``{item_id, item_name}`` for a note
+    scanned from a project descendant (stage 2b), merged into each file entry so the board can
+    show which child action filed the artefact.
 
     *turns* must already be sorted oldest-first with ``files`` lists present.
     """
     ai_turns = [t for t in turns if t["role"] == "ai" and t.get("created")]
     if not ai_turns:
         return
-    for note in notes:
+    for note, provenance in sources:
         out = parse_output_note(note)
         if out is None or not out.get("created"):
             continue
@@ -278,10 +287,48 @@ def _attach_filings(turns: list[dict[str, Any]], notes: list[dict[str, Any]]) ->
         if target is None:
             continue
         for path in out["paths"]:
-            target["files"].append({"path": path, "label": out["label"], "note_id": out["note_id"]})
+            entry = {"path": path, "label": out["label"], "note_id": out["note_id"]}
+            if provenance:
+                entry.update(provenance)
+            target["files"].append(entry)
 
 
-def build_thread(notes: Any, *, since: str | None = None) -> list[dict[str, Any]]:
+def project_descendants(parsed: list[dict[str, Any]], project_id: str) -> list[dict[str, Any]]:
+    """All descendant tasks of *project_id* — the same ≤3-level ``parent_task_id`` tree
+    ``gtd_project_plan`` walks — breadth-first, the project itself excluded.
+
+    Backs ``gtd_chat_thread``'s project-scope FILING scan (stage 2b): a project's artefacts are
+    filed against its child actions, so the OUTPUT-note scan must cover the whole subtree.
+    Deleted rows are excluded (mirroring ``project_plan.build_envelope``'s child selection);
+    COMPLETED descendants are included — a completed action's filed output is still a project
+    output. Cycle-guarded via a seen-set, so corrupted parent chains can't loop.
+    """
+    project_id = str(project_id)
+    kids: dict[str, list[dict[str, Any]]] = {}
+    for t in parsed:
+        pid = str(t.get("parent_task_id") or "")
+        if pid and not t.get("deleted"):
+            kids.setdefault(pid, []).append(t)
+    out: list[dict[str, Any]] = []
+    seen = {project_id}
+    queue = [project_id]
+    while queue:
+        for child in kids.get(queue.pop(0), []):
+            cid = str(child.get("id") or "")
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            out.append(child)
+            queue.append(cid)
+    return out
+
+
+def build_thread(
+    notes: Any,
+    *,
+    since: str | None = None,
+    descendants: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Build the CHAT thread for a task: its CHAT turns oldest-first, non-CHAT notes excluded.
 
     *notes* is the raw note collection from a parsed task (``ensure_list``-normalised). When *since*
@@ -298,6 +345,13 @@ def build_thread(notes: Any, *, since: str | None = None) -> list[dict[str, Any]
     - ``links``: ``LINK: <url> — <label>`` trailer lines parsed from the turn's own text as
       ``{url, label}``; the trailer lines stay IN ``text`` (the board strips them client-side).
 
+    *descendants* (stage 2b, project scope): parsed task dicts — the project's descendant tree
+    from ``project_descendants`` — whose OUTPUT notes are ALSO scanned for filings, each entry
+    additionally carrying ``item_id``/``item_name`` (the descendant that filed it). Turns still
+    come only from *notes* (a descendant's own CHAT thread is a separate conversation). Scan
+    order is the target's own notes first, then each descendant's in the given (breadth-first)
+    order — deterministic. ``None``/empty keeps the item-scope v1 shape byte-identical.
+
     Attachment correlation runs over the FULL thread before the *since* filter — a window anchored
     on an earlier ``ai`` turn must not shift when the poll is incremental.
     """
@@ -311,7 +365,13 @@ def build_thread(notes: Any, *, since: str | None = None) -> list[dict[str, Any]
         turn["links"] = parse_links(turn["text"])
         turns.append(turn)
     turns.sort(key=lambda t: t.get("created") or "")
-    _attach_filings(turns, notes_list)
+    sources: list[tuple[dict[str, Any], dict[str, str] | None]] = [(n, None) for n in notes_list]
+    for d in descendants or []:
+        provenance = {"item_id": str(d.get("id") or ""), "item_name": d.get("name") or ""}
+        for n in ensure_list(d.get("notes") or []):
+            if isinstance(n, dict):
+                sources.append((n, provenance))
+    _attach_filings(turns, sources)
     if since:
         turns = [t for t in turns if _after(t.get("created"), since)]
     return turns

@@ -42,12 +42,19 @@ from ..gtd_chat import (
     build_thread,
     format_chat_title,
     local_stamp,
+    project_descendants,
 )
 from ..lookup import resolve_list_id
 from ..parsers import parse_tasks_response, priority_to_code
 from ..plan_graph import build_graph
 from ..project_index import build_actions, build_foci, build_index
-from ..project_plan import REDACTED_TAG, build_envelope, resolve_focus, resolve_project
+from ..project_plan import (
+    _PROJECT_TAG,
+    REDACTED_TAG,
+    build_envelope,
+    resolve_focus,
+    resolve_project,
+)
 from ..response_builder import build_response, get_transaction_info, record_and_build_response
 from ..strict_tags import enforce_strict_tags, normalize_tag
 from ..tool_params import JsonObjArray, JsonObject, JsonStrArray, coerce_json
@@ -1125,14 +1132,19 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         so the board renders the history read-only without a "thinking…" state.
 
         Each turn carries server-derived attachments (always present, [] when none):
-        - files: [{path, label, note_id}] — artefacts filed by the worker, parsed from the SAME
-          task's OUTPUT notes' "FILING: <vault-relative path> (+ .meta.md)" lines (single-line and
+        - files: [{path, label, note_id}] — artefacts filed by the worker, parsed from OUTPUT
+          notes' "FILING: <vault-relative path> (+ .meta.md)" lines (single-line and
           labelled-continuation forms) and time-correlated to the ai turn that reported them (an
           OUTPUT note attaches to the earliest ai turn created at-or-after it; an OUTPUT note after
-          the last ai turn attaches to nothing). `path` is the vault-relative path VERBATIM — it
-          compares equal to a FILED: trailer echo in the turn text, so a client should prefer
-          files[] and suppress its own FILED: parse when the key is present. `label` is the OUTPUT
-          note's title summary; `note_id` the OUTPUT note (provenance). Only ai turns carry files.
+          the last ai turn attaches to nothing). For an ITEM target the scan covers the task's own
+          notes only. For a #project target it additionally covers the project's DESCENDANT tasks
+          (children + grandchildren, completed included — a project's artefacts are filed against
+          its child actions), and each descendant-filed entry carries two extra provenance fields:
+          `item_id`/`item_name` (the descendant that filed it). The gate is the #project tag, not
+          subtask presence. `path` is the vault-relative path VERBATIM — it compares equal to a
+          FILED: trailer echo in the turn text, so a client should prefer files[] and suppress its
+          own FILED: parse when the key is present. `label` is the OUTPUT note's title summary;
+          `note_id` the OUTPUT note (provenance). Only ai turns carry files.
         - links: [{url, label}] — "LINK: <url> — <label>" trailer lines parsed from the turn's own
           text (em/en-dash or spaced-hyphen separator; no separator → label ""). The trailer lines
           remain IN `text` (clients strip them when rendering).
@@ -1163,8 +1175,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 }
             )
 
-        turns = build_thread(task.get("notes") or [], since=since)
-        requested = AI_CHAT_REQUESTED in {normalize_tag(t) for t in (task.get("tags") or [])}
+        tags = {normalize_tag(t) for t in (task.get("tags") or [])}
+        # Project scope (stage 2b): a project's artefacts are filed against its child actions, so
+        # the FILING scan covers the descendant tree — same one-call read, the broad getList above
+        # already carries the children. The gate is the #project tag, not subtask presence.
+        descendants = project_descendants(parsed, task["id"]) if _PROJECT_TAG in tags else None
+        turns = build_thread(task.get("notes") or [], since=since, descendants=descendants)
+        requested = AI_CHAT_REQUESTED in tags
         return build_response(data={"task_id": task["id"], "turns": turns, "requested": requested})
 
     @mcp.tool()

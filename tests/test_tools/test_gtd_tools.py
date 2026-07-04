@@ -1843,6 +1843,161 @@ class TestGtdChatThread:
         assert methods == ["rtm.tasks.getList"]  # one read; no writes/timeline
         client.record_transaction.assert_not_called()
 
+    def _project_scope_tree(self):
+        """A project-scope thread (CHAT notes on the PROJECT task) whose artefacts were filed
+        against descendants: an open child, a COMPLETED child, and a grandchild (3-level)."""
+
+        def _out(note_id, created, path, summary):
+            return {
+                "id": note_id,
+                "title": "",
+                "$t": f"2026-06-28 — OUTPUT — {summary}\nFILING: {path} (+ .meta.md)",
+                "created": created,
+            }
+
+        project_notes = [
+            {
+                "id": "m1",
+                "title": "",
+                "$t": "2026-06-28 10:00 — CHAT — me — Project\nwhat outputs?",
+                "created": "2026-06-28T10:00:00Z",
+            },
+            {
+                "id": "a1",
+                "title": "",
+                "$t": "2026-06-28 12:00 — CHAT — ai — Project\nfour packs",
+                "created": "2026-06-28T12:00:00Z",
+            },
+        ]
+        return _getlist(
+            [
+                _ts(
+                    "tsP",
+                    PROJECT_ID,
+                    "Hire an Engineering Manager",
+                    parent=AREA_ID,
+                    tags=["project"],
+                    notes=project_notes,
+                ),
+                _ts(
+                    "ts1",
+                    "c1",
+                    "Draft the job spec",
+                    parent=PROJECT_ID,
+                    tags=["action"],
+                    notes=[
+                        _out("o1", "2026-06-28T11:00:00Z", "work/hire/output/spec.docx", "Spec")
+                    ],
+                ),
+                _ts(
+                    "ts2",
+                    "c2",
+                    "Draft the ALR",
+                    parent=PROJECT_ID,
+                    tags=["action"],
+                    completed="2026-06-20T00:00:00Z",
+                    notes=[_out("o2", "2026-06-28T11:10:00Z", "work/hire/output/alr.xlsx", "ALR")],
+                ),
+                _ts(
+                    "ts3",
+                    "g1",
+                    "Collect referee details",
+                    parent="c1",
+                    tags=["action"],
+                    notes=[_out("o3", "2026-06-28T11:20:00Z", "work/hire/output/refs.md", "Refs")],
+                ),
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_project_scope_aggregates_descendant_filings(self, gtd_tools):
+        # Stage 2b: a #project target's files[] aggregate OUTPUT/FILING notes from the whole
+        # descendant tree — open child, COMPLETED child, and grandchild — each entry carrying
+        # item_id/item_name provenance, on the ai turn created at-or-after the filing. Still ONE
+        # read, no write.
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=self._project_scope_tree())
+
+        result = await tools["gtd_chat_thread"](FakeContext(), task_id=PROJECT_ID)
+        me, ai = result["data"]["turns"]
+        assert me["files"] == []
+        assert ai["files"] == [
+            {
+                "path": "work/hire/output/spec.docx",
+                "label": "Spec",
+                "note_id": "o1",
+                "item_id": "c1",
+                "item_name": "Draft the job spec",
+            },
+            {
+                "path": "work/hire/output/alr.xlsx",
+                "label": "ALR",
+                "note_id": "o2",
+                "item_id": "c2",
+                "item_name": "Draft the ALR",
+            },
+            {
+                "path": "work/hire/output/refs.md",
+                "label": "Refs",
+                "note_id": "o3",
+                "item_id": "g1",
+                "item_name": "Collect referee details",
+            },
+        ]
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"]  # the broad read already carries the children
+        client.record_transaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_project_target_with_subtask_stays_same_task(self, gtd_tools):
+        # The gate is the #project tag, not subtask presence: an item target's files[] never
+        # scan its own subtasks' notes.
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts(
+                    "ts1",
+                    "c1",
+                    "Parent action",
+                    parent="",
+                    tags=["action"],
+                    notes=[
+                        {
+                            "id": "m1",
+                            "title": "",
+                            "$t": "2026-06-28 10:00 — CHAT — me — Parent action\ngo",
+                            "created": "2026-06-28T10:00:00Z",
+                        },
+                        {
+                            "id": "a1",
+                            "title": "",
+                            "$t": "2026-06-28 12:00 — CHAT — ai — Parent action\ndone",
+                            "created": "2026-06-28T12:00:00Z",
+                        },
+                    ],
+                ),
+                _ts(
+                    "ts2",
+                    "c2",
+                    "Subtask",
+                    parent="c1",
+                    tags=["action"],
+                    notes=[
+                        {
+                            "id": "o1",
+                            "title": "",
+                            "$t": "2026-06-28 — OUTPUT — Filed\nFILING: work/x/output/y.md (+ .meta.md)",
+                            "created": "2026-06-28T11:00:00Z",
+                        }
+                    ],
+                ),
+            ]
+        )
+        client.call = AsyncMock(return_value=tree)
+
+        result = await tools["gtd_chat_thread"](FakeContext(), task_id="c1")
+        assert all(t["files"] == [] for t in result["data"]["turns"])
+
 
 def _inflight_tree():
     """Two projects, each with an incomplete #ai_chat item (different statuses), plus an excluded

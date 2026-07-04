@@ -368,12 +368,18 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   is whether `#ai_chat_requested` is currently set (naturally `False` for a completed task — no
   pending worker — so the board shows the history read-only). Each turn carries **server-derived
   attachments** (always present, `[]` when none): `files` = `[{path, label, note_id}]` parsed from
-  the same task's `OUTPUT` notes' `FILING:` lines (both the single-line and labelled-continuation
+  `OUTPUT` notes' `FILING:` lines (both the single-line and labelled-continuation
   forms; the vault-relative path is passed through **verbatim**, so it compares equal to a `FILED:`
   trailer echo in the turn text — clients should prefer `files[]` and suppress their own `FILED:`
   parse when the key is present) and time-correlated to the earliest `ai` turn created at-or-after
   the filing (a filing after the last `ai` turn attaches to nothing — unattached is correct, never
-  guessed); `links` = `[{url, label}]` from `LINK: <url> — <label>` trailer lines in the turn's own
+  guessed). For an **item** target the FILING scan covers the task's own notes only; for a
+  **`#project`** target it additionally covers the project's **descendant tasks** (children +
+  grandchildren, completed included — a project's artefacts are filed against its child actions),
+  each descendant-filed entry carrying two extra provenance fields `item_id`/`item_name` (the
+  descendant that filed it). The gate is the `#project` tag, not subtask presence — still ONE
+  `getList` (the broad read already carries the children). `links` = `[{url, label}]` from
+  `LINK: <url> — <label>` trailer lines in the turn's own
   text (the trailer lines stay **in** `text` for older clients that parse them there). `since`
   (ISO-8601) returns only turns created after it, for incremental polling (attachment correlation
   still runs over the full thread). (Posting still requires an incomplete task — `gtd_chat_post`
