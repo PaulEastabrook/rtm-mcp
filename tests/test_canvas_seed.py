@@ -7,6 +7,7 @@ from rtm_mcp.canvas_seed import (
     map_kind,
     map_priority,
     map_prog,
+    map_redacted,
     map_row,
     parse_file,
     parse_note,
@@ -41,6 +42,10 @@ class TestScalarMappers:
         assert map_prog(["action"]) == ""  # neither → off
         # both somehow present → now wins
         assert map_prog(["ai_progress_requested", "ai_progress_deferred"]) == "now"
+
+    def test_map_redacted_from_tag(self):
+        assert map_redacted(["action", "redacted"]) is True
+        assert map_redacted(["action"]) is False
 
 
 class TestParseNote:
@@ -159,6 +164,13 @@ class TestMapRow:
         plain = map_row({**base, "id": "c3", "tags": ["action"]})
         assert "prog" not in plain  # backward-compat: absent when neither tag present
 
+    def test_redacted_always_emitted(self):
+        base = {"name": "X", "completed": 0, "permalink": "u", "notes": [], "files": []}
+        on = map_row({**base, "id": "c1", "tags": ["action", "redacted"]})
+        assert on["redacted"] is True
+        off = map_row({**base, "id": "c2", "tags": ["action"]})
+        assert off["redacted"] is False  # always present (unlike prog)
+
     def test_nc_honest_when_notes_capped(self):
         item = map_row(
             {
@@ -250,6 +262,14 @@ class TestBuildSeed:
         order = [it["id"] for it in seed["seed"]]
         assert order.index("c3") == len(order) - 1  # completed history last
         assert order.index("c1") < order.index("c3")
+
+    def test_frame_redacted_from_project(self):
+        # frame.redacted reflects header.project.redacted (the project's own #redacted state);
+        # defaults to False when the header omits it.
+        assert build_seed(self._header(), self._rows())["frame"]["redacted"] is False
+        header = self._header()
+        header["project"]["redacted"] = True
+        assert build_seed(header, self._rows())["frame"]["redacted"] is True
 
     def test_frame_files_from_project_files_v1(self):
         # v1 / vault-companion branch (outputs_index=None): frame.files comes from the project's

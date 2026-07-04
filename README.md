@@ -283,7 +283,9 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   applied — `quick` (from `#quick_win`), sibling `deps`, and a dependency-respecting timeline
   order — so the canvas never re-implements GTD ordering/blocking. Each row also carries an
   optional `prog` (`"now"` from `#ai_progress_requested` / `"later"` from `#ai_progress_deferred`)
-  so the execute pill reflects committed state on reload. Date fields (`d`, `cd`, note dates) are
+  so the execute pill reflects committed state on reload, and `redacted` (bool, from the item's
+  `#redacted` tag) so the board can lock the row; `frame.redacted` is the project's own state (set
+  or clear it via `gtd_set_redaction`). Date fields (`d`, `cd`, note dates) are
   localised to the account timezone (RTM returns UTC, so BST/DST dues would otherwise render a day
   early). Byte-compatible with the GTD plugin's `build_canvas --emit html-lean` seed. Filed-artefact
   file objects (per-action and the
@@ -307,15 +309,18 @@ you just created elsewhere is picked up without waiting for the cache to expire.
     navigator conversation chip + "Conversations" sort lens; review is a subset signal, the project
     task itself counts when tagged); sorted `life` → `focus` → `project`.
   - `foci`: every active Area of Focus (`#focus`, same `#test`/`#hold`/`#someday` gate) as
-    `{focus_id, focus, life}` — **including foci with zero active projects**, which the per-project
-    rows can never surface; sorted `life` → `focus`.
+    `{focus_id, focus, life, redacted}` — **including foci with zero active projects**, which the
+    per-project rows can never surface; sorted `life` → `focus`. `redacted` is the area's own
+    `#redacted` state, so the navigator can collapse a whole focus to one "Redacted Area of Focus"
+    row (set it via `gtd_set_redaction` with the focus id).
   - `actions`: every incomplete child under an active project (actions, waiting-fors and calendar
     entries — all jumpable; not `#test`) as `{action_id, name, project_id, project, focus, life,
     type, due, priority, blocked}` for fast cockpit search / jump-to **and the "What's hot" band** —
     `type` (`"action"|"waiting_for"|"calendar"`, the same `gtd_project_canvas` `r.k` classification,
     so a cross-project result gets the right glyph), `due` (own due/chase/calendar date, localised,
-    `""` if none), `priority` (`"1"|"2"|"3"|""`) and `blocked` (open `DEPENDS-ON` upstream, same
-    thin-graph judgement as `blocked_count`); sorted `life` → `focus` → `project` → `name`.
+    `""` if none), `priority` (`"1"|"2"|"3"|""`), `blocked` (open `DEPENDS-ON` upstream, same
+    thin-graph judgement as `blocked_count`) and `redacted` (the action's `#redacted` state); sorted
+    `life` → `focus` → `project` → `name`. Project rows likewise carry `redacted`.
 
   Counts are vault-free — the enriched overlay stays gtd-side. The response is an object (was a bare
   list pre-1.10.0) but backward-compatible for the existing navigator, which reads `data.projects`.
@@ -371,6 +376,14 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   (`#ai_chat_requested` → in_flight; else `#ai_output_review_needed` → awaiting_review; else open);
   `project_id`/`project_name` are the nearest `#project` ancestor. No new tag — reads the existing
   chat signals; vault-free.
+- `gtd_set_redaction` - **Constrained write.** Mark or unmark a task's `#redacted` viewing curtain —
+  the single governed surface the sandboxed board is given for redaction (it may not call the bare
+  `add_task_tags` / `remove_task_tags` primitives). Resolves the task's triple by `task_id` from one
+  `rtm.tasks.getList` (spanning incomplete + completed, so done items can be redacted too), then
+  `redacted=true` → `addTags #redacted` (strict-tag gated — `#redacted` must exist in the account),
+  `redacted=false` → `removeTags #redacted` (never gated). Records the transaction (undoable). Pairs
+  with the derived `redacted` field on `gtd_project_canvas` / `gtd_project_index`. Redaction is a
+  viewing-layer curtain (the plaintext still flows to the board), not a server-side vault.
 
 #### Tool naming convention
 Bare verbs (`add_task`, `list_tasks`, `get_task_notes`) are **generic RTM primitives** —

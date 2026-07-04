@@ -425,6 +425,33 @@ class TestGtdProjectCanvas:
         assert "prog" not in by_id["c3"]
 
     @pytest.mark.asyncio
+    async def test_seed_item_and_frame_redacted(self, gtd_tools):
+        """The #redacted curtain surfaces on each seed item AND on the frame (the project's own
+        tag), so the board can lock a redacted item and render a redacted project's locked screen."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts(
+                        "tsP",
+                        PROJECT_ID,
+                        "Proj",
+                        parent=AREA_ID,
+                        tags=["personal", "project", "redacted"],
+                    ),
+                    _ts("ts1", "c1", "Secret item", parent=PROJECT_ID, tags=["action", "redacted"]),
+                    _ts("ts2", "c2", "Open item", parent=PROJECT_ID, tags=["action"]),
+                ]
+            )
+        )
+
+        data = (await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID))["data"]
+        assert data["frame"]["redacted"] is True  # project itself is redacted
+        by_id = {it["id"]: it for it in data["seed"]}
+        assert by_id["c1"]["redacted"] is True
+        assert by_id["c2"]["redacted"] is False  # always present, not just when true
+
+    @pytest.mark.asyncio
     async def test_bst_due_renders_local_day(self, gtd_tools):
         """Regression: a BST date-only due arrives from RTM as the prior day's 23:00 UTC
         (2026-06-22 local → 2026-06-21T23:00:00Z). The seed must localise to the account tz and
@@ -1209,6 +1236,7 @@ class TestGtdProjectIndex:
             "ai_later",
             "chat_count",
             "chat_review_count",
+            "redacted",
         }
         assert row["life"] == "personal"
         assert row["focus"] == "Sam — University"
@@ -1263,6 +1291,7 @@ class TestGtdProjectIndex:
             "focus_id": AREA_ID,
             "focus": "Sam — University",
             "life": "personal",
+            "redacted": False,
         }
         assert foci["areaEmpty"]["life"] == "work"
 
@@ -1286,6 +1315,7 @@ class TestGtdProjectIndex:
             "due",
             "priority",
             "blocked",
+            "redacted",
         }
         assert a["project_id"] == PROJECT_ID
         assert a["project"] == "Open days"
@@ -1320,6 +1350,143 @@ class TestGtdProjectIndex:
 
         with_someday = await tools["gtd_project_index"](FakeContext(), include_someday=True)
         assert {r["project_id"] for r in with_someday["data"]["projects"]} == {PROJECT_ID, "sd1"}
+
+    @pytest.mark.asyncio
+    async def test_project_action_and_focus_redacted(self, gtd_tools):
+        # Redaction surfaces at every level the navigator renders: the focus row, the project row,
+        # and the action row — each derived from that task's own #redacted tag.
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts(
+                        "tsArea",
+                        AREA_ID,
+                        "Hive Mind",
+                        tags=["personal", "focus", "redacted"],
+                    ),
+                    _ts(
+                        "tsP",
+                        PROJECT_ID,
+                        "Open days",
+                        parent=AREA_ID,
+                        tags=["personal", "project", "redacted"],
+                    ),
+                    _ts("ts1", "101", "Secret", parent=PROJECT_ID, tags=["action", "redacted"]),
+                    _ts("ts2", "102", "Open", parent=PROJECT_ID, tags=["action"]),
+                ]
+            )
+        )
+
+        data = (await tools["gtd_project_index"](FakeContext()))["data"]
+        focus = next(f for f in data["foci"] if f["focus_id"] == AREA_ID)
+        assert focus["redacted"] is True
+        proj = next(r for r in data["projects"] if r["project_id"] == PROJECT_ID)
+        assert proj["redacted"] is True
+        by_id = {a["action_id"]: a for a in data["actions"]}
+        assert by_id["101"]["redacted"] is True
+        assert by_id["102"]["redacted"] is False
+
+
+# ── gtd_set_redaction ────────────────────────────────────────────────────────
+
+
+def _redaction_tree(tags=None):
+    """A getList tree carrying the target task c1 (taskseries ts1) under the project."""
+    return _getlist(
+        [
+            _ts("tsP", PROJECT_ID, "Sam's university open days", parent=AREA_ID, tags=["project"]),
+            _ts("ts1", "c1", "Attend webinar", parent=PROJECT_ID, tags=tags),
+        ]
+    )
+
+
+def _redaction_dispatch(tree):
+    """side_effect: tree for reads, a transaction for the tag write."""
+
+    async def _call(method, **kwargs):
+        if method == "rtm.tasks.getList":
+            return tree
+        return {"transaction": {"id": f"tx_{method.rsplit('.', 1)[-1]}", "undoable": "1"}}
+
+    return _call
+
+
+class TestGtdSetRedaction:
+    @pytest.mark.asyncio
+    async def test_add_path_tags_and_records(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree()))
+
+        result = await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=True)
+
+        add = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
+        assert add.kwargs["tags"] == "redacted"
+        assert add.kwargs["task_id"] == "c1"
+        assert add.kwargs["taskseries_id"] == "ts1"  # triple resolved internally
+        assert add.kwargs["list_id"] == LIST_ID
+        assert result["data"] == {"task_id": "c1", "redacted": True}
+        assert result["metadata"]["transaction_id"] == "tx_addTags"
+        client.record_transaction.assert_called()  # undoable via batch_undo
+
+    @pytest.mark.asyncio
+    async def test_remove_path(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree(tags=["redacted"])))
+
+        result = await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=False)
+
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert "rtm.tasks.removeTags" in methods
+        assert "rtm.tasks.addTags" not in methods  # never gated, never added
+        rem = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.removeTags")
+        assert rem.kwargs["tags"] == "redacted"
+        assert result["data"] == {"task_id": "c1", "redacted": False}
+
+    @pytest.mark.asyncio
+    async def test_unknown_task_id_errors_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree()))
+
+        result = await tools["gtd_set_redaction"](FakeContext(), task_id="nope", redacted=True)
+
+        assert "error" in result["data"]
+        assert "not found" in result["data"]["error"]
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"]  # one read, nothing written
+
+    @pytest.mark.asyncio
+    async def test_strict_tag_rejection_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=True, vault_root=None)
+        client.get_account_tags = AsyncMock(return_value=set())  # #redacted not provisioned
+        client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree()))
+
+        result = await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=True)
+
+        assert result["data"]["strict_tag_mode"] is True
+        assert "redacted" in result["data"]["rejected_tags"]
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert "rtm.tasks.addTags" not in methods  # nothing written
+
+    @pytest.mark.asyncio
+    async def test_round_trips_on_a_focus_shaped_task(self, gtd_tools):
+        # An Area of Focus is just a task (parent of #project tasks) — gtd_set_redaction resolves by
+        # id regardless of shape, so redacting a whole focus is the same one governed write.
+        tools, client = gtd_tools
+        focus_tree = _getlist([_ts("tsArea", AREA_ID, "Hive Mind", tags=["work", "focus"])])
+        client.call = AsyncMock(side_effect=_redaction_dispatch(focus_tree))
+
+        add = await tools["gtd_set_redaction"](FakeContext(), task_id=AREA_ID, redacted=True)
+        assert add["data"] == {"task_id": AREA_ID, "redacted": True}
+        addc = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
+        assert addc.kwargs["task_id"] == AREA_ID and addc.kwargs["tags"] == "redacted"
+
+        client.call = AsyncMock(side_effect=_redaction_dispatch(focus_tree))
+        rem = await tools["gtd_set_redaction"](FakeContext(), task_id=AREA_ID, redacted=False)
+        assert rem["data"] == {"task_id": AREA_ID, "redacted": False}
+        remc = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.removeTags")
+        assert remc.kwargs["task_id"] == AREA_ID and remc.kwargs["tags"] == "redacted"
 
 
 # ── gtd_chat_post / gtd_chat_thread ──────────────────────────────────────────

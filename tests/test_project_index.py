@@ -152,6 +152,7 @@ class TestShape:
             "ai_later",
             "chat_count",
             "chat_review_count",
+            "redacted",
         }
 
     def test_project_name(self):
@@ -412,7 +413,7 @@ class TestFoci:
 
     def test_field_set(self):
         foci = build_foci(_portfolio())
-        assert all(set(f) == {"focus_id", "focus", "life"} for f in foci)
+        assert all(set(f) == {"focus_id", "focus", "life", "redacted"} for f in foci)
 
     def test_life_from_tag(self):
         by_id = {f["focus_id"]: f for f in build_foci(_portfolio())}
@@ -460,6 +461,7 @@ class TestActions:
             "due",
             "priority",
             "blocked",
+            "redacted",
         }
         assert a["name"] == "Attend webinar"
         assert a["project_id"] == P1
@@ -601,3 +603,39 @@ class TestActionUrgencyFields:
         by_id = {a["action_id"]: a for a in build_actions(parsed)}
         assert by_id["wf"]["due"] == "2026-07-15"  # chase/tickle date
         assert by_id["cal"]["due"] == "2026-07-20"  # calendar date
+
+
+class TestRedaction:
+    def test_project_row_redacted_flag(self):
+        # build_index row carries the project's own #redacted state; absent tag → False.
+        assert _p1(build_index(_portfolio()))["redacted"] is False
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project", "redacted"]),
+            _t("101", name="Attend webinar", parent=P1, tags=["action"]),
+        ]
+        assert _p1(build_index(parsed))["redacted"] is True
+
+    def test_action_row_redacted_flag(self):
+        # build_actions row carries the action's OWN #redacted state (board redacts items too),
+        # independent of the project's.
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("101", name="Secret", parent=P1, tags=["action", "redacted"]),
+            _t("102", name="Open", parent=P1, tags=["action"]),
+        ]
+        by_id = {a["action_id"]: a for a in build_actions(parsed)}
+        assert by_id["101"]["redacted"] is True
+        assert by_id["102"]["redacted"] is False
+
+    def test_focus_row_redacted_flag(self):
+        # build_foci row carries the Area-of-Focus task's own #redacted state — the navigator
+        # collapses a redacted focus to a single "Redacted Area of Focus" row.
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),  # untagged → False
+            _area(AREA2, "Hive Mind", tags=["focus", "work", "redacted"]),
+        ]
+        by_id = {f["focus_id"]: f for f in build_foci(parsed)}
+        assert by_id[AREA1]["redacted"] is False
+        assert by_id[AREA2]["redacted"] is True

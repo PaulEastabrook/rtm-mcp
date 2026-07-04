@@ -31,6 +31,12 @@ _LIFE_TAGS = ("work", "personal", "leanworking")
 # Tag marking a GTD project (for name resolution) and the test-exclusion tag.
 _PROJECT_TAG = "project"
 _TEST_TAG = "test"
+# The board's viewing-curtain tag. Its presence is surfaced as a derived `redacted` boolean on the
+# read tools (header.project.redacted here; per-row via canvas_seed.map_redacted) so the client can
+# lock a project/item without a second lookup. Defined at this low layer alongside the other
+# membership tags and imported upward (canvas_seed, project_index, tools.gtd) — the same pattern as
+# _PROJECT_TAG / _TEST_TAG. Purely additive; a curtain, not a server-side vault.
+REDACTED_TAG = "redacted"
 # files[]: a note path is a filed artefact only under an output|reference folder.
 _PATHRE = re.compile(r"([A-Za-z0-9_.\-/ ]+\.(?:md|docx|xlsx|pptx|pdf|csv))")
 _DIGITS = re.compile(r"\d+")
@@ -271,6 +277,11 @@ def build_envelope(
             "permalink": _permalink(project_id, by_id, proj_list_id),
             "notes": _note_objs(proj_notes_raw, timezone),
             "files": proj_files,
+            # Derived viewing-curtain flag from the project task's own #redacted tag — the canvas
+            # frame reads it (frame.redacted) so a redacted project renders its locked screen
+            # without a second lookup. Additive to project-plan-seed/3 (rtm_fetch.py parity is an
+            # upstream follow-up, same pattern as the files/prog additions).
+            "redacted": (REDACTED_TAG in (proj.get("tags") or [])) if proj else False,
         },
         "rowCount": len(children),
     }

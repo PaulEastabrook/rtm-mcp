@@ -47,8 +47,8 @@ from ..lookup import resolve_list_id
 from ..parsers import parse_tasks_response, priority_to_code
 from ..plan_graph import build_graph
 from ..project_index import build_actions, build_foci, build_index
-from ..project_plan import build_envelope, resolve_focus, resolve_project
-from ..response_builder import build_response, get_transaction_info
+from ..project_plan import REDACTED_TAG, build_envelope, resolve_focus, resolve_project
+from ..response_builder import build_response, get_transaction_info, record_and_build_response
 from ..strict_tags import enforce_strict_tags, normalize_tag
 from ..tool_params import JsonObjArray, JsonObject, JsonStrArray, coerce_json
 from ..urls import build_task_url
@@ -155,7 +155,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         the #quick_win tag), sibling `deps`, and a dependency-respecting timeline order (the array
         order of `seed`). `blocked` is NOT a field — the template derives it from `deps[]`. Each row
         also carries `prog` ("now" from #ai_progress_requested / "later" from #ai_progress_deferred;
-        absent when neither) so the execute pill reflects committed state on reload.
+        absent when neither) so the execute pill reflects committed state on reload, and `redacted`
+        (bool, from the item's #redacted tag) so the board can lock the row. `frame.redacted` is the
+        project's own #redacted state (an open-but-redacted project renders its locked screen without
+        a second lookup). Set/clear #redacted via gtd_set_redaction.
 
         File objects (per-action `files[]` and project-level `frame.files`) carry `{n, ext, kind,
         path}`; each also gains a `meta` block (the companion `.md`/`.yaml` frontmatter — title,
@@ -284,11 +287,15 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 updated (project modified date), ai_quick / ai_now / ai_later (incomplete
                 quick-win / progress-now / progress-later counts, mirroring gtd_project_canvas),
                 chat_count / chat_review_count (incomplete #ai_chat / #ai_output_review_needed
-                items)}], sorted by life → focus → project;
-            foci: [{focus_id, focus, life}], sorted by life → focus;
+                items), redacted (bool, the project's #redacted viewing-curtain state)}], sorted by
+                life → focus → project;
+            foci: [{focus_id, focus, life, redacted (bool, the area's #redacted state — the
+                navigator collapses a redacted focus to one "Redacted Area of Focus" row)}], sorted
+                by life → focus;
             actions: [{action_id, name, project_id, project, focus, life, type
                 ("action"|"waiting_for"|"calendar"), due (YYYY-MM-DD localised, or ""), priority
-                ("1"|"2"|"3"|""), blocked (bool)}], sorted by life → focus → project → name.
+                ("1"|"2"|"3"|""), blocked (bool), redacted (bool, the action's #redacted state)}],
+                sorted by life → focus → project → name.
         Returns (on empty portfolio): {"projects": [], "foci": [], "actions": []}.
         """
         client: RTMClient = await get_client()
@@ -1153,3 +1160,74 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         client: RTMClient = await get_client()
         result = await client.call("rtm.tasks.getList", filter="status:incomplete")
         return build_response(data=build_inflight(parse_tasks_response(result)))
+
+    @mcp.tool()
+    async def gtd_set_redaction(
+        ctx: Context,
+        task_id: str,
+        redacted: bool,
+    ) -> dict[str, Any]:
+        """GTD — mark or unmark a task's #redacted viewing curtain: the single governed write surface
+        the project-plan-canvas is given for redaction (the sandboxed board may not call the bare
+        add_task_tags / remove_task_tags primitives). Redaction renders the project/item as a locked
+        placeholder — a curtain for casual over-the-shoulder privacy, not a server-side vault.
+
+        Constrained write. Resolves the task's full triple by id from ONE rtm.tasks.getList (spanning
+        incomplete AND completed — redaction is a viewing-state change that applies to done items too),
+        then applies exactly one tag write and records its transaction (undoable via undo/batch_undo).
+        Nothing is written on a miss or a strict-tag rejection.
+
+        Identify the task by task_id (required) — the board always has it from gtd_project_index /
+        gtd_project_canvas, so no fuzzy name resolution is used.
+
+        Args:
+            task_id: the target task id (a #project or an item).
+            redacted: True to add #redacted (draw the curtain); False to remove it (lift the curtain).
+
+        The add path passes the strict-tag existence gate — #redacted must exist in the RTM account
+        (it is provisioned); a missing tag yields the guided error with NOTHING written. Removal is
+        never gated (it reduces entropy).
+
+        Returns (on success): {"task_id", "redacted"} with the transaction_id for undo.
+        Returns (on miss / strict-tag rejection — nothing written): {"error": "...", ...}.
+        """
+        client: RTMClient = await get_client()
+
+        # Resolve the task's triple from one read — span incomplete OR completed so redaction works on
+        # done items too. No timeline; nothing is written on a miss.
+        result = await client.call(
+            "rtm.tasks.getList", filter="status:incomplete OR status:completed"
+        )
+        parsed = parse_tasks_response(result)
+        task = next((t for t in parsed if t["id"] == str(task_id)), None)
+        if task is None:
+            return build_response(
+                data={
+                    "error": f"Task {task_id} not found. Pass the task id of a project or item "
+                    "(from gtd_project_index or gtd_project_canvas)."
+                }
+            )
+        ids = {
+            "task_id": task["id"],
+            "taskseries_id": task["taskseries_id"],
+            "list_id": task["list_id"],
+        }
+
+        if redacted:
+            gate = await enforce_strict_tags(client, [REDACTED_TAG], tool="gtd_set_redaction")
+            if gate:
+                return build_response(data=gate)  # nothing written
+            write_res = await client.call(
+                "rtm.tasks.addTags", require_timeline=True, tags=REDACTED_TAG, **ids
+            )
+        else:
+            write_res = await client.call(
+                "rtm.tasks.removeTags", require_timeline=True, tags=REDACTED_TAG, **ids
+            )
+
+        return record_and_build_response(
+            client,
+            write_res,
+            data={"task_id": ids["task_id"], "redacted": redacted},
+            tool_name="gtd_set_redaction",
+        )
