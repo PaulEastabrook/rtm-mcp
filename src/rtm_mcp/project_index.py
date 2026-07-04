@@ -95,6 +95,11 @@ def build_index(
     underway); chat_review_count = incomplete items tagged #ai_output_review_needed (AI has replied —
     Paul's turn). The review count is a subset signal, counted independently; the project task itself
     counts when it carries the tag. Both are always present (0 when none).
+
+    waiting_count is the engage-filter roll-up for the navigator's Focus pill: incomplete waiting-for
+    items in the project (the canvas's r.k "waiting_for" classification), unlocking the "waiting-for"
+    filter segment. Always present (0 when none). (Its sibling decision_count — for the "decisions"
+    segment — is not yet emitted: see the note in the module's gtd_project_index feature docs.)
     """
     by_id = {t["id"]: t for t in parsed}
     out: list[dict[str, Any]] = []
@@ -148,6 +153,17 @@ def build_index(
             if AI_OUTPUT_REVIEW_NEEDED in (r.get("tags") or []) and not r.get("completed")
         ) + (1 if AI_OUTPUT_REVIEW_NEEDED in tags else 0)
 
+        # Engage-filter roll-ups for the navigator's Focus pill — per-project counts the artifact
+        # can't derive for a non-open project. waiting_count = incomplete waiting-for items (the
+        # canvas's r.k "waiting_for" classification, so it matches the board glyph), unlocking the
+        # deferred "waiting-for" segment. Same row set (the project's incomplete children) and
+        # completed-guard as the counts above.
+        waiting_count = sum(
+            1
+            for r in rows
+            if map_kind(r.get("tags") or []) == "waiting_for" and not r.get("completed")
+        )
+
         life = _life(tags)
 
         parent = by_id.get(str(proj.get("parent_task_id") or ""))
@@ -171,6 +187,7 @@ def build_index(
                 "ai_later": ai_later,
                 "chat_count": chat_count,
                 "chat_review_count": chat_review_count,
+                "waiting_count": waiting_count,
                 # Viewing-curtain flag from the project's own #redacted tag — the navigator locks the
                 # row as a placeholder. Additive; the board redacts at project AND item level.
                 "redacted": REDACTED_TAG in tags,

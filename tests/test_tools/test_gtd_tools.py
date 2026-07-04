@@ -1236,6 +1236,7 @@ class TestGtdProjectIndex:
             "ai_later",
             "chat_count",
             "chat_review_count",
+            "waiting_count",
             "redacted",
         }
         assert row["life"] == "personal"

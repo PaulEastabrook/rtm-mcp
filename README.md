@@ -307,7 +307,8 @@ you just created elsewhere is picked up without waiting for the cache to expire.
     4th "AI" sort lens ranks on their sum), and the conversation counts `chat_count` /
     `chat_review_count` (incomplete items tagged `#ai_chat` / `#ai_output_review_needed` — the
     navigator conversation chip + "Conversations" sort lens; review is a subset signal, the project
-    task itself counts when tagged); sorted `life` → `focus` → `project`.
+    task itself counts when tagged), and `waiting_count` (incomplete `#waiting_for` items — the
+    navigator Focus pill's waiting-for segment); sorted `life` → `focus` → `project`.
   - `foci`: every active Area of Focus (`#focus`, same `#test`/`#hold`/`#someday` gate) as
     `{focus_id, focus, life, redacted}` — **including foci with zero active projects**, which the
     per-project rows can never surface; sorted `life` → `focus`. `redacted` is the area's own
