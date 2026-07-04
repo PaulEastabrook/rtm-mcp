@@ -152,6 +152,7 @@ class TestShape:
             "ai_later",
             "chat_count",
             "chat_review_count",
+            "waiting_count",
             "redacted",
         }
 
@@ -389,6 +390,49 @@ class TestConversationCounts:
         row = _p1(build_index(_portfolio()))
         assert row["chat_count"] == 0
         assert row["chat_review_count"] == 0
+
+
+class TestEngageCounts:
+    def _proj(self, children):
+        return [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            *children,
+        ]
+
+    def test_waiting_count_counts_incomplete_waiting_fors(self):
+        parsed = self._proj(
+            [
+                _t("w1", "Hear back A", parent=P1, tags=["waiting_for"]),
+                _t("w2", "Hear back B", parent=P1, tags=["waiting_for"]),
+                _t("a1", "Do a thing", parent=P1, tags=["action"]),  # not a waiting-for
+                _t(
+                    "w3",
+                    "Done chase",
+                    parent=P1,
+                    tags=["waiting_for"],
+                    completed="2026-06-01T00:00:00Z",  # completed → excluded
+                ),
+            ]
+        )
+        assert _p1(build_index(parsed))["waiting_count"] == 2
+
+    def test_waiting_count_matches_canvas_kind(self):
+        # a #calendar_entry is not a waiting-for; only #waiting_for counts (the canvas r.k parity).
+        parsed = self._proj(
+            [
+                _t("w", "Chase", parent=P1, tags=["waiting_for"]),
+                _t("c", "Calendar", parent=P1, tags=["calendar_entry"]),
+            ]
+        )
+        assert _p1(build_index(parsed))["waiting_count"] == 1
+
+    def test_waiting_count_present_and_zero_when_none(self):
+        # always present; 0 (not absent) when the project has no waiting-fors.
+        parsed = self._proj([_t("a1", "Action", parent=P1, tags=["action"])])
+        assert _p1(build_index(parsed))["waiting_count"] == 0
+        # and the _portfolio fixture (one #waiting_for child, 103) reports 1.
+        assert _p1(build_index(_portfolio()))["waiting_count"] == 1
 
 
 class TestSort:

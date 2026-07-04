@@ -122,8 +122,9 @@ This server provides full access to Remember The Milk's task management features
   open_count, blocked_count (children blocked by an open DEPENDS-ON upstream, via the thin
   plan-graph), next_tickle (earliest open due, incl. overdue), updated, ai_quick/ai_now/ai_later
   (quick-win / progress-now / progress-later counts, mirroring gtd_project_canvas — the navigator's
-  AI sort lens), and chat_count/chat_review_count (incomplete #ai_chat / #ai_output_review_needed
-  items — the navigator conversation chip + Conversations sort lens). foci: every #focus area
+  AI sort lens), chat_count/chat_review_count (incomplete #ai_chat / #ai_output_review_needed
+  items — the navigator conversation chip + Conversations sort lens), and waiting_count (incomplete
+  #waiting_for items — the Focus pill's waiting-for segment). foci: every #focus area
   (same gate) as {focus_id, focus, life, redacted (the area's #redacted state — collapses a whole
   focus to one "Redacted Area of Focus" row)}, including foci with no active projects. actions: every
   incomplete child under an active project (not #test) as {action_id, name, project_id, project,

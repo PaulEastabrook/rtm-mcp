@@ -265,8 +265,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
           focus="(unfiled)", focus_id="" — never dropped. Each row also carries the AI-progressible
           tallies the navigator's 4th sort lens ranks on: ai_quick / ai_now / ai_later (counts of
           quick-win / progress-now / progress-later items, the same classification gtd_project_canvas
-          applies), and the conversation counts chat_count / chat_review_count (incomplete items
-          tagged #ai_chat / #ai_output_review_needed — the navigator chip + Conversations sort lens).
+          applies), the conversation counts chat_count / chat_review_count (incomplete items
+          tagged #ai_chat / #ai_output_review_needed — the navigator chip + Conversations sort lens),
+          and the engage-filter count waiting_count (incomplete #waiting_for items — the Focus pill's
+          waiting-for segment).
         - foci: incomplete tasks tagged #focus (the same #test/#hold/#someday gate) — the complete
           focus list, INCLUDING focus areas with zero active projects (which the per-project rows
           can never surface on their own).
@@ -287,7 +289,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 updated (project modified date), ai_quick / ai_now / ai_later (incomplete
                 quick-win / progress-now / progress-later counts, mirroring gtd_project_canvas),
                 chat_count / chat_review_count (incomplete #ai_chat / #ai_output_review_needed
-                items), redacted (bool, the project's #redacted viewing-curtain state)}], sorted by
+                items), waiting_count (incomplete #waiting_for items — the Focus pill's waiting-for
+                segment), redacted (bool, the project's #redacted viewing-curtain state)}], sorted by
                 life → focus → project;
             foci: [{focus_id, focus, life, redacted (bool, the area's #redacted state — the
                 navigator collapses a redacted focus to one "Redacted Area of Focus" row)}], sorted
