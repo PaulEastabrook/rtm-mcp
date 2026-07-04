@@ -53,7 +53,14 @@ class TokenBucket:
 
     @property
     def tokens_available(self) -> float:
-        """Approximate token count (no lock, for diagnostics only)."""
+        """Approximate token count (no lock, for diagnostics only).
+
+        Reports 0.0 while the bucket is paused (post-503 backoff) — during the
+        pause acquire() blocks regardless of refill, so a non-zero count here
+        would be misleading exactly when diagnostics get consulted.
+        """
+        if time.monotonic() < self._paused_until:
+            return 0.0
         elapsed = time.monotonic() - self._last_refill
         return min(self.capacity, self._tokens + elapsed * self.refill_rate)
 
@@ -66,10 +73,16 @@ class RateLimitStats:
         self._retry_timestamps: deque[float] = deque()
         self._conn_retry_timestamps: deque[float] = deque()
         self._http_503_count: int = 0
+        self._read_count: int = 0
+        self._write_count: int = 0
 
     def record_request(self, request_type: str = "read") -> None:
-        """Record an API request."""
+        """Record an API request ('read' or 'write')."""
         self._request_timestamps.append(time.monotonic())
+        if request_type == "write":
+            self._write_count += 1
+        else:
+            self._read_count += 1
 
     def record_retry(self) -> None:
         """Record a retry attempt."""
@@ -99,6 +112,16 @@ class RateLimitStats:
     def http_503_count_session(self) -> int:
         """Total HTTP 503 responses this session."""
         return self._http_503_count
+
+    @property
+    def reads_session(self) -> int:
+        """Total read requests this session."""
+        return self._read_count
+
+    @property
+    def writes_session(self) -> int:
+        """Total write requests this session."""
+        return self._write_count
 
     @staticmethod
     def _count_in_window(timestamps: deque[float], window: float = 60.0) -> int:

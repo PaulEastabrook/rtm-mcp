@@ -353,6 +353,7 @@ class TestUndo:
     @pytest.mark.asyncio
     async def test_success(self, util_tools):
         tools, client = util_tools
+        client.get_transaction = MagicMock(return_value=TransactionEntry("tx123", "add_task", True))
         client.call = AsyncMock(return_value={"stat": "ok"})
 
         result = await tools["undo"](FakeContext(), transaction_id="tx123")
@@ -363,11 +364,40 @@ class TestUndo:
     @pytest.mark.asyncio
     async def test_failure(self, util_tools):
         tools, client = util_tools
+        client.get_transaction = MagicMock(return_value=TransactionEntry("tx456", "add_task", True))
         client.call = AsyncMock(side_effect=Exception("Cannot undo"))
 
         result = await tools["undo"](FakeContext(), transaction_id="tx456")
         assert result["data"]["status"] == "error"
         assert "Cannot undo" in result["data"]["error"]
+        client.mark_undone.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unknown_transaction_rejected_without_api_call(self, util_tools):
+        # Same up-front validation as batch_undo: an id not in the session log
+        # gets a guided error and rtm.transactions.undo is never called.
+        tools, client = util_tools
+        client.get_transaction = MagicMock(return_value=None)
+        client.call = AsyncMock(return_value={"stat": "ok"})
+
+        result = await tools["undo"](FakeContext(), transaction_id="nope")
+        assert result["data"]["status"] == "error"
+        assert "Unknown transaction ID" in result["data"]["error"]
+        client.call.assert_not_awaited()
+        client.mark_undone.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_already_undone_rejected_without_api_call(self, util_tools):
+        tools, client = util_tools
+        client.get_transaction = MagicMock(
+            return_value=TransactionEntry("tx1", "add_task", True, undone=True)
+        )
+        client.call = AsyncMock(return_value={"stat": "ok"})
+
+        result = await tools["undo"](FakeContext(), transaction_id="tx1")
+        assert result["data"]["status"] == "error"
+        assert "already undone" in result["data"]["error"]
+        client.call.assert_not_awaited()
         client.mark_undone.assert_not_called()
 
 

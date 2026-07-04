@@ -392,3 +392,27 @@ class TestLocalStamp:
 def test_tag_constants_are_bare_names():
     assert AI_CHAT_REQUESTED == "ai_chat_requested"
     assert AI_CHAT == "ai_chat"
+
+
+class TestInflightNearestProject:
+    def test_nested_projects_attribute_to_nearest(self):
+        # P1 → P2 → item: the item must attribute to P2 (nearest), not P1
+        # (topmost) — the chain is root-first, so the walk must be leaf-first.
+        parsed = [
+            _task("p1", "Outer project", tags=["project"]),
+            _task("p2", "Inner project", parent="p1", tags=["project"]),
+            _task("leaf", "Leaf", parent="p2", tags=["action", "ai_chat"]),
+        ]
+        item = build_inflight(parsed)["items"][0]
+        assert item["project_id"] == "p2"
+        assert item["project_name"] == "Inner project"
+
+    def test_nested_project_itself_attributes_to_self(self):
+        # A project with its own thread resolves to itself, not its parent project.
+        parsed = [
+            _task("p1", "Outer project", tags=["project"]),
+            _task("p2", "Inner project", parent="p1", tags=["project", "ai_chat"]),
+        ]
+        item = build_inflight(parsed)["items"][0]
+        assert item["project_id"] == "p2"
+        assert item["scope"] == "project"

@@ -118,23 +118,28 @@ def build_index(
         rows = env["rows"]
         judgement = build_graph(env["header"], rows).get("judgement", {})
 
-        open_count = len(rows)  # all fetched children are incomplete
-        blocked_count = sum(1 for r in rows if judgement.get(r["id"], {}).get("blocked"))
-        dues = [r["due"] for r in rows if r.get("due")]
+        # The tool feeds a status:incomplete read, but build_envelope carries completed
+        # children too when fed a broader parsed set (as other tools' reads are) — so
+        # every count derives from the open rows only, uniformly.
+        open_rows = [r for r in rows if not r.get("completed")]
+
+        open_count = len(open_rows)
+        blocked_count = sum(1 for r in open_rows if judgement.get(r["id"], {}).get("blocked"))
+        dues = [r["due"] for r in open_rows if r.get("due")]
         next_tickle = min(dues) if dues else ""
 
         # AI-progressible tallies for the navigator's 4th sort lens — the SAME classification the
         # canvas applies (so index and an open plan never disagree): quick_ready from the thin
         # plan-graph (the canvas's r.quick), and the progression tri-state from map_prog (r.prog).
         # quick/now are unblocked by construction (now is filtered defensively); later may be blocked.
-        ai_quick = sum(1 for r in rows if judgement.get(r["id"], {}).get("quick_ready"))
+        ai_quick = sum(1 for r in open_rows if judgement.get(r["id"], {}).get("quick_ready"))
         ai_now = sum(
             1
-            for r in rows
+            for r in open_rows
             if map_prog(r.get("tags") or []) == "now"
             and not judgement.get(r["id"], {}).get("blocked")
         )
-        ai_later = sum(1 for r in rows if map_prog(r.get("tags") or []) == "later")
+        ai_later = sum(1 for r in open_rows if map_prog(r.get("tags") or []) == "later")
 
         # Conversation counts for the navigator chip + "Conversations" sort lens — a standing
         # per-project count the artifact can't derive for a non-open project (it only loads the open
@@ -144,13 +149,11 @@ def build_index(
         # counts when it carries the tag (a project-scoped conversation is one more subject).
         # `not r["completed"]` guards the incomplete-only rule directly (the getList is already
         # status:incomplete, but build_envelope carries completed children too, so guard here).
-        chat_count = sum(
-            1 for r in rows if AI_CHAT in (r.get("tags") or []) and not r.get("completed")
-        ) + (1 if AI_CHAT in tags else 0)
+        chat_count = sum(1 for r in open_rows if AI_CHAT in (r.get("tags") or [])) + (
+            1 if AI_CHAT in tags else 0
+        )
         chat_review_count = sum(
-            1
-            for r in rows
-            if AI_OUTPUT_REVIEW_NEEDED in (r.get("tags") or []) and not r.get("completed")
+            1 for r in open_rows if AI_OUTPUT_REVIEW_NEEDED in (r.get("tags") or [])
         ) + (1 if AI_OUTPUT_REVIEW_NEEDED in tags else 0)
 
         # Engage-filter roll-ups for the navigator's Focus pill — per-project counts the artifact
@@ -158,11 +161,7 @@ def build_index(
         # canvas's r.k "waiting_for" classification, so it matches the board glyph), unlocking the
         # deferred "waiting-for" segment. Same row set (the project's incomplete children) and
         # completed-guard as the counts above.
-        waiting_count = sum(
-            1
-            for r in rows
-            if map_kind(r.get("tags") or []) == "waiting_for" and not r.get("completed")
-        )
+        waiting_count = sum(1 for r in open_rows if map_kind(r.get("tags") or []) == "waiting_for")
 
         life = _life(tags)
 
@@ -297,7 +296,9 @@ def build_actions(
         judgement = build_graph(env["header"], rows).get("judgement", {})
         for r in rows:
             row_tags = r.get("tags") or []
-            if _TEST_TAG in row_tags:
+            # completed-guard: the tool feeds a status:incomplete read, but a broader
+            # parsed set must not surface done items as jumpable actions.
+            if _TEST_TAG in row_tags or r.get("completed"):
                 continue
             out.append(
                 {

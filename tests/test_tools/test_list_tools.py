@@ -396,3 +396,23 @@ class TestSetDefaultList:
 
         result = await tools["set_default_list"](FakeContext(), list_name="Missing")
         assert "error" in result["data"]
+
+
+class TestSetDefaultListTransaction:
+    @pytest.mark.asyncio
+    async def test_records_transaction_for_undo(self, list_tools):
+        # Regression: set_default_list was the only write tool not recording its
+        # transaction — invisible to get_timeline_info, not undoable.
+        tools, client = list_tools
+
+        async def _side(method, **kw):
+            if method == "rtm.lists.getList":
+                return _lists_response([_list_entry(id="5", name="Personal")])
+            return {"stat": "ok", "transaction": {"id": "tx9", "undoable": "1"}}
+
+        client.call = AsyncMock(side_effect=_side)
+
+        result = await tools["set_default_list"](FakeContext(), list_name="Personal")
+        assert result["metadata"]["transaction_id"] == "tx9"
+        client.record_transaction.assert_called_once()
+        assert client.record_transaction.call_args.args[0] == "tx9"

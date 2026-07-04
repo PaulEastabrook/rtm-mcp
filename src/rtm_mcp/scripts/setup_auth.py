@@ -107,7 +107,7 @@ async def run_setup() -> None:
     new_config = RTMConfig(
         api_key=api_key,
         shared_secret=shared_secret,
-        token=token,
+        auth_token=token,
     )
 
     config_path = Path.home() / ".config" / "rtm-mcp" / "config.json"

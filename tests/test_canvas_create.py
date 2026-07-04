@@ -116,3 +116,35 @@ class TestValidateCreate:
             {"type": "action", "text": "second", "deps": ["0"]},
         ]
         assert validate_create(self._ok_frame(), items)["rejections"] == []
+
+
+class TestDuplicateAndSelfDeps:
+    def _ok_frame(self):
+        return {"life": "personal", "focus": "F", "name": "P", "outcome": ""}
+
+    def test_duplicate_explicit_ids_rejected(self):
+        items = [
+            {"id": "a", "type": "action", "text": "one"},
+            {"id": "a", "type": "action", "text": "two"},
+        ]
+        assert "duplicate_id" in _reasons(validate_create(self._ok_frame(), items))
+
+    def test_explicit_id_colliding_with_positional_index_rejected(self):
+        # Item 0 claims explicit id "1"; item 1 (no id) resolves to positional
+        # "1" — the apply loop would keep only one of them, silently.
+        items = [
+            {"id": "1", "type": "action", "text": "A"},
+            {"type": "action", "text": "B"},
+        ]
+        assert "duplicate_id" in _reasons(validate_create(self._ok_frame(), items))
+
+    def test_self_dep_rejected(self):
+        items = [{"id": "a", "type": "action", "text": "x", "deps": ["a"]}]
+        assert "self_dep" in _reasons(validate_create(self._ok_frame(), items))
+
+    def test_unique_ids_still_pass(self):
+        items = [
+            {"id": "a", "type": "action", "text": "one"},
+            {"type": "action", "text": "two", "deps": ["a"]},
+        ]
+        assert validate_create(self._ok_frame(), items)["rejections"] == []

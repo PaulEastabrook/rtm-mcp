@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,11 +36,21 @@ class RTMConfig(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # Aliased fields (auth_token/vault_root) stay addressable by field name
+        # too — several call sites construct RTMConfig(auth_token=...) directly.
+        populate_by_name=True,
     )
 
     api_key: str = Field(default="", description="RTM API key")
     shared_secret: str = Field(default="", description="RTM shared secret")
-    auth_token: str = Field(default="", alias="token", description="RTM auth token")
+    # validation_alias (not alias): pydantic-settings uses an alias VERBATIM as the env
+    # name (the RTM_ prefix is not applied), so a bare alias="token" silently broke the
+    # documented RTM_AUTH_TOKEN env var. "token" stays accepted for the kwarg/file path.
+    auth_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("RTM_AUTH_TOKEN", "token"),
+        description="RTM auth token",
+    )
 
     # Active profile — populated at load time from RTM_PROFILE env var
     profile: str = Field(default="production", description="Active credential profile")
@@ -48,7 +58,10 @@ class RTMConfig(BaseSettings):
     # Rate limiting configuration
     bucket_capacity: int = Field(default=3, description="Token bucket capacity (max burst)")
     safety_margin: float = Field(
-        default=0.1, description="Safety margin (0.0-1.0) reducing effective rate from 1 RPS"
+        default=0.1,
+        ge=0.0,
+        lt=1.0,
+        description="Safety margin (0.0-1.0) reducing effective rate from 1 RPS",
     )
     max_retries: int = Field(
         default=2, description="Max retries on HTTP 503 (total attempts = max_retries + 1)"
@@ -135,7 +148,7 @@ class RTMConfig(BaseSettings):
         shared_secret = os.environ.get("RTM_SANDPIT_SHARED_SECRET", "")
         auth_token = os.environ.get("RTM_SANDPIT_AUTH_TOKEN", "")
 
-        config = cls(api_key=api_key, shared_secret=shared_secret, token=auth_token)
+        config = cls(api_key=api_key, shared_secret=shared_secret, auth_token=auth_token)
 
         if not config.is_configured():
             config = cls._load_from_file(config, profile="sandpit")
@@ -172,9 +185,9 @@ class RTMConfig(BaseSettings):
                     return cls(
                         api_key=data.get("api_key", base_config.api_key),
                         shared_secret=data.get("shared_secret", base_config.shared_secret),
-                        token=data.get("token", base_config.auth_token),
+                        auth_token=data.get("token", base_config.auth_token),
                     )
-                except (json.JSONDecodeError, KeyError):
+                except (OSError, json.JSONDecodeError, ValidationError):
                     continue
 
         return base_config
@@ -197,6 +210,9 @@ class RTMConfig(BaseSettings):
             "token": self.auth_token,
         }
 
+        # Credentials file: owner-read/write only.
+        path.touch(mode=0o600, exist_ok=True)
+        path.chmod(0o600)
         path.write_text(json.dumps(data, indent=2))
 
 

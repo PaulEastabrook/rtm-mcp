@@ -94,6 +94,11 @@ def walk_parent_chain(
         seen.add(parent_id)
         chain.append(parent)
         current = parent
+    else:
+        # _MAX_DEPTH exhausted without reaching a root — only possible with
+        # corrupted data (RTM caps nesting at 3), which is exactly when the
+        # caller needs to know the chain is partial.
+        warning = f"Parent chain exceeds {_MAX_DEPTH} levels; chain is truncated."
 
     chain.reverse()  # root-first order
     return chain, warning

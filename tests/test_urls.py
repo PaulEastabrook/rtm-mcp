@@ -410,3 +410,15 @@ class TestResolveTaskUrl:
         assert "url" in result
         assert "warning" in result
         assert "999" in result["warning"]
+
+
+class TestWalkParentChainDepthGuard:
+    def test_depth_exhaustion_sets_truncation_warning(self) -> None:
+        # A parent chain deeper than the guard (only possible with corrupted
+        # data) must surface a warning, not silently truncate the URL segments.
+        tasks = [{"id": str(i), "parent_task_id": str(i + 1)} for i in range(15)]
+        tasks.append({"id": "15", "parent_task_id": ""})
+        by_id = {t["id"]: t for t in tasks}
+        _chain, warning = walk_parent_chain(by_id["0"], list(by_id.values()))
+        assert warning is not None
+        assert "truncated" in warning

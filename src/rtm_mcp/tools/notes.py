@@ -4,6 +4,7 @@ from typing import Any
 
 from fastmcp import Context
 
+from ..client import RTMClient
 from ..lookup import find_task, resolve_task_ids
 from ..parsers import (
     ensure_list,
@@ -46,8 +47,6 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
             {"note": {id, title, body, created}, "message": "Note added"} with
             transaction_id for undo.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
@@ -112,8 +111,6 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
             {"note": {id, title, body, modified}, "message": "Note updated"} with
             transaction_id.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
@@ -169,8 +166,6 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"message": "Note deleted"} with transaction_id for undo.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
@@ -212,13 +207,12 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
             {"task_name": "...", "notes": [{id, title, body, created, modified}],
             "count": N}.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
-        # Find the task with its notes
+        # Find the task with its notes. include_completed: this is a read-only
+        # lookup, and the by-IDs path below reaches completed tasks too.
         if task_name and not task_id:
-            task = await find_task(client, task_name)
+            task = await find_task(client, task_name, include_completed=True)
             if not task:
                 return build_response(
                     data={

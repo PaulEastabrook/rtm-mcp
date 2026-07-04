@@ -91,7 +91,10 @@ async def enforce_strict_tags(
     if not getattr(client.config, "strict_tags", False):
         return None
 
-    wanted = [t for t in requested if t]
+    # Defensive normalization: the allow-list is normalized (trim + lower), so
+    # compare like-for-like even if a caller passes un-normalized tags.
+    wanted = [normalize_tag(t) for t in requested]
+    wanted = [t for t in wanted if t]
     if not wanted:
         return None
 

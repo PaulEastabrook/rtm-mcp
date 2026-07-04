@@ -94,3 +94,12 @@ class TestEnforce:
         client = _FakeClient(strict_tags=True, tag_batches=[{"work"}, {"work", "justmade"}])
         assert await enforce_strict_tags(client, ["justmade"], tool="t") is None
         assert client.calls == 2
+
+
+class TestEnforceNormalizesInput:
+    @pytest.mark.asyncio
+    async def test_unnormalized_request_matches_normalized_allowlist(self) -> None:
+        # The allow-list is normalized (trim + lower); the gate must compare
+        # like-for-like so a caller passing "Work " isn't falsely rejected.
+        client = _FakeClient(strict_tags=True, tag_batches=[{"work"}])
+        assert await enforce_strict_tags(client, ["Work "], tool="t") is None

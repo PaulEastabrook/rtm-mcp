@@ -324,3 +324,23 @@ class TestGetTaskNotes:
 
         result = await tools["get_task_notes"](FakeContext(), task_name="Test Task")
         assert result["data"]["count"] == 1
+
+
+class TestGetTaskNotesCompletedByName:
+    @pytest.mark.asyncio
+    async def test_name_lookup_spans_completed_tasks(self, note_tools):
+        # Regression: the name path used to search incomplete-only, so a
+        # completed task's notes were readable by IDs but "not found" by name.
+        tools, client = note_tools
+        notes_data = {"id": "n1", "title": "", "$t": "Done note", "created": "2026-01-01"}
+        ts = _ts(name="Shipped Task", notes={"note": notes_data})
+        ts["task"]["completed"] = "2026-06-01T10:00:00Z"
+        resp = _make_getlist_response([ts])
+        client.call = AsyncMock(return_value=resp)
+
+        result = await tools["get_task_notes"](FakeContext(), task_name="Shipped Task")
+        assert result["data"]["count"] == 1
+        # include_completed lookup ⇒ the getList carries no status filter.
+        lookup_call = client.call.call_args_list[0]
+        assert lookup_call.args[0] == "rtm.tasks.getList"
+        assert "filter" not in lookup_call.kwargs

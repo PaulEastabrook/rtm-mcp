@@ -180,7 +180,9 @@ def resolve_companion_meta(vault_root: str | None, rel_path: str) -> dict[str, A
         try:
             with open(cand, encoding="utf-8") as fh:
                 text = fh.read()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # UnicodeDecodeError is a ValueError, not an OSError — a non-UTF-8
+            # companion must degrade to "no meta", never raise (module contract).
             continue
         meta = parse_frontmatter(text) if mode == "frontmatter" else parse_yaml_body(text)
         if meta:

@@ -683,3 +683,39 @@ class TestRedaction:
         by_id = {f["focus_id"]: f for f in build_foci(parsed)}
         assert by_id[AREA1]["redacted"] is False
         assert by_id[AREA2]["redacted"] is True
+
+
+class TestCompletedRowGuards:
+    """All per-project counts and the action index must exclude completed
+    children uniformly — the pure builders can't assume a status:incomplete
+    read (gtd_apply_canvas_commit's read already spans completed)."""
+
+    def _portfolio_with_completed_child(self):
+        return [
+            _area(AREA1, "Area", life="personal"),
+            _t(P1, name="Proj", parent=AREA1, tags=["personal", "project"]),
+            _t("201", name="Open action", parent=P1, due="2026-07-10T00:00:00Z", tags=["action"]),
+            _t(
+                "202",
+                name="Done early",
+                parent=P1,
+                due="2026-01-01T00:00:00Z",  # earlier than the open due
+                completed="2026-01-02T00:00:00Z",
+                tags=["action", "ai_progress_deferred", "waiting_for", "ai_chat"],
+            ),
+        ]
+
+    def test_counts_exclude_completed_children(self):
+        row = build_index(self._portfolio_with_completed_child())[0]
+        assert row["open_count"] == 1
+        assert row["ai_later"] == 0  # completed #ai_progress_deferred must not count
+        assert row["waiting_count"] == 0
+        assert row["chat_count"] == 0
+
+    def test_next_tickle_ignores_completed_due(self):
+        row = build_index(self._portfolio_with_completed_child())[0]
+        assert row["next_tickle"] == "2026-07-10"
+
+    def test_build_actions_excludes_completed_children(self):
+        actions = build_actions(self._portfolio_with_completed_child())
+        assert [a["action_id"] for a in actions] == ["201"]

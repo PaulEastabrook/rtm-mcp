@@ -46,7 +46,7 @@ ERROR_CODE_MAP = {
     99: RTMAuthError,  # Insufficient permissions
     100: RTMValidationError,  # Invalid signature
     101: RTMValidationError,  # Invalid API key
-    102: RTMValidationError,  # Service currently unavailable
+    102: RTMNetworkError,  # Service currently unavailable (transient, not a caller bug)
     105: RTMValidationError,  # Service not found
     111: RTMValidationError,  # Signature missing
     112: RTMValidationError,  # Method not found

@@ -1862,3 +1862,76 @@ class TestGtdChatInflight:
         methods = [c.args[0] for c in client.call.call_args_list if c.args]
         assert methods == ["rtm.tasks.getList"]  # one read; no writes/timeline/settings
         client.record_transaction.assert_not_called()
+
+
+class TestGtdChatPostNoteFailure:
+    @pytest.mark.asyncio
+    async def test_note_write_failure_skips_signal_tags(self, gtd_tools):
+        # Regression: a failed chat-note write used to still stamp
+        # #ai_chat_requested — a drain signal with no turn to answer.
+        tools, client = gtd_tools
+        tree = _chat_target_tree()
+
+        async def _call(method, **kwargs):
+            if method == "rtm.tasks.getList":
+                return tree
+            if method == "rtm.tasks.notes.add":
+                raise RuntimeError("RTM 500")
+            return {"transaction": {"id": "tx", "undoable": "1"}}
+
+        client.call = AsyncMock(side_effect=_call)
+
+        result = await tools["gtd_chat_post"](
+            FakeContext(), task_id="c1", text="please progress", role="me"
+        )
+
+        data = result["data"]
+        assert "error" in data
+        assert data["errors"]  # underlying failure surfaced
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert "rtm.tasks.addTags" not in methods
+        assert "rtm.tasks.removeTags" not in methods
+
+    @pytest.mark.asyncio
+    async def test_ai_turn_note_failure_keeps_requested_tag(self, gtd_tools):
+        # An ai turn whose note write failed must NOT remove #ai_chat_requested —
+        # the turn was not actually answered.
+        tools, client = gtd_tools
+        tree = _chat_target_tree()
+
+        async def _call(method, **kwargs):
+            if method == "rtm.tasks.getList":
+                return tree
+            if method == "rtm.tasks.notes.add":
+                raise RuntimeError("RTM 500")
+            return {"transaction": {"id": "tx", "undoable": "1"}}
+
+        client.call = AsyncMock(side_effect=_call)
+
+        result = await tools["gtd_chat_post"](FakeContext(), task_id="c1", text="answer", role="ai")
+        assert "error" in result["data"]
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert "rtm.tasks.removeTags" not in methods
+
+
+class TestGtdCreateProjectDuplicateIds:
+    @pytest.mark.asyncio
+    async def test_duplicate_in_draft_ids_rejected_no_writes(self, gtd_tools):
+        # Regression: an explicit id colliding with another item's positional
+        # index passed validation and silently dropped an item at apply time.
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_create_project"](
+            FakeContext(),
+            frame={"life": "personal", "focus": "Personal", "name": "P"},
+            items=[
+                {"id": "1", "type": "action", "text": "A"},
+                {"type": "action", "text": "B"},  # positional id "1" — collides
+            ],
+        )
+        data = result["data"]
+        assert data["created"] == []
+        assert "duplicate_id" in {r.get("reason") for r in data["rejected"]}
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)

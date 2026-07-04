@@ -872,10 +872,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             tags = [progress_tag, AI_CONVERSATION]
             if blocked_by_iid.get(iid):
                 tags.append(AI_DEFERRED)
-            await _write(
+            res = await _write(
                 "rtm.tasks.addTags", f"execute:{mode}", iid, tags=",".join(tags), **idmap[iid]
             )
-            progressed[iid] = mode
+            if res is not None:  # only report progression that actually landed
+                progressed[iid] = mode
 
         # E. Per-item notes.
         for iid in order:
@@ -894,8 +895,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # F. Already-done draft items → create-then-complete.
         for iid in order:
             if by_iid[iid].get("done") and iid in idmap:
-                await _write("rtm.tasks.complete", "complete", iid, **idmap[iid])
-                completed.append(idmap[iid]["task_id"])
+                res = await _write("rtm.tasks.complete", "complete", iid, **idmap[iid])
+                if res is not None:  # only report completions that actually landed
+                    completed.append(idmap[iid]["task_id"])
 
         # G. Project-level notes from the payload.
         for n in notes_l:
@@ -1063,7 +1065,21 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         note_res = await _write(
             "rtm.tasks.notes.add", "chat-note", note_title=title, note_text=body, **ids
         )
-        note = (note_res or {}).get("note", {}) if note_res else {}
+        if note_res is None:
+            # The signal management is predicated on the turn existing: a drain
+            # signal with no CHAT note would summon the worker to an empty
+            # thread (and an `ai` removal would mark an unanswered turn as
+            # answered). Surface the failure instead of half-applying.
+            return build_response(
+                data={
+                    "error": "Chat note write failed — no signal tags were changed. "
+                    "See errors for the underlying failure; retry the post.",
+                    "task_id": ids["task_id"],
+                    "role": role,
+                    "errors": errors,
+                }
+            )
+        note = note_res.get("note", {})
 
         if role == "me":
             await _write(

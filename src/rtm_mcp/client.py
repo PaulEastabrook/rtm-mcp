@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -75,6 +76,11 @@ class RTMClient:
             refill_rate=refill_rate,
         )
         self._rate_limit_stats = RateLimitStats()
+        # Guards for once-per-session fetches: without these, concurrent first
+        # writes could each create a timeline — the loser's writes would then be
+        # recorded against a timeline that is no longer current, breaking undo.
+        self._timeline_lock = asyncio.Lock()
+        self._settings_lock = asyncio.Lock()
         # Transaction log
         self._transaction_log: list[TransactionEntry] = []
         self._transaction_index: dict[str, TransactionEntry] = {}
@@ -192,7 +198,12 @@ class RTMClient:
 
                 response.raise_for_status()
 
-                result = response.json()
+                try:
+                    result = response.json()
+                except ValueError as e:
+                    raise RTMNetworkError(
+                        f"RTM API returned a non-JSON response (status {response.status_code})"
+                    ) from e
                 rsp = result.get("rsp", {})
 
                 logger.debug("RTM API %s raw response: %s", method, rsp)
@@ -221,12 +232,16 @@ class RTMClient:
     ) -> httpx.Response:
         """Dispatch an HTTP request with connection-level retry.
 
-        Retries on transient connection errors (ConnectError, and
-        TimeoutException for reads).  Does NOT consume additional rate
-        limit tokens on retry — the request never reached the server.
+        Retries on transient connection errors (ConnectError, connect/pool
+        timeouts, and any TimeoutException or mid-flight TransportError for
+        reads).  Does NOT consume additional rate limit tokens on retry — the
+        request never reached the server.
 
-        Write operations that time out are NOT retried because the
-        request may have been sent and processed, risking duplication.
+        Write operations that fail AFTER the connection was established
+        (read/write timeout, TCP reset mid-response) are NOT retried because
+        the request may have been sent and processed, risking duplication.
+        Connect-phase failures (ConnectError, ConnectTimeout, PoolTimeout) are
+        retried even for writes — the request never left the client.
         TLS certificate validation errors are never retried.
         """
         conn_max = self.config.conn_max_retries
@@ -240,6 +255,11 @@ class RTMClient:
                     return await http.post(RTM_API_URL, data=request_params)
                 else:
                     return await http.get(RTM_API_URL, params=request_params)
+
+            except (httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+                # Connect-phase timeout: the request never left the client, so
+                # it is safe to retry even for writes.
+                last_exc = e
 
             except httpx.TimeoutException as e:
                 if is_write:
@@ -256,6 +276,19 @@ class RTMClient:
                 # Don't retry TLS certificate validation failures
                 if _is_tls_cert_error(e):
                     raise RTMNetworkError("TLS certificate verification failed") from e
+                last_exc = e
+
+            except httpx.TransportError as e:
+                # Mid-flight failure (ReadError / RemoteProtocolError / TCP reset
+                # during the response): reads are safe to replay; writes are
+                # ambiguous — the request may have been processed.
+                if is_write:
+                    elapsed = time.monotonic() - start
+                    raise RTMNetworkError(
+                        f"Write request failed mid-flight (ambiguous — request may "
+                        f"have been processed). Error: {type(e).__name__}, "
+                        f"elapsed: {elapsed:.1f}s"
+                    ) from e
                 last_exc = e
 
             # If we get here, the request failed with a retryable error
@@ -292,9 +325,11 @@ class RTMClient:
         to undo operations via rtm.transactions.undo.
         """
         if self._timeline is None:
-            result = await self.call("rtm.timelines.create")
-            self._timeline = str(result["timeline"])
-            self._timeline_created_at = datetime.now().isoformat()
+            async with self._timeline_lock:
+                if self._timeline is None:
+                    result = await self.call("rtm.timelines.create")
+                    self._timeline = str(result["timeline"])
+                    self._timeline_created_at = datetime.now().isoformat()
         return self._timeline
 
     async def _get_settings(self) -> dict[str, Any]:
@@ -303,15 +338,19 @@ class RTMClient:
         Returns the parsed ``settings`` dict (timezone, defaultlist, dateformat,
         etc.), or an empty dict if the call fails. Shared by ``get_timezone``
         and ``get_default_list_id`` so a single ``rtm.settings.getList`` request
-        serves both.
+        serves both. A failed fetch is NOT cached — otherwise one transient blip
+        would disable timezone localisation for the whole session.
         """
         if not self._settings_fetched:
-            try:
-                result = await self.call("rtm.settings.getList")
-                self._cached_settings = result.get("settings", {})
-            except Exception:
-                self._cached_settings = {}
-            self._settings_fetched = True
+            async with self._settings_lock:
+                if not self._settings_fetched:
+                    try:
+                        result = await self.call("rtm.settings.getList")
+                    except Exception:
+                        logger.warning("rtm.settings.getList failed; will retry on next use")
+                        return {}
+                    self._cached_settings = result.get("settings", {})
+                    self._settings_fetched = True
         return self._cached_settings or {}
 
     async def get_timezone(self) -> str | None:
@@ -456,8 +495,7 @@ class RTMAuthFlow:
         }
         params["api_sig"] = self._sign(params)
 
-        query = "&".join(f"{k}={v}" for k, v in params.items())
-        return f"{RTM_AUTH_URL}?{query}"
+        return f"{RTM_AUTH_URL}?{urlencode(params)}"
 
     async def get_token(self, frob: str) -> tuple[str, dict[str, Any]]:
         """Exchange frob for auth token.
