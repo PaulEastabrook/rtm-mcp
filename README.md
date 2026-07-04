@@ -45,7 +45,7 @@ cd rtm-mcp
 uv sync
 ```
 
-> **Upstream**: This is a fork of [ljadach/rtm-mcp](https://github.com/ljadach/rtm-mcp) with additional features including undo/batch undo, timeline introspection, token bucket rate limiting, and subtask hierarchy support.
+> **Origin**: This project was originally derived from [ljadach/rtm-mcp](https://github.com/ljadach/rtm-mcp) (MIT) and has since fully diverged into a standalone codebase — adding undo/batch undo, timeline introspection, token bucket rate limiting, subtask hierarchy, strict-tag mode, and the GTD domain tools.
 
 ## Setup
 

@@ -17,7 +17,7 @@ needs architectural background, it links into `CLAUDE.md` rather than duplicatin
 ## Development setup
 
 ```bash
-git clone https://github.com/ljadach/rtm-mcp.git
+git clone https://github.com/PaulEastabrook/rtm-mcp.git
 cd rtm-mcp
 make dev      # install with dev dependencies
 make setup    # set up RTM credentials
@@ -188,9 +188,11 @@ A tool is not "done" until all four are in sync.
 
 - **SemVer** in `pyproject.toml`: new tools/features → minor bump; fixes → patch; breaking
   envelope/signature changes → major.
-- Honour the fork/upstream **version-lockstep** (this repo tracks an upstream; keep versions
-  aligned per that convention before publishing).
 - Release: `uv build` / `uv publish`; Docker image per `README.md`.
+
+(Historical note: this repo began as a fork of ljadach/rtm-mcp and once kept a version
+lockstep with it; the codebases have fully diverged and the repo is now standalone —
+versioning is governed by this section alone.)
 
 ## 11. Quality gate
 
