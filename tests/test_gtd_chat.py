@@ -16,6 +16,7 @@ from rtm_mcp.gtd_chat import (
     parse_links,
     parse_output_note,
     parse_turn,
+    project_descendants,
 )
 
 STAMP = "2026-06-28 14:30"
@@ -396,6 +397,124 @@ class TestBuildThreadAttachments:
         turns = build_thread(notes, since="2026-05-25T12:00:00Z")
         assert [t["note_id"] for t in turns] == ["a1"]
         assert turns[0]["files"][0]["path"] == VAULT_PATH
+
+    def test_item_scope_file_entries_carry_no_provenance_fields(self):
+        # Regression guard (stage 2b): with no descendants the entry shape is byte-identical to
+        # v1.19.0 — exactly {path, label, note_id}, no item_id/item_name.
+        turns = self._thread([_output_note("o1", "2026-05-25T16:55:32Z")])
+        entry = turns[-1]["files"][0]
+        assert set(entry) == {"path", "label", "note_id"}
+
+
+class TestProjectDescendants:
+    def _tree(self):
+        return [
+            _task("P", name="Project", tags=["project"]),
+            _task("c1", name="Child one", parent="P"),
+            _task("c2", name="Child two", parent="P", completed="2026-06-01T00:00:00Z"),
+            _task("g1", name="Grandchild", parent="c1"),
+            _task("loose", name="Elsewhere"),
+            _task("other", name="Other project child", parent="Q"),
+        ]
+
+    def test_children_and_grandchildren_breadth_first(self):
+        ids = [t["id"] for t in project_descendants(self._tree(), "P")]
+        assert ids == ["c1", "c2", "g1"]  # children first, then grandchildren; project excluded
+
+    def test_completed_descendant_included(self):
+        # A completed action's filed output is still a project output.
+        assert "c2" in [t["id"] for t in project_descendants(self._tree(), "P")]
+
+    def test_deleted_descendant_excluded(self):
+        tree = self._tree()
+        tree[1]["deleted"] = "2026-06-02T00:00:00Z"
+        ids = [t["id"] for t in project_descendants(tree, "P")]
+        assert ids == ["c2"]  # c1 gone, and g1 unreachable through it
+
+    def test_cycle_guarded(self):
+        tree = [_task("a", parent="b"), _task("b", parent="a")]
+        assert [t["id"] for t in project_descendants(tree, "a")] == ["b"]
+
+    def test_no_descendants(self):
+        assert project_descendants(self._tree(), "loose") == []
+
+
+class TestBuildThreadProjectScope:
+    """Stage 2b: a #project target's FILING scan covers the descendant tree, with provenance."""
+
+    def _project_notes(self):
+        # The project-level thread: me asks "what outputs?", ai replies at 17:00.
+        return [
+            _note("m1", format_chat_title(STAMP, "me", "P"), "outputs?", "2026-05-25T10:00:00Z"),
+            _note("a1", format_chat_title(STAMP, "ai", "P"), "four packs", "2026-05-25T17:00:00Z"),
+        ]
+
+    def _child(self, task_id, name, output_notes):
+        return _task(task_id, name=name, parent="P", notes=output_notes)
+
+    def test_child_filing_attaches_with_provenance(self):
+        child = self._child("c1", "Draft the pack", [_output_note("o1", "2026-05-25T16:00:00Z")])
+        turns = build_thread(self._project_notes(), descendants=[child])
+        assert turns[-1]["files"] == [
+            {
+                "path": VAULT_PATH,
+                "label": "Brief drafted",
+                "note_id": "o1",
+                "item_id": "c1",
+                "item_name": "Draft the pack",
+            }
+        ]
+
+    def test_grandchild_filing_included(self):
+        # The descendant list is whatever project_descendants yields — a 3-level grandchild's
+        # OUTPUT note attaches exactly like a child's.
+        tree = [
+            _task("P", name="Project", tags=["project"]),
+            _task("c1", name="Child", parent="P"),
+            _task(
+                "g1",
+                name="Grandchild",
+                parent="c1",
+                notes=[_output_note("og", "2026-05-25T15:00:00Z")],
+            ),
+        ]
+        turns = build_thread(self._project_notes(), descendants=project_descendants(tree, "P"))
+        assert [f["item_id"] for f in turns[-1]["files"]] == ["g1"]
+
+    def test_child_filing_after_last_ai_turn_unattached(self):
+        child = self._child("c1", "Late filer", [_output_note("o1", "2026-05-25T18:00:00Z")])
+        turns = build_thread(self._project_notes(), descendants=[child])
+        assert all(t["files"] == [] for t in turns)
+
+    def test_two_ai_turn_windows_respected_across_children(self):
+        notes = [
+            _note("a1", format_chat_title(STAMP, "ai", "P"), "first", "2026-05-25T12:00:00Z"),
+            _note("a2", format_chat_title(STAMP, "ai", "P"), "second", "2026-05-25T18:00:00Z"),
+        ]
+        early = self._child("c1", "Early", [_output_note("oe", "2026-05-25T11:00:00Z")])
+        mid = self._child(
+            "c2", "Mid", [_output_note("om", "2026-05-25T15:00:00Z", paths=["personal/mid.md"])]
+        )
+        turns = build_thread(notes, descendants=[early, mid])
+        assert [f["item_id"] for f in turns[0]["files"]] == ["c1"]
+        assert [f["item_id"] for f in turns[1]["files"]] == ["c2"]
+
+    def test_own_note_filing_keeps_plain_shape_alongside_child_entries(self):
+        # An OUTPUT note on the project task itself stays in the v1 shape (no provenance —
+        # provenance names the DESCENDANT that filed it); a child entry in the same turn carries it.
+        own = _output_note("op", "2026-05-25T16:00:00Z", paths=["personal/own.md"])
+        child = self._child("c1", "Child", [_output_note("oc", "2026-05-25T16:30:00Z")])
+        turns = build_thread([*self._project_notes(), own], descendants=[child])
+        files = turns[-1]["files"]
+        assert set(files[0]) == {"path", "label", "note_id"}  # own note scanned first
+        assert files[1]["item_id"] == "c1"
+
+    def test_descendant_chat_notes_do_not_become_turns(self):
+        # A child action's own CHAT thread is a separate conversation — descendants contribute
+        # only OUTPUT/FILING notes, never turns.
+        child = self._child("c1", "Child", [_chat_note("cc", "ai", "2026-05-25T16:00:00Z")])
+        turns = build_thread(self._project_notes(), descendants=[child])
+        assert [t["note_id"] for t in turns] == ["m1", "a1"]
 
 
 class TestBuildInflight:

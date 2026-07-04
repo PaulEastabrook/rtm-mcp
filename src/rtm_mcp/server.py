@@ -171,10 +171,15 @@ This server provides full access to Remember The Milk's task management features
   oldest-first, non-CHAT notes excluded; `requested` is whether #ai_chat_requested is set (a
   "thinking…" state without a second call; naturally False for a completed task). Each turn carries
   server-derived attachments (always present, [] when none): files = [{path, label, note_id}] from
-  the same task's OUTPUT notes' FILING: lines (vault-relative path verbatim — it equals a FILED:
+  OUTPUT notes' FILING: lines (vault-relative path verbatim — it equals a FILED:
   trailer echo, so clients should prefer files[] and suppress their own FILED: parse),
   time-correlated to the earliest ai turn created at-or-after the filing (a filing after the last
-  ai turn attaches to nothing); links = [{url, label}] from "LINK: <url> — <label>" trailer lines
+  ai turn attaches to nothing). An item target scans its own notes only; a #project target
+  additionally scans the project's descendant tasks (children + grandchildren, completed included —
+  a project's artefacts are filed against its child actions), each descendant-filed entry carrying
+  extra provenance fields item_id/item_name (the descendant that filed it); the gate is the
+  #project tag, not subtask presence — still one getList. links = [{url, label}] from
+  "LINK: <url> — <label>" trailer lines
   in the turn's own text (trailer lines stay in `text`). `since` (ISO-8601) returns only later
   turns for incremental polling. Posting still requires an incomplete task (gtd_chat_post rejects a
   completed one with a read-only error).
