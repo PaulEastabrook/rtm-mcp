@@ -120,12 +120,13 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         """
         client: RTMClient = await get_client()
 
-        # Build filter
+        # Build filter. The user-supplied filter is parenthesized so an OR
+        # inside it can't rebind the AND-joined parts on the wire.
         filter_parts = []
         if not include_completed:
             filter_parts.append("status:incomplete")
         if filter:
-            filter_parts.append(filter)
+            filter_parts.append(f"({filter})")
         if parent_task_id:
             filter_parts.append("isSubtask:true")
 
@@ -136,8 +137,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         if list_name:
             lists_result = await client.call("rtm.lists.getList")
             lists = parse_lists_response(lists_result)
+            matched = False
             for lst in lists:
                 if lst["name"].lower() == list_name.lower():
+                    matched = True
                     if lst["smart"] and lst.get("filter"):
                         # Smart lists are saved filters; query by filter
                         # rather than list_id. Normalize non-breaking spaces
@@ -148,6 +151,15 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
                     else:
                         list_id = lst["id"]
                     break
+            if not matched:
+                # Erroring beats silently returning every task in the account
+                # as if the list filter had been applied.
+                return build_response(
+                    data={
+                        "error": f"List '{list_name}' not found. "
+                        "Use get_lists to see available list names."
+                    }
+                )
 
         params: dict[str, Any] = {}
         if filter_str:
@@ -246,8 +258,11 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         if list_name:
             resolved = await resolve_list_id(client, list_name)
-            if "error" not in resolved:
-                params["list_id"] = resolved["list_id"]
+            if "error" in resolved:
+                # Erroring beats silently creating the task in the Inbox when
+                # the requested list doesn't resolve (same contract as move_task).
+                return build_response(data=resolved)
+            params["list_id"] = resolved["list_id"]
         elif not parent_task_id:
             # No list given: honor the user's configured default list. RTM's
             # tasks.add defaults to the built-in Inbox when list_id is omitted,

@@ -12,9 +12,7 @@ async def find_task(
 
     Searches for tasks matching *name* (exact match first, then substring).
     When multiple tasks match at the same tier, returns the most recently
-    modified one — unless two or more candidates share the same modified
-    timestamp, in which case an ``AmbiguousMatchError`` dict is returned
-    via :func:`resolve_task_ids`.
+    modified one; ties are broken arbitrarily by result order.
 
     Args:
         client: An RTMClient instance.
@@ -22,11 +20,7 @@ async def find_task(
         include_completed: If True, search all tasks; otherwise only incomplete.
 
     Returns:
-        A single task dict on unambiguous match, or None if no match found.
-
-    Raises:
-        Nothing — ambiguity is handled by :func:`resolve_task_ids` which
-        inspects the return value.
+        A single task dict on match, or None if no match found.
     """
     from .parsers import parse_tasks_response
 
@@ -70,25 +64,6 @@ def _pick_winner(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
     # Sort by modified descending — most recently touched first
     candidates.sort(key=lambda t: t.get("modified") or "", reverse=True)
     return candidates[0]
-
-
-def _format_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Format candidate tasks for an ambiguous-match error message."""
-    formatted = []
-    for t in candidates:
-        formatted.append(
-            {
-                "task_id": t.get("id"),
-                "taskseries_id": t.get("taskseries_id"),
-                "list_id": t.get("list_id"),
-                "name": t.get("name"),
-                "tags": t.get("tags", []),
-                "due": t.get("due"),
-                "modified": t.get("modified"),
-                "completed": t.get("completed"),
-            }
-        )
-    return formatted
 
 
 async def resolve_task_ids(

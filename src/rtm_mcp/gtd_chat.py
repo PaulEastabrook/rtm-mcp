@@ -205,10 +205,12 @@ def build_inflight(parsed: list[dict[str, Any]]) -> dict[str, Any]:
             continue
 
         scope = "project" if _PROJECT_TAG in tags else "item"
-        # nearest #project ancestor (self when this task is a project) — root-first chain, so the
-        # first #project-tagged entry is the enclosing project.
+        # nearest #project ancestor (self when this task is a project) — the chain is
+        # root-first, so walk it leaf-first: the first #project-tagged entry from the
+        # leaf end is the NEAREST enclosing project (root-first would pick the topmost
+        # when projects nest, e.g. P1 → P2 → item must attribute to P2).
         proj = None
-        for aid in _ancestor_chain(t["id"], by_id):
+        for aid in reversed(_ancestor_chain(t["id"], by_id)):
             row = by_id.get(aid)
             if row and _PROJECT_TAG in {normalize_tag(tg) for tg in (row.get("tags") or [])}:
                 proj = row

@@ -84,7 +84,9 @@ def validate_create(frame: dict[str, Any], items: list[dict[str, Any]]) -> dict[
     Rejection reasons: `missing_name` (no project title), `invalid_life` (life not one of the
     canonical life contexts), `unknown_add_type` (an item type outside the canvas grammar),
     `invalid_execute` (an item execute value outside now/later/quick), `unknown_dep` (a dep
-    referencing an id absent from the payload's own items). An empty list means create may proceed.
+    referencing an id absent from the payload's own items), `duplicate_id` (two items resolving to
+    the same in-draft id — the apply loop keys by id, so a collision would silently drop an item),
+    `self_dep` (an item depending on itself). An empty list means create may proceed.
 
     Note: there is no creation-list rejection — children are created directly under their parent via
     `rtm.tasks.add(parent_task_id=...)`, inheriting the parent's list, so no neutral staging list is
@@ -108,7 +110,27 @@ def validate_create(frame: dict[str, Any], items: list[dict[str, Any]]) -> dict[
             }
         )
 
-    item_ids = {item_id(it, i) for i, it in enumerate(items)}
+    # Duplicate in-draft ids are rejected up-front: the apply loop keys items by
+    # resolved id, so a collision (two explicit "a"s, or an explicit "1" colliding
+    # with another item's positional index) would silently drop an item and remap
+    # its dependants to the wrong producer.
+    resolved_ids = [item_id(it, i) for i, it in enumerate(items)]
+    seen_ids: set[str] = set()
+    for i, rid in enumerate(resolved_ids):
+        if rid in seen_ids:
+            rejections.append(
+                {
+                    "reason": "duplicate_id",
+                    "index": i,
+                    "id": rid,
+                    "detail": f"in-draft id {rid!r} resolves to more than one item "
+                    "(explicit ids must be unique and must not collide with "
+                    "another item's positional index)",
+                }
+            )
+        seen_ids.add(rid)
+
+    item_ids = set(resolved_ids)
     for i, item in enumerate(items):
         t = (item or {}).get("type")
         if t not in VALID_TYPES:
@@ -138,6 +160,17 @@ def validate_create(frame: dict[str, Any], items: list[dict[str, Any]]) -> dict[
                         "index": i,
                         "dep": dep,
                         "detail": f"dep {dep!r} does not reference any item id in this create",
+                    }
+                )
+            elif str(dep) == item_id(item, i):
+                # A self-dep is dropped by the graph but would still persist a
+                # junk self-referencing DEPENDS-ON note in RTM.
+                rejections.append(
+                    {
+                        "reason": "self_dep",
+                        "index": i,
+                        "dep": dep,
+                        "detail": f"item {item_id(item, i)!r} depends on itself",
                     }
                 )
 

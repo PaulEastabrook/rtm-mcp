@@ -304,8 +304,8 @@ def parse_tags_response(result: dict[str, Any]) -> list[str]:
 def parse_estimate_minutes(estimate: str | None) -> int | None:
     """Parse RTM estimate string to minutes. Returns None if unparseable.
 
-    Handles both ISO 8601 durations (PT1H30M) and human-readable strings
-    (1 hour 30 minutes).
+    Handles both ISO 8601 durations (P1D, PT1H30M, P1DT2H) and human-readable
+    strings (2 days, 1 hour 30 minutes). Days count as 24 hours.
     """
     if not estimate:
         return None
@@ -314,23 +314,29 @@ def parse_estimate_minutes(estimate: str | None) -> int | None:
     total = 0
     matched = False
 
-    iso = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?$", estimate)
+    iso = re.match(r"P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?)?$", estimate)
     if iso:
         if iso.group(1):
-            total += int(iso.group(1)) * 60
+            total += int(iso.group(1)) * 24 * 60
             matched = True
         if iso.group(2):
-            total += int(iso.group(2))
+            total += int(iso.group(2)) * 60
+            matched = True
+        if iso.group(3):
+            total += int(iso.group(3))
             matched = True
         return total if matched else None
 
+    days = re.search(r"(\d+)\s*day", estimate)
     hours = re.search(r"(\d+)\s*hour", estimate)
     minutes = re.search(r"(\d+)\s*min", estimate)
+    if days:
+        total += int(days.group(1)) * 24 * 60
     if hours:
         total += int(hours.group(1)) * 60
     if minutes:
         total += int(minutes.group(1))
-    return total if (hours or minutes) else None
+    return total if (days or hours or minutes) else None
 
 
 def analyze_tasks(tasks: list[dict[str, Any]], timezone: str | None = None) -> dict[str, Any]:

@@ -144,3 +144,30 @@ async def wait_for_with_timeout(coro, timeout: float) -> None:
         await asyncio.wait_for(coro, timeout=timeout)
     except TimeoutError:
         raise TimeoutError from None
+
+
+class TestReadWriteCounts:
+    def test_record_request_tracks_read_write_split(self) -> None:
+        stats = RateLimitStats()
+        stats.record_request("read")
+        stats.record_request("write")
+        stats.record_request("read")
+        assert stats.reads_session == 2
+        assert stats.writes_session == 1
+        assert stats.requests_last_60s() == 3
+
+    def test_default_request_type_is_read(self) -> None:
+        stats = RateLimitStats()
+        stats.record_request()
+        assert stats.reads_session == 1
+        assert stats.writes_session == 0
+
+
+class TestTokensAvailableDuringPause:
+    def test_reports_zero_while_paused(self) -> None:
+        bucket = TokenBucket(capacity=3, refill_rate=1.0)
+        assert bucket.tokens_available > 0
+        bucket.pause(60.0)
+        # acquire() would block for the pause duration, so diagnostics must not
+        # report refilled tokens.
+        assert bucket.tokens_available == 0.0

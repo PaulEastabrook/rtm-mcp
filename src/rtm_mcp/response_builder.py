@@ -48,12 +48,6 @@ def build_response(
     return response
 
 
-def get_transaction_id(result: dict[str, Any]) -> str | None:
-    """Extract transaction ID from response for undo support."""
-    transaction = result.get("transaction", {})
-    return transaction.get("id")
-
-
 def get_transaction_info(result: dict[str, Any]) -> tuple[str | None, bool]:
     """Extract transaction ID and undoable flag from RTM response.
 

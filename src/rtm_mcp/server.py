@@ -1,5 +1,6 @@
 """RTM MCP Server - Main entry point."""
 
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -29,8 +30,13 @@ async def lifespan(mcp: FastMCP) -> AsyncIterator[None]:
     config = RTMConfig.load()
 
     if not config.is_configured():
-        print("RTM not configured. Run: rtm-setup")
-        print("Or set environment variables: RTM_API_KEY, RTM_SHARED_SECRET, RTM_AUTH_TOKEN")
+        # stderr: under the stdio transport stdout carries JSON-RPC frames, so a bare
+        # print() there would corrupt the protocol stream.
+        print("RTM not configured. Run: rtm-setup", file=sys.stderr)
+        print(
+            "Or set environment variables: RTM_API_KEY, RTM_SHARED_SECRET, RTM_AUTH_TOKEN",
+            file=sys.stderr,
+        )
     else:
         _client = RTMClient(config)
 

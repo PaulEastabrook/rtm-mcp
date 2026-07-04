@@ -215,3 +215,23 @@ class TestEnrichFiles:
         seed = {"seed": [{"id": "c1", "files": [{"path": "work/p/output/r.md"}]}]}
         enrich_files(seed, None)
         assert "meta" not in seed["seed"][0]["files"][0]
+
+
+class TestNonUtf8Companion:
+    def test_non_utf8_companion_yields_no_meta(self, tmp_path):
+        # Contract: every IO failure → no meta, never raises. UnicodeDecodeError
+        # is a ValueError, so it must be caught explicitly alongside OSError.
+        path = tmp_path / "work" / "p" / "output" / "r.docx"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("artefact\n")
+        (path.parent / "r.meta.md").write_bytes(b"\xff\xfe\x00b\x00a\x00d")  # UTF-16-ish bytes
+        assert resolve_companion_meta(str(tmp_path), "work/p/output/r.docx") is None
+
+    def test_non_utf8_first_candidate_falls_through_to_next(self, tmp_path):
+        # A binary dominant-form companion must not mask a valid later form.
+        path = tmp_path / "work" / "p" / "output" / "r.docx"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("artefact\n")
+        (path.parent / "r.meta.md").write_bytes(b"\xff\xfe\x00b\x00a\x00d")
+        (path.parent / "r.companion.md").write_text("---\ntype: report\n---\n")
+        assert resolve_companion_meta(str(tmp_path), "work/p/output/r.docx") == {"type": "report"}

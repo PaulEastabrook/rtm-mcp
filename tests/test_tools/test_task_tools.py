@@ -1531,3 +1531,110 @@ class TestResolveTaskIds:
             None,
         )
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# list-name resolution error paths (regression: silent fallthrough)
+# ---------------------------------------------------------------------------
+
+
+class TestAddTaskUnknownListName:
+    @pytest.mark.asyncio
+    async def test_unknown_list_name_errors_without_creating(self, task_tools):
+        # Regression: a typo'd list_name used to be silently swallowed and the
+        # task created in the Inbox. It must error with nothing written.
+        tools, client = task_tools
+        lists_resp = {
+            "stat": "ok",
+            "lists": {
+                "list": {
+                    "id": "5",
+                    "name": "Work",
+                    "deleted": "0",
+                    "locked": "0",
+                    "archived": "0",
+                    "position": "0",
+                    "smart": "0",
+                }
+            },
+        }
+        _setup_call_map(client, {"rtm.lists.getList": lists_resp})
+
+        result = await tools["add_task"](FakeContext(), name="Pay invoice", list_name="Wrok")
+        assert "error" in result["data"]
+        assert "Wrok" in result["data"]["error"]
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert "rtm.tasks.add" not in methods
+
+
+class TestListTasksUnknownListName:
+    @pytest.mark.asyncio
+    async def test_unknown_list_name_errors_instead_of_returning_everything(self, task_tools):
+        # Regression: an unmatched list_name used to fall through and return
+        # every task in the account as if the filter had been applied.
+        tools, client = task_tools
+        lists_resp = {
+            "stat": "ok",
+            "lists": {
+                "list": {
+                    "id": "5",
+                    "name": "Work",
+                    "deleted": "0",
+                    "locked": "0",
+                    "archived": "0",
+                    "position": "0",
+                    "smart": "0",
+                }
+            },
+        }
+        _setup_call_map(client, {"rtm.lists.getList": lists_resp})
+
+        result = await tools["list_tasks"](FakeContext(), list_name="Archived Stuff")
+        assert "error" in result["data"]
+        assert "Archived Stuff" in result["data"]["error"]
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert "rtm.tasks.getList" not in methods
+
+
+class TestListTasksFilterParenthesized:
+    @pytest.mark.asyncio
+    async def test_user_filter_is_parenthesized_when_and_joined(self, task_tools):
+        # An OR inside the user filter must not rebind the AND-joined parts.
+        tools, client = task_tools
+        getlist_resp = _make_getlist_response([_ts(name="T")])
+        _setup_call_map(
+            client,
+            {
+                "rtm.tasks.getList": getlist_resp,
+                "rtm.settings.getList": {"stat": "ok", "settings": {"timezone": "UTC"}},
+            },
+        )
+
+        await tools["list_tasks"](FakeContext(), filter="tag:a OR tag:b")
+        task_call = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.getList")
+        assert task_call.kwargs["filter"] == "status:incomplete AND (tag:a OR tag:b)"
+
+
+class TestParseEstimateDays:
+    def test_iso_days(self):
+        from rtm_mcp.parsers import parse_estimate_minutes
+
+        assert parse_estimate_minutes("P1D") == 24 * 60
+        assert parse_estimate_minutes("P2D") == 2 * 24 * 60
+
+    def test_iso_days_with_time(self):
+        from rtm_mcp.parsers import parse_estimate_minutes
+
+        assert parse_estimate_minutes("P1DT2H") == 24 * 60 + 120
+        assert parse_estimate_minutes("P1DT2H30M") == 24 * 60 + 150
+
+    def test_human_days(self):
+        from rtm_mcp.parsers import parse_estimate_minutes
+
+        assert parse_estimate_minutes("1 day") == 24 * 60
+        assert parse_estimate_minutes("2 days") == 2 * 24 * 60
+
+    def test_bare_p_still_unparseable(self):
+        from rtm_mcp.parsers import parse_estimate_minutes
+
+        assert parse_estimate_minutes("P") is None

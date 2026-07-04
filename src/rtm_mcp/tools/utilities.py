@@ -4,6 +4,7 @@ from typing import Any
 
 from fastmcp import Context
 
+from ..client import RTMClient
 from ..lookup import resolve_list_id, resolve_task_ids
 from ..parsers import ensure_list, parse_tags_response
 from ..response_builder import build_response
@@ -24,8 +25,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             {"status": "error", "error": "..."} on failure.
         """
         import time
-
-        from ..client import RTMClient
 
         client: RTMClient = await get_client()
 
@@ -60,8 +59,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             {"status": "authenticated", "user": {id, username, fullname},
             "permissions": "delete"} on success, or {"status": "not_authenticated"}.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         try:
@@ -97,8 +94,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"tags": [{name}], "count": N}.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         result = await client.call("rtm.tags.getList")
@@ -120,8 +115,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"locations": [{id, name, latitude, longitude, zoom, address}], "count": N}.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         result = await client.call("rtm.locations.getList")
@@ -158,8 +151,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             {"timezone": "...", "date_format": "European/American", "time_format":
             "12-hour/24-hour", "default_list_id": "...", "language": "..."}.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         result = await client.call("rtm.settings.getList")
@@ -201,8 +192,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"input": "...", "parsed": "2026-04-02T00:00:00Z", "precision": "date"|"time"}.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         params: dict[str, Any] = {"text": text}
@@ -245,9 +234,28 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Examples:
             - undo(transaction_id="12345") → reverses that operation
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
+
+        # Same up-front validation as batch_undo: reject IDs not in the session
+        # log with a guided error, and report already-undone honestly.
+        entry = client.get_transaction(transaction_id)
+        if entry is None:
+            return build_response(
+                data={
+                    "status": "error",
+                    "error": f"Unknown transaction ID (not in current session): {transaction_id}. "
+                    "Use get_timeline_info to see valid transaction IDs.",
+                    "transaction_id": transaction_id,
+                },
+            )
+        if entry.undone:
+            return build_response(
+                data={
+                    "status": "error",
+                    "error": f"Transaction {transaction_id} was already undone.",
+                    "transaction_id": transaction_id,
+                },
+            )
 
         try:
             await client.call(
@@ -301,8 +309,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
               tx1 in that order
             - If tx2 fails: returns undone=["tx3"], failed={tx2 info}, tx1 not attempted
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         # Belt-and-braces: tolerate a JSON-string array from clients that bypass validation.
@@ -374,8 +380,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             - undone: whether this transaction has already been undone
             - summary: human-readable description of what was done
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         transactions = client.get_all_transactions()
@@ -407,8 +411,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"contacts": [{id, fullname, username}], "count": N}.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         result = await client.call("rtm.contacts.getList")
@@ -440,8 +442,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"groups": [{id, name, member_count}], "count": N}.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         result = await client.call("rtm.groups.getList")
@@ -478,7 +478,8 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"tokens_available": 2.3, "bucket_capacity": 3, "refill_rate": 0.9,
             "safety_margin": 0.1, "requests_last_60s": 14, "retries_last_60s": 0,
-            "http_503_count_session": 0, "connection_retries_last_60s": 0}.
+            "http_503_count_session": 0, "connection_retries_last_60s": 0,
+            "reads_session": 12, "writes_session": 2}.
 
             Key fields:
             - tokens_available: approximate burst capacity remaining right now
@@ -489,8 +490,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             - connection_retries_last_60s: connection-level retries (timeout, DNS,
               TCP reset) in the last 60 seconds
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         bucket = client.bucket
@@ -507,6 +506,8 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
                 "retries_last_60s": stats.retries_last_60s(),
                 "http_503_count_session": stats.http_503_count_session,
                 "connection_retries_last_60s": stats.conn_retries_last_60s(),
+                "reads_session": stats.reads_session,
+                "writes_session": stats.writes_session,
             },
         )
 
@@ -527,9 +528,9 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the task by either task_name or all three IDs.
 
-        Caution: task_name uses fuzzy matching across incomplete tasks. For
-        common names, prefer passing task_id + taskseries_id + list_id to
-        avoid matching an unintended task.
+        Caution: task_name uses fuzzy matching across ALL tasks, including
+        completed ones. For common names, prefer passing task_id +
+        taskseries_id + list_id to avoid matching an unintended task.
 
         Args:
             task_name: Task name to search for (case-insensitive fuzzy match).
@@ -546,8 +547,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             - get_task_url(task_name="Buy groceries") → URL with hierarchy
             - get_task_url(task_id="123", taskseries_id="456", list_id="789")
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(
             client,
@@ -591,8 +590,6 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             - get_list_url(list_name="Inbox") → URL for Inbox list
             - get_list_url(list_id="49657585") → URL for that list
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         resolved_name: str | None = list_name

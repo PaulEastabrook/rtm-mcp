@@ -690,3 +690,142 @@ class TestRTMConfig:
             token="token",
         )
         assert config.is_configured()
+
+
+class TestTransportErrorHandling:
+    """Connect-phase vs mid-flight transport error classification."""
+
+    @pytest.fixture
+    def conn_client(self) -> RTMClient:
+        config = RTMConfig(
+            api_key="k",
+            shared_secret="s",
+            auth_token="t",
+            bucket_capacity=100,
+            conn_max_retries=3,
+            conn_retry_delay_first=0.01,
+            conn_retry_delay_subsequent=0.01,
+        )
+        return RTMClient(config)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_connect_timeout_on_write_retries(self, conn_client: RTMClient) -> None:
+        """ConnectTimeout on a write IS retried — the connection was never
+        established, so the request cannot have been processed."""
+        respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(200, json={"rsp": {"stat": "ok", "timeline": "12345"}})
+        )
+        route = respx.post(RTM_API_URL)
+        route.side_effect = [
+            httpx.ConnectTimeout("handshake timed out"),
+            httpx.Response(200, json={"rsp": {"stat": "ok"}}),
+        ]
+
+        result = await conn_client.call("rtm.tasks.add", require_timeline=True, name="Test")
+        assert result["stat"] == "ok"
+        assert conn_client.rate_limit_stats.conn_retries_last_60s() == 1
+
+        await conn_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_pool_timeout_on_write_retries(self, conn_client: RTMClient) -> None:
+        respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(200, json={"rsp": {"stat": "ok", "timeline": "12345"}})
+        )
+        route = respx.post(RTM_API_URL)
+        route.side_effect = [
+            httpx.PoolTimeout("no connection available"),
+            httpx.Response(200, json={"rsp": {"stat": "ok"}}),
+        ]
+
+        result = await conn_client.call("rtm.tasks.add", require_timeline=True, name="Test")
+        assert result["stat"] == "ok"
+
+        await conn_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_read_error_on_read_retries(self, conn_client: RTMClient) -> None:
+        """A mid-flight ReadError (TCP reset) on a read is safe to replay."""
+        route = respx.get(RTM_API_URL)
+        route.side_effect = [
+            httpx.ReadError("connection reset by peer"),
+            httpx.Response(200, json={"rsp": {"stat": "ok"}}),
+        ]
+
+        result = await conn_client.call("rtm.test.echo")
+        assert result["stat"] == "ok"
+        assert conn_client.rate_limit_stats.conn_retries_last_60s() == 1
+
+        await conn_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_read_error_on_write_raises_wrapped(self, conn_client: RTMClient) -> None:
+        """A mid-flight ReadError on a write is ambiguous: no retry, and it must
+        surface as RTMNetworkError, not a raw httpx exception."""
+        respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(200, json={"rsp": {"stat": "ok", "timeline": "12345"}})
+        )
+        respx.post(RTM_API_URL).mock(side_effect=httpx.ReadError("connection reset"))
+
+        with pytest.raises(RTMNetworkError, match="mid-flight"):
+            await conn_client.call("rtm.tasks.add", require_timeline=True, name="Test")
+
+        assert conn_client.rate_limit_stats.conn_retries_last_60s() == 0
+
+        await conn_client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_non_json_response_raises_network_error(self, conn_client: RTMClient) -> None:
+        respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(200, text="<html>gateway error</html>")
+        )
+
+        with pytest.raises(RTMNetworkError, match="non-JSON"):
+            await conn_client.call("rtm.test.echo")
+
+        await conn_client.close()
+
+
+class TestSessionCacheRobustness:
+    @pytest.mark.asyncio
+    async def test_settings_failure_not_cached(self, client: RTMClient) -> None:
+        """A transient settings failure must not disable timezone localisation
+        for the whole session — the next consumer retries."""
+        from unittest.mock import AsyncMock
+
+        client.call = AsyncMock(
+            side_effect=[
+                RTMError("boom"),
+                {"settings": {"timezone": "Europe/London"}},
+            ]
+        )
+
+        assert await client.get_timezone() is None
+        assert await client.get_timezone() == "Europe/London"
+        assert client.call.await_count == 2
+
+        # Third consumer hits the cache — no further API call.
+        assert await client.get_timezone() == "Europe/London"
+        assert client.call.await_count == 2
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_concurrent_get_timeline_creates_one_timeline(self, client: RTMClient) -> None:
+        """Two concurrent first writes must share one timeline (undo depends on
+        the log matching the timeline the writes executed under)."""
+        import asyncio
+
+        route = respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(200, json={"rsp": {"stat": "ok", "timeline": "111"}})
+        )
+
+        t1, t2 = await asyncio.gather(client.get_timeline(), client.get_timeline())
+        assert t1 == t2 == "111"
+        assert route.call_count == 1
+
+        await client.close()

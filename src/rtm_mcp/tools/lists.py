@@ -4,6 +4,7 @@ from typing import Any
 
 from fastmcp import Context
 
+from ..client import RTMClient
 from ..lookup import resolve_list_id
 from ..parsers import format_list, parse_lists_response
 from ..response_builder import build_response, record_and_build_response
@@ -38,8 +39,6 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             - archived=true → hidden from default views (only shown when
               include_archived=true).
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         result = await client.call("rtm.lists.getList")
@@ -78,8 +77,6 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"list": {...}, "message": "Created list: ..."} with transaction_id.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         params: dict[str, Any] = {"name": name}
@@ -113,8 +110,6 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"list": {...}, "message": "Renamed '...' to '...'"} with transaction_id.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         resolved = await resolve_list_id(client, list_name)
@@ -152,8 +147,6 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"message": "Deleted list: ..."} with transaction_id for undo.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         resolved = await resolve_list_id(client, list_name)
@@ -191,8 +184,6 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"list": {...}, "message": "Archived list: ..."} with transaction_id.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         resolved = await resolve_list_id(client, list_name)
@@ -228,8 +219,6 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"list": {...}, "message": "Unarchived list: ..."} with transaction_id.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         resolved = await resolve_list_id(client, list_name)
@@ -263,22 +252,24 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         list_name, tasks go to this list. Use get_lists to find available list names.
 
         Returns:
-            {"message": "Default list set to: ..."}.
+            {"message": "Default list set to: ..."} with transaction_id for undo
+            when RTM reports one.
         """
-        from ..client import RTMClient
-
         client: RTMClient = await get_client()
 
         resolved = await resolve_list_id(client, list_name)
         if "error" in resolved:
             return build_response(data=resolved)
 
-        await client.call(
+        result = await client.call(
             "rtm.lists.setDefaultList",
             require_timeline=True,
             list_id=resolved["list_id"],
         )
 
-        return build_response(
+        return record_and_build_response(
+            client,
+            result,
             data={"message": f"Default list set to: {list_name}"},
+            tool_name="set_default_list",
         )

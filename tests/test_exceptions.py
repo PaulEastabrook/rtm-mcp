@@ -66,3 +66,14 @@ class TestErrorCodeMapCompleteness:
     def test_all_values_are_rtm_error_subclasses(self) -> None:
         for code, cls in ERROR_CODE_MAP.items():
             assert issubclass(cls, RTMError), f"Code {code} maps to {cls}"
+
+
+class TestTransientServiceError:
+    def test_102_maps_to_network_error(self) -> None:
+        # "Service currently unavailable" is transient, not a caller bug — it
+        # must not be classified as a validation error.
+        from rtm_mcp.exceptions import RTMNetworkError
+
+        assert ERROR_CODE_MAP[102] is RTMNetworkError
+        with pytest.raises(RTMNetworkError):
+            raise_for_error(102, "Service currently unavailable")
