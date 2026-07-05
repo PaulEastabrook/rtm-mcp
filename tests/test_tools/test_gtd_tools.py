@@ -885,6 +885,230 @@ class TestGtdApplyCanvasCommit:
         assert not stamped
 
 
+class TestGtdOrderNoteDC4:
+    """DC-4: durable reorder via the ORDER note — the commit writes it, the thin plan-graph
+    honours it (single source of truth: RTM; the manual-order pin is pure derivation)."""
+
+    @pytest.mark.asyncio
+    async def test_commit_with_order_writes_conformant_order_note(self, gtd_tools):
+        from rtm_mcp import order_note
+
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, order=["c2", "c1"]
+        )
+        data = result["data"]
+        assert "rejected" not in data
+        assert data["order_persisted"] == "order-note"  # the mechanism, not True
+
+        notes = [c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add"]
+        order_writes = [
+            c for c in notes if order_note.TITLE_RX.match(c.kwargs.get("note_title", ""))
+        ]
+        assert len(order_writes) == 1
+        w = order_writes[0]
+        assert w.kwargs["task_id"] == PROJECT_ID  # on the project task, not an item
+        p = order_note.parse(w.kwargs["note_title"], w.kwargs["note_text"])
+        assert p["valid"], p["errors"]
+        assert p["order"] == ["c2", "c1"]
+        assert p["source"] == "board-commit"
+        # the note write records its transaction (batch_undo reverts it with the commit)
+        assert any(op["op"] == "order-note" and op["transaction_id"] for op in data["applied"])
+        # an order-only commit is a real commit: the COMMIT audit note still lands
+        assert any(c.kwargs.get("note_title") == "COMMIT" for c in notes)
+
+    @pytest.mark.asyncio
+    async def test_order_note_written_before_overlay_refresh_stamp(self, gtd_tools):
+        """A finalise fired off #ai_overlay_refresh_needed must never read a commit whose ORDER
+        note hasn't landed — the note write strictly precedes the stamp."""
+        from rtm_mcp import order_note
+
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            order=["c1", "c2"],
+            edits={"c1": {"priority": "1"}},
+        )
+        calls = client.call.call_args_list
+        note_idx = next(
+            i
+            for i, c in enumerate(calls)
+            if c.args[0] == "rtm.tasks.notes.add"
+            and order_note.TITLE_RX.match(c.kwargs.get("note_title", ""))
+        )
+        stamp_idx = next(
+            i
+            for i, c in enumerate(calls)
+            if c.args[0] == "rtm.tasks.addTags"
+            and c.kwargs.get("tags") == "ai_overlay_refresh_needed"
+        )
+        assert note_idx < stamp_idx
+
+    @pytest.mark.asyncio
+    async def test_commit_without_order_writes_no_order_note(self, gtd_tools):
+        from rtm_mcp import order_note
+
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, edits={"c1": {"priority": "1"}}
+        )
+        assert result["data"]["order_persisted"] is False
+        notes = [c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add"]
+        assert not any(order_note.TITLE_RX.match(c.kwargs.get("note_title", "")) for c in notes)
+
+    @pytest.mark.asyncio
+    async def test_order_only_commit_stamps_overlay_refresh(self, gtd_tools):
+        """An order-only commit is non-empty (the ORDER note landed) → the overlay-refresh mark
+        is stamped as for any other commit; the finalise drain derives the pin from the note."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, order=["c2", "c1"]
+        )
+        stamped = [
+            c
+            for c in client.call.call_args_list
+            if c.args[0] == "rtm.tasks.addTags"
+            and c.kwargs.get("tags") == "ai_overlay_refresh_needed"
+        ]
+        assert len(stamped) == 1
+
+    @pytest.mark.asyncio
+    async def test_canvas_seed_honours_latest_order_note(self, gtd_tools):
+        """The thin plan-graph derives the manual-order bias from the latest valid ORDER note on
+        the project, so the board seed shows the dragged order immediately on reload."""
+        from rtm_mcp import order_note
+
+        tools, client = gtd_tools
+        title, body = order_note.make(
+            ["c2", "c1"], "board-commit", "2026-07-05T09:41:12Z", "2026-07-05 10:41"
+        )
+        tree = _getlist(
+            [
+                _ts(
+                    "tsP",
+                    PROJECT_ID,
+                    "Test Project",
+                    parent=AREA_ID,
+                    tags=["personal", "project"],
+                    # RTM storage reality: the title is the body's first line.
+                    notes=[
+                        {
+                            "id": "n9",
+                            "created": "2026-07-05T09:41:12Z",
+                            "title": "",
+                            "$t": f"{title}\n{body}",
+                        }
+                    ],
+                ),
+                _ts("ts1", "c1", "First by default", parent=PROJECT_ID, tags=["action"]),
+                _ts("ts2", "c2", "Dragged first", parent=PROJECT_ID, tags=["action"]),
+            ]
+        )
+        client.call = AsyncMock(return_value=tree)
+
+        result = await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID)
+        ids = [it["id"] for it in result["data"]["seed"]]
+        assert ids == ["c2", "c1"]  # the pinned order, not input order
+        # still read-only: the ORDER-note derivation adds no call
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"]
+
+    @pytest.mark.asyncio
+    async def test_canvas_ignores_invalid_order_note(self, gtd_tools):
+        """Fail closed: a corrupted ORDER note is ignored (no bias) — the seed falls back to the
+        default thin order and always renders."""
+        tools, client = gtd_tools
+        corrupt = "2026-07-05 10:41 — ORDER — 2 items\n{not json"
+        tree = _getlist(
+            [
+                _ts(
+                    "tsP",
+                    PROJECT_ID,
+                    "Test Project",
+                    parent=AREA_ID,
+                    tags=["personal", "project"],
+                    notes=[
+                        {
+                            "id": "n9",
+                            "created": "2026-07-05T09:41:12Z",
+                            "title": "",
+                            "$t": corrupt,
+                        }
+                    ],
+                ),
+                _ts("ts1", "c1", "First by default", parent=PROJECT_ID, tags=["action"]),
+                _ts("ts2", "c2", "Would be dragged first", parent=PROJECT_ID, tags=["action"]),
+            ]
+        )
+        client.call = AsyncMock(return_value=tree)
+
+        result = await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID)
+        ids = [it["id"] for it in result["data"]["seed"]]
+        assert ids == ["c1", "c2"]  # default input order — the invalid note biased nothing
+
+    @pytest.mark.asyncio
+    async def test_canvas_pin_never_violates_topology(self, gtd_tools):
+        """The ORDER note biases cosmetic tiering only: a consumer pinned ahead of its producer
+        is clamped — the DAG wins (identical semantics to gtd's enriched engine)."""
+        from rtm_mcp import order_note
+
+        tools, client = gtd_tools
+        # pin the consumer (222) ahead of its producer (111)
+        title, body = order_note.make(
+            ["222", "111"], "board-commit", "2026-07-05T09:41:12Z", "2026-07-05 10:41"
+        )
+        depends = (
+            "2026-07-05 — DEPENDS-ON — needs the producer\n"
+            'Upstream RTM IDs:\n  task_id: "111"\n  list_id: "49657585"\n'
+            "Status: active\n"
+        )
+        tree = _getlist(
+            [
+                _ts(
+                    "tsP",
+                    PROJECT_ID,
+                    "Test Project",
+                    parent=AREA_ID,
+                    tags=["personal", "project"],
+                    notes=[
+                        {
+                            "id": "n9",
+                            "created": "2026-07-05T09:41:12Z",
+                            "title": "",
+                            "$t": f"{title}\n{body}",
+                        }
+                    ],
+                ),
+                # numeric ids: DEPENDS-ON upstream ids are matched by a digits-only regex
+                _ts("ts1", "111", "Producer", parent=PROJECT_ID, tags=["action"]),
+                _ts(
+                    "ts2",
+                    "222",
+                    "Consumer",
+                    parent=PROJECT_ID,
+                    tags=["action"],
+                    notes=[
+                        {"id": "nd", "created": "2026-07-05T00:00:00Z", "title": "", "$t": depends}
+                    ],
+                ),
+            ]
+        )
+        client.call = AsyncMock(return_value=tree)
+
+        result = await tools["gtd_project_canvas"](FakeContext(), project_id=PROJECT_ID)
+        ids = [it["id"] for it in result["data"]["seed"]]
+        assert ids.index("111") < ids.index("222")  # producer first — the pin was clamped
+
+
 # ── gtd_create_project ───────────────────────────────────────────────────────
 
 

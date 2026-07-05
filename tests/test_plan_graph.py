@@ -75,6 +75,46 @@ class TestOrder:
         assert g["order"][-1] == "done"
 
 
+class TestManualOrder:
+    """The manual-order pin (DC-4: derived from the latest valid ORDER note). Clamping-parity
+    cases mirror the gtd plugin's `test_plan_graph.py` TestManualOrder suite one-for-one."""
+
+    def test_pin_reorders_independent_siblings(self):
+        rows = [_row("A"), _row("B")]  # both ready, independent
+        assert build_graph(HEADER, rows)["order"] == ["A", "B"]  # input order by default
+        pinned = build_graph(HEADER, rows, manual_order=["B", "A"])["order"]
+        assert pinned == ["B", "A"]  # the drag pin is reproduced
+
+    def test_pin_cannot_violate_topology(self):
+        # consumer pinned ahead of its producer — the DAG must still win
+        rows = [_row("1"), _row("2", deps=["1"])]
+        g = build_graph(HEADER, rows, manual_order=["2", "1"])
+        assert g["order"].index("1") < g["order"].index("2")
+
+    def test_unpinned_items_fall_after_pinned_in_cohort(self):
+        rows = [_row("A"), _row("B"), _row("C")]  # three independent, ready
+        g = build_graph(HEADER, rows, manual_order=["C"])  # only C pinned
+        assert g["order"] == ["C", "A", "B"]  # C first, rest keep input order
+
+    def test_pin_returned_cleaned_to_current_ids(self):
+        rows = [_row("1"), _row("2")]
+        g = build_graph(HEADER, rows, manual_order=["2", "1", "999"])  # 999 no longer in plan
+        assert g["manual_order"] == ["2", "1"]  # stale id dropped, order preserved
+
+    def test_no_pin_is_unchanged_behaviour(self):
+        rows = [_row("A"), _row("B", deps=["A"]), _row("C")]
+        base = build_graph(HEADER, rows)["order"]
+        assert base == build_graph(HEADER, rows, manual_order=None)["order"]
+        assert base == build_graph(HEADER, rows, manual_order=[])["order"]
+
+    def test_pin_is_not_part_of_fingerprint(self):
+        rows = [_row("A"), _row("B")]
+        assert (
+            build_graph(HEADER, rows)["fingerprint"]
+            == build_graph(HEADER, rows, manual_order=["B", "A"])["fingerprint"]
+        )
+
+
 class TestCyclesAndFingerprint:
     def test_cycle_detected_and_order_still_complete(self):
         rows = [_row("c1", deps=["c2"]), _row("c2", deps=["c1"])]

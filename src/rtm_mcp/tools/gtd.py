@@ -7,6 +7,7 @@ data and keeps a future lift of all `gtd_*` tools into a separate server a clean
 mechanical move.
 """
 
+from datetime import UTC, datetime
 from typing import Any
 
 from fastmcp import Context
@@ -45,6 +46,8 @@ from ..gtd_chat import (
     project_descendants,
 )
 from ..lookup import resolve_list_id
+from ..order_note import from_envelope as resolve_order_note
+from ..order_note import make as make_order_note
 from ..parsers import parse_tasks_response, priority_to_code
 from ..plan_graph import build_graph
 from ..project_index import build_actions, build_foci, build_index
@@ -227,7 +230,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         tz = await client.get_timezone()
         envelope = build_envelope(parsed, pid, timezone=tz)
         seed = build_seed(envelope["header"], envelope["rows"], outputs_index=None)
-        graph = build_graph(envelope["header"], envelope["rows"])
+        # DC-4: honour the latest valid ORDER note (the durable manual-order intent on the
+        # project task) as the plan-graph manual-order bias — same clamping semantics as gtd's
+        # enriched engine (cosmetic tiering only, never topology; unlisted ids fall to their
+        # cohort end; departed ids are pruned). An invalid note fails closed (resolution falls
+        # back to the next-latest valid; none → no bias), so the seed always renders.
+        manual = resolve_order_note(envelope)
+        graph = build_graph(envelope["header"], envelope["rows"], manual_order=manual["order"])
         seed = apply_graph(seed, graph)
         if lean:
             seed = lean_seed(seed, note_cap)
@@ -347,8 +356,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         it (cross-project ids are rejected).
 
         Args:
-            order: dragged open-item order. v1 NO-OP — RTM has no sibling-order field, so order is
-                not persisted (it re-derives from the DAG on refresh); ids are still membership-checked.
+            order: dragged open-item order (ids membership-checked). Persisted as an ORDER note
+                on the project task (order-note/1: strict-JSON body with count + sha256
+                self-checks, source "board-commit") — RTM has no sibling-order field, so the note
+                IS the durable record of order intent; every consumer (this server's thin
+                plan-graph, gtd's enriched overlay refresh) derives the manual-order bias from the
+                latest valid ORDER note. Append-only: superseded notes are retained.
             edits: {id: {priority?, context?, comms?, chase?/calendar_date?/due?, text?}}.
             adds: [{type: action|waiting_for|calendar, text, classifiers:{context?, comms?,
                 priority?, quick?}, chase?/calendar_date?/due?}] — created on `Processed`, parented
@@ -370,7 +383,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         enriched plan-graph overlay); this tag must exist in the RTM account under strict-tag mode.
 
         Returns (on success): {"applied": [{op, id, transaction_id}, ...], "errors": [...],
-            "order_persisted": false, "message": "..."}.
+            "order_persisted": "order-note" | false, "message": "..."} — "order-note" iff a
+            non-empty `order` was durably written as the ORDER note (the board gates its
+            "order saved" chip on exactly this value); false when the commit carried no order
+            (or the note write failed — see errors).
         Returns (on rejection — nothing written): {"applied": [], "rejected": [...], "message": ...}.
         """
         client: RTMClient = await get_client()
@@ -580,9 +596,39 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         for rid in ops["removes"]:
             await _write("rtm.tasks.delete", "remove (soft-delete)", rid, **_ids(rid))
 
+        proj = by_id[pid]
+
+        # DC-4: persist the dragged order as an ORDER note on the project task — the single
+        # durable record of order intent (RTM = system of record; the plan-graph manual-order
+        # bias is pure derivation from the latest valid note, on both membrane sides). Written
+        # BEFORE the overlay-refresh stamp below, so a finalise fired off the mark can never
+        # read a commit whose ORDER note hasn't landed. Append-only (superseded notes retained);
+        # the transaction is recorded like every other write, so batch_undo reverts it with the
+        # rest of the commit. The title is the note body's first line on read (RTM has no
+        # note-title field), which order_note.parse strips before its strict-JSON parse.
+        order_persisted: str | bool = False
+        if ops["order"]:
+            tz = await client.get_timezone()
+            title, order_body = make_order_note(
+                ops["order"],
+                "board-commit",
+                datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                local_stamp(tz),
+            )
+            order_res = await _write(
+                "rtm.tasks.notes.add",
+                "order-note",
+                note_title=title,
+                note_text=order_body,
+                task_id=proj.get("id"),
+                taskseries_id=proj.get("taskseries_id"),
+                list_id=proj.get("list_id"),
+            )
+            if order_res is not None:
+                order_persisted = "order-note"
+
         # COMMIT audit note on the project
         if applied:
-            proj = by_id[pid]
             counts = (
                 f"adds:{len(ops['adds'])} edits:{len(ops['edits'])} "
                 f"execute:{len(ops['execute'])} notes:{len(ops['notes'])} "
@@ -620,7 +666,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "project_id": pid,
                 "applied": applied,
                 "errors": errors,
-                "order_persisted": False,
+                "order_persisted": order_persisted,
                 "message": f"Applied {len(applied)} write(s); {len(errors)} error(s).",
             },
             timeline_id=client.timeline_id,

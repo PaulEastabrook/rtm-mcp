@@ -115,9 +115,12 @@ def collect_commit_tags(ops: dict[str, Any]) -> set[str]:
     if ops.get("notes"):
         tags.add(AI_CONVERSATION)
     # Every non-empty commit stamps the overlay-refresh mark on the project (Piece 0b) — so the gate
-    # must include it whenever any actionable op is present (adds / edits / execute / notes / completes
-    # / removes), not only the tag-writing ops above.
-    if any(ops.get(k) for k in ("adds", "edits", "execute", "notes", "completes", "removes")):
+    # must include it whenever any actionable op is present (adds / edits / execute / notes /
+    # completes / removes / order — since DC-4 an order-only commit writes the ORDER note, then
+    # stamps the mark), not only the tag-writing ops above.
+    if any(
+        ops.get(k) for k in ("adds", "edits", "execute", "notes", "completes", "removes", "order")
+    ):
         tags.add(OVERLAY_REFRESH)
     return tags
 
