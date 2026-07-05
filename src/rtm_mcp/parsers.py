@@ -219,6 +219,11 @@ def parse_tasks_response(result: dict[str, Any]) -> list[dict[str, Any]]:
             tags = parse_nested_list(ts.get("tags", []), "tag")
             notes = parse_nested_list(ts.get("notes", []), "note")
             parent_task_id = ts.get("parent_task_id") or None
+            # A recurring taskseries carries an `rrule` element (e.g. FREQ=WEEKLY); a one-off
+            # series has none. This is a series-level fact — every open occurrence's task
+            # instance inherits it. Surfaced so the GTD side can detect a "repeating templated
+            # project" (its parent series recurs) without a second read.
+            is_repeating = bool(ts.get("rrule"))
 
             for t in task_data:
                 tasks.append(
@@ -241,6 +246,7 @@ def parse_tasks_response(result: dict[str, Any]) -> list[dict[str, Any]]:
                         "url": ts.get("url") or None,
                         "location_id": ts.get("location_id") or None,
                         "parent_task_id": parent_task_id,
+                        "is_repeating": is_repeating,
                         "created": ts.get("created") or None,
                         "modified": ts.get("modified") or None,
                     }

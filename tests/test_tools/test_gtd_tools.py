@@ -124,7 +124,7 @@ class TestGtdProjectPlan:
 
         result = await tools["gtd_project_plan"](FakeContext(), project_id=PROJECT_ID)
         data = result["data"]
-        assert data["header"]["schema"] == "project-plan-seed/3"
+        assert data["header"]["schema"] == "project-plan-seed/3.1"
         assert data["header"]["projectId"] == PROJECT_ID
         assert data["header"]["rowCount"] == 2
         c1 = next(r for r in data["rows"] if r["id"] == "c1")

@@ -188,6 +188,42 @@ class TestParseTasksResponse:
         assert task["name"] == "Test Task"
         assert task["priority"] == "1"
         assert task["tags"] == ["work", "urgent"]
+        # A one-off series (no rrule) reads is_repeating False.
+        assert task["is_repeating"] is False
+
+    def test_parse_is_repeating_from_rrule(self) -> None:
+        """A taskseries with an `rrule` element marks every occurrence's task is_repeating."""
+        result = {
+            "stat": "ok",
+            "tasks": {
+                "list": [
+                    {
+                        "id": "1",
+                        "taskseries": {
+                            "id": "10",
+                            "name": "Weekly review",
+                            "tags": [],
+                            "notes": [],
+                            "rrule": {"every": "1", "$t": "FREQ=WEEKLY;INTERVAL=1"},
+                            "task": {"id": "100", "priority": "N"},
+                        },
+                    },
+                    {
+                        "id": "2",
+                        "taskseries": {
+                            "id": "20",
+                            "name": "One-off",
+                            "tags": [],
+                            "notes": [],
+                            "task": {"id": "200", "priority": "N"},
+                        },
+                    },
+                ]
+            },
+        }
+        tasks = parse_tasks_response(result)
+        assert tasks[0]["is_repeating"] is True
+        assert tasks[1]["is_repeating"] is False
 
     def test_parse_empty_response(self) -> None:
         """Test parsing empty response."""

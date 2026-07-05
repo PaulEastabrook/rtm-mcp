@@ -1,3 +1,3 @@
 """RTM MCP Server - Remember The Milk integration for Claude."""
 
-__version__ = "1.22.0"
+__version__ = "1.23.0"

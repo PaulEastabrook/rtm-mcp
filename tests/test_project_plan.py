@@ -27,6 +27,7 @@ def _t(
     tags=None,
     notes=None,
     deleted=None,
+    is_repeating=False,
 ):
     """Build a task dict in the shape parse_tasks_response emits."""
     return {
@@ -44,6 +45,7 @@ def _t(
         "notes": notes or [],
         "url": url,
         "parent_task_id": parent or None,
+        "is_repeating": is_repeating,
     }
 
 
@@ -97,7 +99,7 @@ class TestBuildEnvelope:
         env = build_envelope(_sample_parsed(), PROJECT_ID)
         h = env["header"]
         assert h["type"] == "header"
-        assert h["schema"] == SCHEMA == "project-plan-seed/3"
+        assert h["schema"] == SCHEMA == "project-plan-seed/3.1"
         assert h["projectId"] == PROJECT_ID
         assert h["project"]["name"] == "Sam's university open days"
         assert h["project"]["life"] == "personal"  # first life-context tag
@@ -174,6 +176,29 @@ class TestBuildEnvelope:
         assert c2["completed"] == 1
         assert c2["completedDate"] == "2026-06-15"
         assert c2["priority"] == "NoPriority"
+
+    def test_repeating_signals_default_false(self):
+        # Seed 3.1: a one-off plan carries is_repeating=False + the taskseries_id on every row and
+        # on header.project — additive, so a non-recurring project reads exactly as before.
+        env = build_envelope(_sample_parsed(), PROJECT_ID)
+        assert env["header"]["project"]["is_repeating"] is False
+        assert env["header"]["project"]["taskseries_id"] == "ts" + PROJECT_ID
+        c1 = _row(env, "c1")
+        assert c1["is_repeating"] is False
+        assert c1["taskseries_id"] == "tsc1"
+
+    def test_repeating_signals_surface_from_rrule_flag(self):
+        # is_repeating rides the parsed task's series-level flag (parse_tasks_response derives it
+        # from the taskseries `rrule`). A recurring project + a recurring child both report True.
+        parsed = [
+            _t(PROJECT_ID, parent=AREA_ID, tags=["project"], is_repeating=True),
+            _t("c1", parent=PROJECT_ID, tags=["action"], is_repeating=True),
+            _t("c2", parent=PROJECT_ID, tags=["action"]),
+        ]
+        env = build_envelope(parsed, PROJECT_ID)
+        assert env["header"]["project"]["is_repeating"] is True
+        assert _row(env, "c1")["is_repeating"] is True
+        assert _row(env, "c2")["is_repeating"] is False
 
     def test_none_coerced_to_empty_string(self):
         env = build_envelope(_sample_parsed(), PROJECT_ID)

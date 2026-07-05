@@ -1,10 +1,15 @@
-"""Project-plan envelope builder — the `project-plan-seed/3` contract.
+"""Project-plan envelope builder — the `project-plan-seed/3.1` contract.
 
 Pure (no IO) reconstruction of a whole GTD project plan from a flat, parsed
 `rtm.tasks.getList` result (as produced by `parsers.parse_tasks_response`). The
 emitted envelope is byte-compatible with the GTD plugin's reference port
 `rtm_fetch.py` (`reconstruct`/`to_ndjson`) — the integration contract consumed by
 the canvas mapper `build-canvas-seed.py`. Backs the `gtd_project_plan` MCP tool.
+
+The `3.1` bump (2026-07-05, repeating-templated-project Wave B) is purely additive: each row
+and `header.project` gains `is_repeating` (True when its parent taskseries recurs) and
+`taskseries_id`. Consumers gate on the `project-plan-seed/` prefix (gtd `build-canvas-seed.py`)
+so the minor bump is transparent; a consumer that ignores the fields is unaffected.
 
 Server adaptations vs the reference (output stays identical):
 - note bodies are read via `parsers.extract_note_body` (server notes carry the
@@ -22,7 +27,7 @@ from .config import RTM_WEB_BASE_URL
 from .parsers import _convert_rtm_date, extract_note_body
 from .urls import build_task_url
 
-SCHEMA = "project-plan-seed/3"
+SCHEMA = "project-plan-seed/3.1"
 
 # RTM numeric priority → the word form the canvas mapper expects.
 _PRIORITY_WORD = {"1": "High", "2": "Medium", "3": "Low", "N": "NoPriority", "": "NoPriority"}
@@ -287,6 +292,12 @@ def build_envelope(
             # without a second lookup. Additive to project-plan-seed/3 (rtm_fetch.py parity is an
             # upstream follow-up, same pattern as the files/prog additions).
             "redacted": (REDACTED_TAG in (proj.get("tags") or [])) if proj else False,
+            # Repeating-templated-project detection signal (seed 3.1). `is_repeating` is True when
+            # the project's own parent taskseries recurs (an `rrule`); `taskseries_id` is that
+            # series id. The GTD side gates on `is_repeating` OR ≥2 open rows sharing a series.
+            # Additive — a one-off project reads False/"" and behaves exactly as before.
+            "is_repeating": bool(proj.get("is_repeating")) if proj else False,
+            "taskseries_id": (proj.get("taskseries_id") or "") if proj else "",
         },
         "rowCount": len(children),
     }
@@ -313,6 +324,11 @@ def build_envelope(
                 "estimate": c.get("estimate") or "",
                 "start": _norm_date(c.get("start"), timezone),
                 "url": c.get("url") or "",
+                # Repeating-templated-project signals (seed 3.1) — the GTD `series_guard` reads
+                # `is_repeating` and groups occurrences by `taskseries_id`. snake_case to match
+                # that consumer's row contract exactly. Additive; a one-off row reads False/"".
+                "is_repeating": bool(c.get("is_repeating")),
+                "taskseries_id": c.get("taskseries_id") or "",
             }
         )
 
