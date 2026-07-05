@@ -27,9 +27,13 @@ are kept so that path can be added without changing the signature.
 
 ORDER (reads top-to-bottom as a TIMELINE): topological as the hard constraint (never before your
 inputs); within a ready cohort the tier order is 2-min unblockers → 2-min items → other
-unblockers → the rest, tie-broken by due/start date then original input order. Completed
-(history) items sort last. CYCLES are detected and returned as advisory `cycles`; the order falls
-back gracefully (the weakest back-edge is ignored for layering) so a list always renders.
+unblockers → the rest, tie-broken WITHIN each tier by MoSCoW band (Must → Should → Could →
+untriaged-last; the RTM priority field IS the band per moscow-prioritisation.md — untriaged `!-`
+deliberately sorts after Could as a visible triage nudge), then due/start date, then original
+input order. Tier structure outranks band; manual ORDER pins outrank all cosmetic tiering; the
+DAG stays absolute. Completed (history) items sort last. CYCLES are detected and returned as
+advisory `cycles`; the order falls back gracefully (the weakest back-edge is ignored for
+layering) so a list always renders.
 """
 
 import hashlib
@@ -61,6 +65,30 @@ def _kind(row: dict[str, Any]) -> str:
     if "calendar_entry" in tags:
         return "calendar"
     return "action"
+
+
+# MoSCoW band ranks from the RTM priority field (moscow-prioritisation.md: the field IS the band).
+# Accepts the RTM API surfaces ("High"/"Medium"/"Low"/"NoPriority"/"N", plus the lowercase word
+# form some wrapped reads emit) and the canvas/draft numeric surface ("1"/"2"/"3"). Anything
+# else — including absent — is untriaged.
+_BAND = {
+    "High": 0,
+    "high": 0,
+    "1": 0,
+    "Medium": 1,
+    "medium": 1,
+    "2": 1,
+    "Low": 2,
+    "low": 2,
+    "3": 2,
+}
+
+
+def _band_rank(row: dict[str, Any]) -> int:
+    """Must(!1)=0 → Should(!2)=1 → Could(!3)=2 → untriaged(!-)=3. Untriaged sorts AFTER Could —
+    a deliberate, visible nudge to triage (`!-` is debt, never "Won't"; a genuine Won't is parked
+    out of the plan). Within-tier only: tier structure and manual pins outrank band."""
+    return _BAND.get(str(row.get("priority") or "").strip(), 3)
 
 
 def build_graph(
@@ -263,10 +291,14 @@ def _timeline_order(
         n = by_id[rid]
         pinned = rid in manual_rank
         # pinned items: (0, pin-index) — reproduce the drag order, ahead of unpinned.
-        # unpinned items: (1, tier, …) — the original tiered/date sort, after the pinned ones.
+        # unpinned items: (1, tier, band, …) — tier first (readiness/leverage), then the MoSCoW
+        # band (Must → Should → Could → untriaged-last), then due/start, then input order.
+        # Band is neutralised (0) on pinned items: the pin index is unique, so later elements
+        # never engage — kept constant for determinism.
         return (
             0 if pinned else 1,
             manual_rank[rid] if pinned else tier(rid),
+            0 if pinned else _band_rank(n),
             n.get("due") or "9999-99-99",
             n.get("start") or "9999-99-99",
             ids.index(rid),
@@ -293,7 +325,10 @@ def _fingerprint(header: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     name/state/dates/estimate/tags, and the deterministic edge *inputs* (deps + artefact filenames +
     notes-digest). Deliberately NOT over the computed edges: the overlay's edge set may include
     consumer-added lexical edges, but the fingerprint must stay stable across that enrichment so a
-    'hit' (inputs unchanged) reuses the cached graph. Any meaningful input change flips this."""
+    'hit' (inputs unchanged) reuses the cached graph. Any meaningful input change (add/complete/
+    delete/rename, due/start/estimate/priority/tag/dep/artefact/note change) flips this. Priority
+    joined 2026-07-05: the MoSCoW band is a within-tier order input, so a band edit must
+    invalidate the cached overlay."""
     h = hashlib.sha256()
     proj = header.get("project") or {}
     h.update((str(proj.get("id")) + "|").encode())
@@ -313,6 +348,7 @@ def _fingerprint(header: dict[str, Any], rows: list[dict[str, Any]]) -> str:
                     r.get("due") or "",
                     r.get("start") or "",
                     r.get("estimate") or "",
+                    str(r.get("priority") or ""),
                     ",".join(sorted(r.get("tags") or [])),
                     ",".join(sorted(str(d) for d in (r.get("deps") or []))),
                     ",".join(sorted(p.rsplit("/", 1)[-1] for p in (r.get("files") or []))),
