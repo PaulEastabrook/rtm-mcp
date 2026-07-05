@@ -10,8 +10,10 @@ relates_to: handback brief "rtm-mcp — Wave B token stamping" (2026-07-05-repea
             predecessor debriefs repeating-templated-project-seed-debrief.md (v1.23.0) + repeating-templated-project-resolver-debrief.md (v1.24.0, the READ side this write side feeds);
             landed marketplace half — gtd v0.133.0 (resolver) + v0.134.0 (conversational-addition stamping);
             CONTRIBUTING § 14 (this debrief is the required handback)
-status: DONE (Wave B token stamping) — needs the unmerged DC-4+MoSCoW stack merged first, then the MCP
-        server restarted on v1.25.0 (supersedes the pending v1.24.0 restart), then the live back-fill run.
+status: DONE (Wave B token stamping) + LIVE BACK-FILL EXECUTED (60 writes across 10 recurring projects,
+        0 errors; idempotency + resolver confirmed on live data). Remaining: merge the unmerged
+        DC-4+MoSCoW stack, restart the MCP server on v1.25.0 (supersedes the pending v1.24.0 restart),
+        optionally push the branch.
 ---
 
 # Debrief — repeating-templated-project token stamping (v1.25.0)
@@ -86,15 +88,25 @@ Three pieces:
   idempotent no-op; not-repeating skipped; dry_run no writes; bad id; sweep-selects-only-repeating;
   getList-first) + 2 commit-adds (repeating stamps a TMPL-CHILD note; one-off stamps none)).
 - `make lint`: ruff check + format + pyright all clean.
-- **Live dry-run (read-only) executed** against the real account to validate the plan on real data: the
-  sweep found **10 repeating projects** (Bambu cycles ×6, two File-company-accounts occurrences, two
-  Weekly/Wales) and computed dep-lines correctly — File company accounts (`1124622244`) resolved its two
-  DEPENDS-ON notes (117866019 → upstream slug, 117866022 → upstream slug) into token-space. `0 writes`.
-- **NOT run:** the live back-fill WRITE (~44 TMPL-CHILD notes + 7 dep-line edits + audit notes across the
-  10 projects) and the post-stamp `gtd_project_plan`/`gtd_project_canvas` confirmation. Deliberately left
-  for after the server restart on v1.25.0 so the confirmation exercises the *active* resolver (and
-  because ~60 durable writes to the live system of record is a step to run deliberately, not silently).
-  The dry-run proves the plan; the write is a one-command follow-up.
+- **Live dry-run (read-only)** first validated the plan: the sweep found **10 repeating projects**
+  (Bambu cycles ×6, two File-company-accounts occurrences, Weekly GTD review, Wales pipeline) and
+  computed dep-lines correctly.
+- **Live back-fill EXECUTED** (Paul chose to fire it this session): the sweep wrote **60 ops across the
+  10 projects, 0 errors** (per-project: 3/3/3/3/2/2/3/4/12/8 TMPL-CHILD notes + dep-line edits + audit
+  notes). Confirmed end-to-end on live data:
+  - **Idempotency** — an immediate re-run wrote **0 writes** (already-stamped children/notes skipped).
+  - **Token surfaced** — `gtd_project_plan(1124622244)` now shows each child's `template_child_id`
+    populated and its deps in **token-space** (`1124622254` → `['c9e46b4a']`, `1124622245` →
+    `['e14a0d27']`), not raw ids.
+  - **Resolver live** — `gtd_project_canvas(1124622244)` maps those tokens back to the current
+    occurrence's ids (`1124622245` deps `['1124622255']`, `1124622254` deps `['1124622245']`), so the
+    dependency chain is intact and will survive the next occurrence via RTM's note copy.
+- **Undo caveat (honest verification boundary):** the live back-fill was driven by invoking the tool
+  function through a **throwaway `RTMClient`** (the connector server isn't yet on v1.25.0). The 60 note
+  writes are durable in RTM and additive/inert, but their transaction log lived in that ephemeral client
+  — so they are **NOT** reversible via the running server's `batch_undo`. Nothing is destructive; they
+  only need manual removal if ever unwanted. When the server is on v1.25.0, real board/finalise-fired
+  runs record transactions normally.
 
 ## Conventions
 
@@ -107,10 +119,12 @@ errors; no complex params; no strict-tag gate since no tag is written; server.py
 
 ## Open items / handback
 
-**Consumer / operator — to activate:** merge the stack, restart on v1.25.0, then run `gtd_stamp_tokens`
-(sweep or per project) over the 10 live recurring projects. Then confirm `gtd_project_plan` shows each
-child's `template_child_id` populated and its deps in token-space, and that `gtd_project_canvas`
-blocked/order stays correct across the next occurrence. **A dry-run** (`dry_run=True`) previews any run.
+**Consumer / operator — remaining:** merge the DC-4+MoSCoW stack, restart the MCP server on v1.25.0 (so
+the connector exposes `gtd_stamp_tokens` to the board/worker and the running server resolves tokens),
+optionally push the branch. The live back-fill over the 10 recurring projects is **already done** this
+session (see Verification) — the tokens are on live data and confirmed resolving; the real remaining
+end-to-end signal is watching a recurring project's blocked/order stay correct **across its next actual
+occurrence**. Any future run is idempotent (a no-op if nothing new to stamp); `dry_run=True` previews.
 
 **Still open (out of scope, unchanged):** per-occurrence overlay keying in agent-memory
 `plan_graph_store` — so two concurrently-open occurrences of the same recurring project (e.g. the two
