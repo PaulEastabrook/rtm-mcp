@@ -105,6 +105,25 @@ def build_graph(
     id_set = set(ids)
     by_id = {str(r.get("id")): r for r in rows}
 
+    # Repeating templated project (resolve-references): a durable child-identity token
+    # (tmpl-child/1, carried in a note that RTM copies verbatim onto each new occurrence) lets
+    # DEPENDS-ON deps and the ORDER pin, authored in token-space, resolve to the CURRENT
+    # occurrence's ids — because RTM re-keys each occurrence's children with fresh ids.
+    # token_map: {template_child_id -> current row id}. EMPTY for a one-off project, so every
+    # path below is byte-identical to the non-token behaviour (the one-off parity golden proves it).
+    token_map: dict[str, str] = {
+        str(r.get("template_child_id")): str(r.get("id"))
+        for r in rows
+        if r.get("template_child_id")
+    }
+
+    def _resolve_ref(ref: Any) -> str:
+        """A dep / pin reference is EITHER a current raw id OR a template-child token. Resolve a
+        token to the current occurrence's id; keep a current id as-is; a stale-id-without-token
+        stays itself and is dropped downstream by the id_set membership guard (the safe floor)."""
+        key = str(ref)
+        return key if key in id_set else token_map.get(key, key)
+
     nodes = []
     for r in rows:
         rid = str(r.get("id"))
@@ -133,10 +152,10 @@ def build_graph(
                 seen_edges.add(key)
                 edges.append({"src": producer, "dst": consumer, "via": via})
 
-    # 1. DEPENDS-ON notes: row.deps = upstream producers this row consumes
+    # 1. DEPENDS-ON notes: row.deps = upstream producers this row consumes (token-resolved)
     for r in rows:
         for up in r.get("deps") or []:
-            add_edge(up, r.get("id"), "depends-on")
+            add_edge(_resolve_ref(up), r.get("id"), "depends-on")
     # 2. output-consumption via source_action: if a row's notes reference an artefact owned by
     #    another row, that row consumes the owner's output → owner(producer) → row(consumer)
     if outputs_index:
@@ -202,7 +221,7 @@ def build_graph(
     cycle_edges = _weak_back_edges(cycles, edges)  # edges to ignore for layering only
 
     # ── timeline order: topological layering + tiered ready cohort, manual pin honoured ──
-    clean_manual = [i for i in (manual_order or []) if i in id_set]
+    clean_manual = [rid for rid in (_resolve_ref(i) for i in (manual_order or [])) if rid in id_set]
     order = _timeline_order(ids, by_id, upstreams, judgement, cycle_edges, clean_manual)
 
     fingerprint = _fingerprint(header, rows)

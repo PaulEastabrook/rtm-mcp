@@ -200,6 +200,48 @@ class TestBuildEnvelope:
         assert _row(env, "c1")["is_repeating"] is True
         assert _row(env, "c2")["is_repeating"] is False
 
+    def test_template_child_token_default_empty(self):
+        # Seed 3.1 resolve-references: a one-off plan carries template_child_id="" on every row
+        # and deps stay in raw-id space — byte-unchanged from the pre-token behaviour.
+        env = build_envelope(_sample_parsed(), PROJECT_ID)
+        c1 = _row(env, "c1")
+        assert c1["template_child_id"] == ""
+        assert c1["deps"] == ["1200224403"]
+
+    def test_tmpl_child_note_surfaces_token(self):
+        # A TMPL-CHILD note (tmpl-child/1) surfaces the row's own durable child-identity token.
+        parsed = [
+            _t(PROJECT_ID, parent=AREA_ID, tags=["project"]),
+            _t(
+                "c1",
+                parent=PROJECT_ID,
+                tags=["action"],
+                notes=[
+                    _note(
+                        "2026-07-05 — TMPL-CHILD — abc12345\n"
+                        '{"schema": "tmpl-child/1", "template_child_id": "abc12345"}'
+                    )
+                ],
+            ),
+        ]
+        env = build_envelope(parsed, PROJECT_ID)
+        assert _row(env, "c1")["template_child_id"] == "abc12345"
+
+    def test_depends_on_authored_in_token_space(self):
+        # A DEPENDS-ON note carrying a Template-child-id line surfaces the dep as the upstream
+        # TOKEN (survives recurrence); without the line it stays the raw task_id.
+        token_dep = _note(
+            "2026-07-05 — DEPENDS-ON — needs upstream\n"
+            'Upstream RTM IDs:\n  task_id: "1200224403"\n  list_id: "49657585"\n'
+            'Status: active\nTemplate-child-id: "c1"\n'
+        )
+        parsed = [
+            _t(PROJECT_ID, parent=AREA_ID, tags=["project"]),
+            _t("c2", parent=PROJECT_ID, tags=["action"], notes=[token_dep]),
+        ]
+        env = build_envelope(parsed, PROJECT_ID)
+        assert _row(env, "c2")["deps"] == ["c1"]  # token, not the raw task_id
+
     def test_none_coerced_to_empty_string(self):
         env = build_envelope(_sample_parsed(), PROJECT_ID)
         c3 = _row(env, "c3")

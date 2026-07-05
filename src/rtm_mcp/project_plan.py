@@ -46,6 +46,11 @@ REDACTED_TAG = "redacted"
 _PATHRE = re.compile(r"([A-Za-z0-9_.\-/ ]+\.(?:md|docx|xlsx|pptx|pdf|csv))")
 _DIGITS = re.compile(r"\d+")
 _FILES_PER_ROW = 8
+# Repeating-templated-project tokens (resolve-references, § 5b of the note-shape catalogue).
+# A DEPENDS-ON note may carry the upstream child's durable token so the dep resolves across
+# recurrence; a TMPL-CHILD note (tmpl-child/1) carries the row's own token.
+_TMPL_REF_RE = re.compile(r'Template-child-id:\s*"?([A-Za-z0-9_-]+)"?')
+_TMPL_CHILD_RE = re.compile(r'"template_child_id"\s*:\s*"([^"]+)"')
 
 
 def _norm_date(iso: str | None, timezone: str | None = None) -> str:
@@ -88,22 +93,41 @@ def _note_objs(notes: list[dict[str, Any]], timezone: str | None = None) -> list
     return out
 
 
-def _extract_deps_and_files(notes: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
-    """From full note bodies: active DEPENDS-ON upstream task_ids + filed-artefact paths."""
+def _extract_deps_and_files(
+    notes: list[dict[str, Any]],
+) -> tuple[list[str], list[str], str]:
+    """From full note bodies: active DEPENDS-ON upstreams + filed-artefact paths + the row's
+    own template-child token.
+
+    Returns `(deps, files, template_child_id)`. A dep is authored in **token-space** — the
+    upstream's `Template-child-id:` slug — when the DEPENDS-ON note carries one (a repeating
+    templated project, § 5b), else the raw upstream task_id (a one-off — byte-unchanged). The
+    third value is the row's own token, from its `tmpl-child/1` TMPL-CHILD note (`""` when
+    absent). Both feed the plan-graph `token_map` / `_resolve_ref`, which maps a token to the
+    current occurrence's id (an unresolved token/stale id is dropped by the id_set guard)."""
     deps: list[str] = []
     files: list[str] = []
+    template_child_id = ""
     seen: set[str] = set()
     for n in notes:
         body = extract_note_body(n) or ""
+        if not template_child_id and "tmpl-child/1" in body:
+            tm = _TMPL_CHILD_RE.search(body)
+            if tm:
+                template_child_id = tm.group(1)
         if "DEPENDS-ON" in body:
             si = body.find("Status:")
             status = body[si + 7 : si + 40] if si >= 0 else ""
             if "resolved" not in status and "obsolete" not in status:
-                ti = body.find("task_id:")
-                if ti >= 0:
-                    m = _DIGITS.search(body[ti + 8 : ti + 44])
-                    if m:
-                        deps.append(m.group(0))
+                ref = _TMPL_REF_RE.search(body)
+                if ref:
+                    deps.append(ref.group(1))  # token-space (survives recurrence)
+                else:
+                    ti = body.find("task_id:")
+                    if ti >= 0:
+                        m = _DIGITS.search(body[ti + 8 : ti + 44])
+                        if m:
+                            deps.append(m.group(0))
         for line in body.split("\n"):
             pm = _PATHRE.search(line)
             if not pm:
@@ -128,7 +152,7 @@ def _extract_deps_and_files(notes: list[dict[str, Any]]) -> tuple[list[str], lis
             ):
                 seen.add(base)
                 files.append(path)
-    return deps, files
+    return deps, files, template_child_id
 
 
 def _ancestor_chain(task_id: str, by_id: dict[str, dict[str, Any]]) -> list[str]:
@@ -274,7 +298,7 @@ def build_envelope(
     proj_notes_raw = proj.get("notes", []) if proj else []
     # Project-level support material: filed-artefact paths from the PROJECT's own notes
     # (not a child action's) — the analog of row files[]. deps are unused at project level.
-    _proj_deps, proj_files = _extract_deps_and_files(proj_notes_raw)
+    _proj_deps, proj_files, _proj_tok = _extract_deps_and_files(proj_notes_raw)
     header = {
         "type": "header",
         "schema": SCHEMA,
@@ -305,7 +329,7 @@ def build_envelope(
     rows = []
     for c in children:
         notes_full = c.get("notes", [])
-        deps, files = _extract_deps_and_files(notes_full)
+        deps, files, template_child_id = _extract_deps_and_files(notes_full)
         rows.append(
             {
                 "type": "row",
@@ -329,6 +353,10 @@ def build_envelope(
                 # that consumer's row contract exactly. Additive; a one-off row reads False/"".
                 "is_repeating": bool(c.get("is_repeating")),
                 "taskseries_id": c.get("taskseries_id") or "",
+                # Durable child-identity token (tmpl-child/1) for a repeating templated project —
+                # feeds the plan-graph `token_map` so token-space deps/pins resolve across
+                # recurrence. `""` for a one-off row (token_map empty → byte-unchanged).
+                "template_child_id": template_child_id,
             }
         )
 

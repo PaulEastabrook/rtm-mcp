@@ -1,0 +1,25 @@
+{
+  "_comment": "Cross-repo parity golden for the repeating-templated-project resolver (resolve-references). A recurring project's CURRENT occurrence: children re-keyed (ids 201/202/203) but carrying stable template-child tokens (c1/c2/c3); DEPENDS-ON authored in token-space (c1->c2->c3) must resolve to the current ids across the re-keying. Byte-identical copy lives in rtm-mcp tests/. Regenerate ONLY when both engines change in lockstep and update BOTH copies.",
+  "input": {
+    "header": { "project": { "id": "P1" } },
+    "rows": [
+      { "id": "201", "template_child_id": "c1", "name": "First", "deps": [], "tags": ["action"], "priority": "1", "completed": 0, "due": "", "start": "", "estimate": "", "notes": [], "files": [] },
+      { "id": "202", "template_child_id": "c2", "name": "Second", "deps": ["c1"], "tags": ["action"], "priority": "2", "completed": 0, "due": "", "start": "", "estimate": "", "notes": [], "files": [] },
+      { "id": "203", "template_child_id": "c3", "name": "Third", "deps": ["c2"], "tags": ["action"], "priority": "3", "completed": 0, "due": "", "start": "", "estimate": "", "notes": [], "files": [] }
+    ]
+  },
+  "expected": {
+    "edges": [
+      { "src": "201", "dst": "202", "via": "depends-on" },
+      { "src": "202", "dst": "203", "via": "depends-on" }
+    ],
+    "judgement": {
+      "201": { "blocked": false, "blockers": [], "quick": false, "quick_ready": false },
+      "202": { "blocked": true, "blockers": ["201"], "quick": false, "quick_ready": false },
+      "203": { "blocked": true, "blockers": ["202"], "quick": false, "quick_ready": false }
+    },
+    "order": ["201", "202", "203"],
+    "cycles": [],
+    "fingerprint": "938244b23cb6b228"
+  }
+}

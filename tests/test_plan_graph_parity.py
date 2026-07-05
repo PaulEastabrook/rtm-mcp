@@ -17,6 +17,8 @@ from rtm_mcp.plan_graph import build_graph
 HERE = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(HERE, "plan_graph_parity_golden.json")) as f:
     GOLDEN = json.load(f)
+with open(os.path.join(HERE, "plan_graph_parity_golden_series.json")) as f:
+    GOLDEN_SERIES = json.load(f)
 
 THIN_KEYS = ("edges", "judgement", "order", "cycles", "fingerprint")
 
@@ -29,4 +31,18 @@ def test_matches_cross_repo_golden():
         "rtm-mcp and gtd plan_graph engines must stay byte-compatible - fix the drift, "
         "or, if the change is intentional and applied to BOTH engines, regenerate the "
         "golden and update both repos' copies in lockstep."
+    )
+
+
+def test_matches_series_golden():
+    """Repeating-templated-project resolver parity: token-space DEPENDS-ON deps (c1->c2->c3)
+    resolve to the current occurrence's re-keyed ids (201/202/203). Byte-identical golden to
+    the gtd engine; regenerate ONLY in lockstep across both repos."""
+    g = build_graph(GOLDEN_SERIES["input"]["header"], GOLDEN_SERIES["input"]["rows"])
+    out = {k: g[k] for k in THIN_KEYS}
+    assert out == GOLDEN_SERIES["expected"], (
+        "rtm-mcp plan_graph output drifted from the cross-repo SERIES parity golden. The "
+        "rtm-mcp and gtd resolve-references engines must stay byte-compatible - fix the "
+        "drift, or, if intentional and applied to BOTH engines, regenerate the golden and "
+        "update both repos' copies in lockstep."
     )

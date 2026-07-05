@@ -191,3 +191,60 @@ class TestCyclesAndFingerprint:
         fp3 = build_graph(HEADER, [_row("a", name="Beta")])["fingerprint"]
         assert fp1 == fp2
         assert fp1 != fp3
+
+
+def _tok(rid, deps=None, token=None):
+    """A row carrying an optional template-child token (repeating templated project)."""
+    r = _row(rid, deps=deps or [])
+    if token is not None:
+        r["template_child_id"] = token
+    return r
+
+
+class TestTemplateChildTokenResolution:
+    """resolve-references: token-space deps/pins resolve to the current occurrence's re-keyed
+    ids via `template_child_id`; a one-off project (no tokens) is byte-unchanged. Mirrors the
+    gtd `test_plan_graph_series.py` cases."""
+
+    def _edges(self, g):
+        return {(e["src"], e["dst"]) for e in g["edges"]}
+
+    def test_token_dep_resolves_to_current_id(self):
+        rows = [_tok("201", token="c1"), _tok("202", deps=["c1"], token="c2")]
+        g = build_graph(HEADER, rows)
+        assert ("201", "202") in self._edges(g)
+        assert g["judgement"]["202"]["blocked"] is True
+        assert g["judgement"]["202"]["blockers"] == ["201"]
+
+    def test_stale_id_without_token_is_dropped(self):
+        # a raw upstream id from a PRIOR occurrence (not current, not a token) → dropped
+        rows = [_tok("201", token="c1"), _tok("202", deps=["999999"], token="c2")]
+        g = build_graph(HEADER, rows)
+        assert self._edges(g) == set()
+        assert g["judgement"]["202"]["blocked"] is False
+
+    def test_mixed_raw_current_id_and_token(self):
+        rows = [
+            _tok("201", token="c1"),
+            _tok("202", deps=["201"], token="c2"),  # raw current id
+            _tok("203", deps=["c2"], token="c3"),  # token
+        ]
+        g = build_graph(HEADER, rows)
+        assert self._edges(g) == {("201", "202"), ("202", "203")}
+
+    def test_token_pin_resolves(self):
+        rows = [_tok("201", token="c1"), _tok("202", token="c2")]
+        g = build_graph(HEADER, rows, manual_order=["c2", "c1"])  # pin in token-space
+        assert g["manual_order"] == ["202", "201"]
+
+    def test_stale_pin_entry_without_token_dropped(self):
+        rows = [_tok("201", token="c1")]
+        g = build_graph(HEADER, rows, manual_order=["c1", "999999"])
+        assert g["manual_order"] == ["201"]
+
+    def test_no_tokens_is_unchanged(self):
+        # token_map empty → raw-id deps + pin behave exactly as before
+        rows = [_row("1"), _row("2", deps=["1"]), _row("3", deps=["2"])]
+        g = build_graph(HEADER, rows, manual_order=["3", "1"])
+        assert self._edges(g) == {("1", "2"), ("2", "3")}
+        assert g["manual_order"] == ["3", "1"]
