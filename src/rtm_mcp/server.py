@@ -156,6 +156,13 @@ This server provides full access to Remember The Milk's task management features
   strict-tag mode). Validates up-front (strict-tag gate, item types/execute/deps) and writes
   nothing if rejected. Identify the destination area by frame.focus (name or area task id;
   ambiguous name → candidates).
+- gtd_stamp_tokens: Constrained write — stamp durable template-child tokens (tmpl-child/1) on a
+  repeating templated project's children so its dependencies survive recurrence. A bounded,
+  idempotent back-fill: for each unstamped open child it writes a TMPL-CHILD note, and re-authors
+  each active DEPENDS-ON note with the additive Template-child-id line (RTM copies the notes onto
+  each new occurrence, so one stamp propagates forward). Keyed by project_id (must be is_repeating),
+  or omit to sweep every active repeating project; dry_run previews without writing. One-off
+  projects are never stamped; a second run is a no-op. Writes no tag (no strict-tag interaction).
 - gtd_chat_post: Constrained write — post one turn of the in-board AI conversation surface
   (the CHAT note class) to a task and manage the worker's drain signal in one signed call. A
   "me" turn (Paul) stamps #ai_chat_requested + #ai_chat; an "ai" turn (the worker reply)

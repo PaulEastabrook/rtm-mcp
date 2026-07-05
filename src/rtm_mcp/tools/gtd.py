@@ -48,11 +48,12 @@ from ..gtd_chat import (
 from ..lookup import resolve_list_id
 from ..order_note import from_envelope as resolve_order_note
 from ..order_note import make as make_order_note
-from ..parsers import parse_tasks_response, priority_to_code
+from ..parsers import extract_note_body, parse_tasks_response, priority_to_code
 from ..plan_graph import build_graph
 from ..project_index import build_actions, build_foci, build_index
 from ..project_plan import (
     _PROJECT_TAG,
+    _TEST_TAG,
     REDACTED_TAG,
     build_envelope,
     resolve_focus,
@@ -60,6 +61,7 @@ from ..project_plan import (
 )
 from ..response_builder import build_response, get_transaction_info, record_and_build_response
 from ..strict_tags import enforce_strict_tags, normalize_tag
+from ..tmpl_child import make_tmpl_child_note, new_slug, plan_backfill
 from ..tool_params import JsonObjArray, JsonObject, JsonStrArray, coerce_json
 from ..urls import build_task_url
 
@@ -432,6 +434,16 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             "notes": notes or {},
         }
 
+        # Repeating templated project (Wave B token stamping): a child added to a project whose own
+        # taskseries recurs must carry a TMPL-CHILD token so its identity (and any dep authored
+        # against it) survives the re-keying each occurrence performs. Seed the used-slug set from
+        # the rows already carrying a token so a fresh slug is unique within the plan. A one-off
+        # project reads is_repeating False → no stamping → byte-unchanged.
+        is_repeating_project = bool(by_id[pid].get("is_repeating"))
+        used_slugs = {
+            r["template_child_id"] for r in envelope["rows"] if r.get("template_child_id")
+        }
+
         # ── Phase 1: validate (no writes) ─────────────────────────────────
         processed = await resolve_list_id(client, "Processed")
         processed_ok = "error" not in processed and not (processed.get("list") or {}).get("smart")
@@ -526,6 +538,24 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             if dt:
                 await _write("rtm.tasks.setDueDate", "add:due", new_id, due=dt, parse="1", **nid)
             await _write("rtm.tasks.setParentTask", "add:parent", new_id, parent_task_id=pid, **nid)
+            # Stamp a TMPL-CHILD token when the project recurs (Wave B). Fresh, unique-within-plan
+            # slug; RTM copies the note onto each new occurrence so the identity is durable.
+            if is_repeating_project:
+                slug = new_slug()
+                while slug in used_slugs:
+                    slug = new_slug()
+                used_slugs.add(slug)
+                tc_title, tc_text = make_tmpl_child_note(
+                    slug, local_stamp(await client.get_timezone())[:10]
+                )
+                await _write(
+                    "rtm.tasks.notes.add",
+                    "add:tmpl-child",
+                    new_id,
+                    note_title=tc_title,
+                    note_text=tc_text,
+                    **nid,
+                )
 
         # edits
         for rid, raw in ops["edits"].items():
@@ -999,6 +1029,197 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "message": (
                     f"Created project '{frame_d.get('name') or ''}' with {len(created)} item(s); "
                     f"{len(errors)} error(s)."
+                ),
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool()
+    async def gtd_stamp_tokens(
+        ctx: Context,
+        project_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """GTD — stamp durable template-child tokens on a repeating templated project's children so
+        its dependencies survive recurrence (repeating-templated-project Wave B). A bounded,
+        idempotent governed op: the gtd-side finalise engine can fire it per project, or Paul can
+        run it once over the whole portfolio to switch the resolver on for the live recurring
+        projects.
+
+        A repeating templated project re-keys every occurrence's children with fresh task_ids, so a
+        DEPENDS-ON dep or ORDER pin authored against a prior occurrence's raw id goes stale. The fix
+        (already resolved read-side, v1.24.0): each child carries a TMPL-CHILD note holding an
+        8-hex token (tmpl-child/1), and deps are authored in token-space. RTM copies a child's notes
+        verbatim onto each new occurrence, so a token stamped ONCE propagates forward automatically —
+        this is the one-time back-fill that writes the tokens the resolver then maps.
+
+        Constrained write. One rtm.tasks.getList (status:incomplete) + a session-cached settings
+        read for the token-note date; for each unstamped open child it writes a TMPL-CHILD note, and
+        re-authors each active DEPENDS-ON note with the additive `Template-child-id:` line (the raw
+        task_id stays as the fallback). Records each write's transaction (undoable via batch_undo).
+
+        IDEMPOTENT — a child already carrying a token is skipped (never re-slugged; RTM has already
+        propagated that identity), and a DEPENDS-ON already carrying the line is left alone, so a
+        second run is a no-op. ONE-OFF projects are never stamped (no is_repeating → skipped_reason
+        "not_repeating"). No tag is written (the TMPL-CHILD body is pure tmpl-child/1 JSON), so there
+        is no strict-tag interaction and no activation hazard.
+
+        Args:
+            project_id: the repeating project's task id. Omit to sweep EVERY active repeating
+                templated project in the portfolio (incomplete #project, not #test, is_repeating).
+            dry_run: compute and return the plan (what would be stamped) WITHOUT writing anything.
+
+        Returns: {"projects": [{project_id, project_name, is_repeating, stamped: [{child_id, slug}],
+            dep_lines: [{child_id, note_id, upstream_slug}], skipped_reason ("not_repeating"|null)}],
+            "dry_run", "applied": [...], "errors": [...], "message": "..."}.
+        Returns (on a bad explicit project_id): {"error": "..."}.
+        """
+        client: RTMClient = await get_client()
+        result = await client.call("rtm.tasks.getList", filter="status:incomplete")
+        parsed = parse_tasks_response(result)
+        by_id = {t["id"]: t for t in parsed}
+
+        if project_id is not None:
+            pid = str(project_id)
+            proj = by_id.get(pid)
+            if proj is None:
+                return build_response(
+                    data={
+                        "error": f"Project {pid} not found among active tasks. Pass the task id of "
+                        "an incomplete #project (from gtd_project_index)."
+                    }
+                )
+            targets = [proj]
+        else:
+            targets = [
+                t
+                for t in parsed
+                if _PROJECT_TAG in (t.get("tags") or [])
+                and _TEST_TAG not in (t.get("tags") or [])
+                and not t.get("completed")
+                and t.get("is_repeating")
+            ]
+
+        stamp_date = local_stamp(await client.get_timezone())[:10]
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+
+        async def _write(
+            method: str, label: str, _id: str | None = None, **kwargs: Any
+        ) -> dict[str, Any] | None:
+            try:
+                res = await client.call(method, require_timeline=True, **kwargs)
+                tx_id, undoable = get_transaction_info(res)
+                if tx_id:
+                    client.record_transaction(tx_id, method, undoable, label)
+                applied.append({"op": label, "id": _id, "transaction_id": tx_id})
+                return res
+            except Exception as exc:  # batch resilience: record the failure and continue
+                errors.append({"op": label, "id": _id, "error": str(exc)})
+                return None
+
+        projects_out: list[dict[str, Any]] = []
+        for proj in targets:
+            pid = proj["id"]
+            entry: dict[str, Any] = {
+                "project_id": pid,
+                "project_name": proj.get("name") or "",
+                "is_repeating": bool(proj.get("is_repeating")),
+                "stamped": [],
+                "dep_lines": [],
+                "skipped_reason": None,
+            }
+            if not proj.get("is_repeating"):
+                entry["skipped_reason"] = "not_repeating"  # one-off projects are never stamped
+                projects_out.append(entry)
+                continue
+
+            children = [
+                t
+                for t in parsed
+                if str(t.get("parent_task_id") or "") == pid
+                and not t.get("deleted")
+                and not t.get("completed")
+            ]
+            view = [
+                {
+                    "id": c["id"],
+                    "name": c.get("name") or "",
+                    "notes": [
+                        {"id": n.get("id"), "body": extract_note_body(n)}
+                        for n in (c.get("notes") or [])
+                    ],
+                }
+                for c in children
+            ]
+            plan = plan_backfill(view)
+            entry["stamped"] = [
+                {"child_id": cid, "slug": slug} for cid, slug in plan["assign"].items()
+            ]
+            entry["dep_lines"] = [
+                {
+                    "child_id": d["child_id"],
+                    "note_id": d["note_id"],
+                    "upstream_slug": d["upstream_slug"],
+                }
+                for d in plan["dep_edits"]
+            ]
+
+            if dry_run or (not plan["assign"] and not plan["dep_edits"]):
+                projects_out.append(entry)  # nothing to write (preview, or idempotent no-op)
+                continue
+
+            for cid, slug in plan["assign"].items():
+                t = by_id[cid]
+                tc_title, tc_text = make_tmpl_child_note(slug, stamp_date)
+                await _write(
+                    "rtm.tasks.notes.add",
+                    "tmpl-child-note",
+                    cid,
+                    note_title=tc_title,
+                    note_text=tc_text,
+                    task_id=t["id"],
+                    taskseries_id=t.get("taskseries_id"),
+                    list_id=t.get("list_id"),
+                )
+            for d in plan["dep_edits"]:
+                await _write(
+                    "rtm.tasks.notes.edit",
+                    "dep-token-line",
+                    d["child_id"],
+                    note_id=d["note_id"],
+                    note_title=d["note_title"],
+                    note_text=d["note_text"],
+                )
+            # Audit note on the project (the #ai_conversation marker rides the body, keeping the
+            # TMPL-CHILD note bodies pure tmpl-child/1 JSON). Only written when something changed.
+            audit = (
+                f"TMPL-STAMP (repeating-templated-project) — stamped:{len(plan['assign'])} "
+                f"dep-lines:{len(plan['dep_edits'])}. #ai_conversation"
+            )
+            await _write(
+                "rtm.tasks.notes.add",
+                "stamp-note",
+                pid,
+                note_title="TMPL-STAMP",
+                note_text=audit,
+                task_id=proj["id"],
+                taskseries_id=proj.get("taskseries_id"),
+                list_id=proj.get("list_id"),
+            )
+            projects_out.append(entry)
+
+        verb = "Would stamp" if dry_run else "Stamped"
+        return build_response(
+            data={
+                "projects": projects_out,
+                "dry_run": dry_run,
+                "applied": applied,
+                "errors": errors,
+                "message": (
+                    f"{verb} tokens across {len(projects_out)} project(s); "
+                    f"{len(applied)} write(s), {len(errors)} error(s)."
                 ),
             },
             timeline_id=client.timeline_id,

@@ -27,8 +27,19 @@ class FakeContext:
     pass
 
 
-def _ts(ts_id, task_id, name, parent="", priority="N", tags=None, completed="", due="", notes=None):
-    return {
+def _ts(
+    ts_id,
+    task_id,
+    name,
+    parent="",
+    priority="N",
+    tags=None,
+    completed="",
+    due="",
+    notes=None,
+    rrule="",
+):
+    ts = {
         "id": ts_id,
         "name": name,
         "created": "2026-01-01T00:00:00Z",
@@ -51,6 +62,9 @@ def _ts(ts_id, task_id, name, parent="", priority="N", tags=None, completed="", 
             "has_start_time": "0",
         },
     }
+    if rrule:
+        ts["rrule"] = {"$t": rrule, "every": "1"}
+    return ts
 
 
 def _getlist(taskseries_list, list_id=LIST_ID):
@@ -2368,3 +2382,219 @@ class TestGtdCreateProjectDuplicateIds:
         assert "duplicate_id" in {r.get("reason") for r in data["rejected"]}
         methods = {c.args[0] for c in client.call.call_args_list if c.args}
         assert not (methods & WRITE_METHODS)
+
+
+# ── repeating-templated-project token stamping (Wave B) ──────────────────────
+
+_DEP_BODY = (
+    "2026-06-15 — DEPENDS-ON — Task B needs Task A\n"
+    "Depends on: Task A\n"
+    "Upstream RTM IDs:\n"
+    '  task_id: "201"\n'
+    '  taskseries_id: "tsA"\n'
+    '  list_id: "49657585"\n'
+    "Status: active\n"
+    "Captured by: progression-fanout"
+)
+
+
+def _tmpl_body(slug):
+    return f'2026-07-05 — TMPL-CHILD — {slug}\n{{"schema": "tmpl-child/1", "template_child_id": "{slug}"}}'
+
+
+def _dep_note(body=_DEP_BODY):
+    return {"id": "nDep", "created": "2026-06-15T00:00:00Z", "title": "", "$t": body}
+
+
+def _tmpl_note(nid, slug):
+    return {"id": nid, "created": "2026-07-05T00:00:00Z", "title": "", "$t": _tmpl_body(slug)}
+
+
+def _repeating_tree(rrule="FREQ=WEEKLY", a_notes=None, b_notes=None, extra=None):
+    series = [
+        _ts("tsRP", "rp", "Weekly review", tags=["work", "project"], rrule=rrule),
+        _ts("tsA", "201", "Task A", parent="rp", tags=["action"], notes=a_notes),
+        _ts(
+            "tsB",
+            "202",
+            "Task B",
+            parent="rp",
+            tags=["action"],
+            notes=b_notes if b_notes is not None else [_dep_note()],
+        ),
+    ]
+    if extra:
+        series.extend(extra)
+    return _getlist(series)
+
+
+def _stamp_dispatch(tree):
+    async def _call(method, **kwargs):
+        if method == "rtm.tasks.getList":
+            return tree
+        if method == "rtm.tasks.notes.add":
+            return {"transaction": {"id": "txadd", "undoable": "1"}, "note": {"id": "n_new"}}
+        return {"transaction": {"id": f"tx_{method.rsplit('.', 1)[-1]}", "undoable": "1"}}
+
+    return _call
+
+
+class TestGtdStampTokens:
+    @pytest.mark.asyncio
+    async def test_backfill_stamps_and_authors_dep_lines(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree()))
+
+        result = await tools["gtd_stamp_tokens"](FakeContext(), project_id="rp")
+        data = result["data"]
+        entry = data["projects"][0]
+        assert entry["project_id"] == "rp"
+        assert entry["skipped_reason"] is None
+        stamped = {s["child_id"]: s["slug"] for s in entry["stamped"]}
+        assert set(stamped) == {"201", "202"}  # both open children stamped
+        # The dep line on 202 carries 201's freshly assigned slug (token-space).
+        assert len(entry["dep_lines"]) == 1
+        dl = entry["dep_lines"][0]
+        assert dl["child_id"] == "202"
+        assert dl["upstream_slug"] == stamped["201"]
+
+        calls = client.call.call_args_list
+        adds = [c for c in calls if c.args and c.args[0] == "rtm.tasks.notes.add"]
+        edits = [c for c in calls if c.args and c.args[0] == "rtm.tasks.notes.edit"]
+        # 2 TMPL-CHILD notes + 1 audit note; 1 DEPENDS-ON re-author.
+        assert len(adds) == 3
+        assert len(edits) == 1
+        assert any("TMPL-CHILD" in c.kwargs.get("note_title", "") for c in adds)
+        assert any(c.kwargs.get("note_title") == "TMPL-STAMP" for c in adds)
+        # The edited DEPENDS-ON note text carries the token line.
+        assert "Template-child-id:" in edits[0].kwargs["note_text"]
+
+    @pytest.mark.asyncio
+    async def test_idempotent_second_run_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _repeating_tree(
+            a_notes=[_tmpl_note("nA", "aaaaaaaa")],
+            b_notes=[
+                _tmpl_note("nB", "bbbbbbbb"),
+                _dep_note(_DEP_BODY + '\nTemplate-child-id: "aaaaaaaa"'),
+            ],
+        )
+        client.call = AsyncMock(side_effect=_stamp_dispatch(tree))
+
+        result = await tools["gtd_stamp_tokens"](FakeContext(), project_id="rp")
+        data = result["data"]
+        assert data["applied"] == []
+        entry = data["projects"][0]
+        assert entry["stamped"] == []
+        assert entry["dep_lines"] == []
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert "rtm.tasks.notes.add" not in methods
+        assert "rtm.tasks.notes.edit" not in methods
+
+    @pytest.mark.asyncio
+    async def test_not_repeating_project_skipped(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree(rrule="")))
+
+        result = await tools["gtd_stamp_tokens"](FakeContext(), project_id="rp")
+        entry = result["data"]["projects"][0]
+        assert entry["skipped_reason"] == "not_repeating"
+        assert entry["stamped"] == []
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert methods == {"rtm.tasks.getList"}  # nothing written
+
+    @pytest.mark.asyncio
+    async def test_dry_run_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree()))
+
+        result = await tools["gtd_stamp_tokens"](FakeContext(), project_id="rp", dry_run=True)
+        data = result["data"]
+        assert data["dry_run"] is True
+        assert data["applied"] == []
+        entry = data["projects"][0]
+        assert len(entry["stamped"]) == 2  # plan is computed
+        assert len(entry["dep_lines"]) == 1
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"]  # no writes
+
+    @pytest.mark.asyncio
+    async def test_project_id_not_found(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree()))
+
+        result = await tools["gtd_stamp_tokens"](FakeContext(), project_id="nope")
+        assert "error" in result["data"]
+
+    @pytest.mark.asyncio
+    async def test_sweep_selects_only_repeating_projects(self, gtd_tools):
+        tools, client = gtd_tools
+        # A second, one-off project (no rrule) must NOT be swept.
+        oneoff = [
+            _ts("tsO", "op", "One-off project", tags=["work", "project"]),
+            _ts("tsOc", "301", "Child", parent="op", tags=["action"]),
+        ]
+        client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree(extra=oneoff)))
+
+        result = await tools["gtd_stamp_tokens"](FakeContext())  # no project_id → sweep
+        ids = {p["project_id"] for p in result["data"]["projects"]}
+        assert ids == {"rp"}  # only the repeating project
+
+    @pytest.mark.asyncio
+    async def test_read_getlist_then_writes(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree()))
+
+        await tools["gtd_stamp_tokens"](FakeContext(), project_id="rp")
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods[0] == "rtm.tasks.getList"  # one read first
+        assert methods.count("rtm.tasks.getList") == 1
+
+
+def _commit_tree_repeating():
+    return _getlist(
+        [
+            _ts(
+                "tsP",
+                PROJECT_ID,
+                "Recurring Project",
+                parent=AREA_ID,
+                tags=["personal", "project"],
+                rrule="FREQ=WEEKLY",
+            ),
+            _ts("ts1", "c1", "Existing", parent=PROJECT_ID, tags=["action"]),
+        ]
+    )
+
+
+class TestGtdApplyCanvasCommitRepeatingAdds:
+    @pytest.mark.asyncio
+    async def test_add_to_repeating_project_stamps_tmpl_child(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree_repeating(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            adds=[{"type": "action", "text": "New child"}],
+        )
+        assert result["data"]["errors"] == []
+        adds = [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.notes.add"
+        ]
+        assert any("TMPL-CHILD" in c.kwargs.get("note_title", "") for c in adds)
+
+    @pytest.mark.asyncio
+    async def test_add_to_oneoff_project_stamps_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            adds=[{"type": "action", "text": "New child"}],
+        )
+        adds = [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.notes.add"
+        ]
+        assert not any("TMPL-CHILD" in c.kwargs.get("note_title", "") for c in adds)
