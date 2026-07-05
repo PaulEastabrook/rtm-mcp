@@ -88,7 +88,8 @@ class TestCollectCommitTags:
 class TestOverlayRefreshGate:
     def test_present_for_each_actionable_op(self):
         # Piece 0b: any non-empty commit will stamp #ai_overlay_refresh_needed, so the gate must
-        # include it for every actionable op kind — including completes-only / removes-only.
+        # include it for every actionable op kind — including completes-only / removes-only, and
+        # (since DC-4) order-only, which writes the ORDER note then stamps the mark.
         for ops in (
             {"adds": [{"type": "action", "text": "x"}]},
             {"edits": {"c1": {"priority": "1"}}},
@@ -96,6 +97,7 @@ class TestOverlayRefreshGate:
             {"notes": {"c1": {"type": "X", "text": "y"}}},
             {"completes": ["c1"]},
             {"removes": ["c1"]},
+            {"order": ["c1", "c2"]},
         ):
             assert OVERLAY_REFRESH in collect_commit_tags(ops), ops
 

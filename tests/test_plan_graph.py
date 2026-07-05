@@ -5,7 +5,9 @@ from rtm_mcp.plan_graph import build_graph
 HEADER = {"project": {"id": "P"}}
 
 
-def _row(rid, tags=None, deps=None, completed=0, due="", start="", estimate="", name=None):
+def _row(
+    rid, tags=None, deps=None, completed=0, due="", start="", estimate="", name=None, priority=""
+):
     return {
         "id": rid,
         "tags": tags or ["action"],
@@ -16,6 +18,7 @@ def _row(rid, tags=None, deps=None, completed=0, due="", start="", estimate="", 
         "estimate": estimate,
         "name": name or rid,
         "notes": [],
+        "priority": priority,
     }
 
 
@@ -73,6 +76,105 @@ class TestOrder:
         rows = [_row("done", completed=1), _row("open")]
         g = build_graph(HEADER, rows)
         assert g["order"][-1] == "done"
+
+
+class TestManualOrder:
+    """The manual-order pin (DC-4: derived from the latest valid ORDER note). Clamping-parity
+    cases mirror the gtd plugin's `test_plan_graph.py` TestManualOrder suite one-for-one."""
+
+    def test_pin_reorders_independent_siblings(self):
+        rows = [_row("A"), _row("B")]  # both ready, independent
+        assert build_graph(HEADER, rows)["order"] == ["A", "B"]  # input order by default
+        pinned = build_graph(HEADER, rows, manual_order=["B", "A"])["order"]
+        assert pinned == ["B", "A"]  # the drag pin is reproduced
+
+    def test_pin_cannot_violate_topology(self):
+        # consumer pinned ahead of its producer — the DAG must still win
+        rows = [_row("1"), _row("2", deps=["1"])]
+        g = build_graph(HEADER, rows, manual_order=["2", "1"])
+        assert g["order"].index("1") < g["order"].index("2")
+
+    def test_unpinned_items_fall_after_pinned_in_cohort(self):
+        rows = [_row("A"), _row("B"), _row("C")]  # three independent, ready
+        g = build_graph(HEADER, rows, manual_order=["C"])  # only C pinned
+        assert g["order"] == ["C", "A", "B"]  # C first, rest keep input order
+
+    def test_pin_returned_cleaned_to_current_ids(self):
+        rows = [_row("1"), _row("2")]
+        g = build_graph(HEADER, rows, manual_order=["2", "1", "999"])  # 999 no longer in plan
+        assert g["manual_order"] == ["2", "1"]  # stale id dropped, order preserved
+
+    def test_no_pin_is_unchanged_behaviour(self):
+        rows = [_row("A"), _row("B", deps=["A"]), _row("C")]
+        base = build_graph(HEADER, rows)["order"]
+        assert base == build_graph(HEADER, rows, manual_order=None)["order"]
+        assert base == build_graph(HEADER, rows, manual_order=[])["order"]
+
+    def test_pin_is_not_part_of_fingerprint(self):
+        rows = [_row("A"), _row("B")]
+        assert (
+            build_graph(HEADER, rows)["fingerprint"]
+            == build_graph(HEADER, rows, manual_order=["B", "A"])["fingerprint"]
+        )
+
+
+class TestBand:
+    """MoSCoW band joins the within-tier sort (2026-07-05): tier → band → due/start → input.
+    Mirrors the gtd plugin's `test_plan_graph.py` TestBand suite one-for-one."""
+
+    def test_must_sorts_above_could_within_tier(self):
+        rows = [_row("C", priority="Low"), _row("M", priority="High")]
+        g = build_graph(HEADER, rows)
+        assert g["order"] == ["M", "C"]  # Must above Could, input order overridden
+
+    def test_untriaged_sorts_after_could(self):
+        rows = [_row("U"), _row("C", priority="Low")]
+        g = build_graph(HEADER, rows)
+        assert g["order"] == ["C", "U"]  # `!-` is debt — visibly last
+
+    def test_full_band_sequence(self):
+        rows = [
+            _row("U"),
+            _row("C", priority="Low"),
+            _row("S", priority="Medium"),
+            _row("M", priority="High"),
+        ]
+        g = build_graph(HEADER, rows)
+        assert g["order"] == ["M", "S", "C", "U"]
+
+    def test_numeric_priority_surface_accepted(self):
+        # draft-board / canvas rows carry "1"/"2"/"3" rather than the RTM API words
+        rows = [_row("C", priority="3"), _row("M", priority="1")]
+        g = build_graph(HEADER, rows)
+        assert g["order"] == ["M", "C"]
+
+    def test_band_beats_date_within_tier(self):
+        rows = [_row("C", priority="Low", due="2026-07-01"), _row("M", priority="High")]
+        g = build_graph(HEADER, rows)
+        assert g["order"] == ["M", "C"]  # band before due/start
+
+    def test_tier_outranks_band(self):
+        # a quick-win Could still displays above a non-quick Must: readiness/leverage beat importance
+        rows = [_row("M", priority="High"), _row("C", tags=["action", "quick_win"], priority="Low")]
+        g = build_graph(HEADER, rows)
+        assert g["order"] == ["C", "M"]
+
+    def test_band_never_violates_topology(self):
+        # Must consumer of a Could producer: the DAG is absolute
+        rows = [_row("P", priority="Low"), _row("Q", deps=["P"], priority="High")]
+        g = build_graph(HEADER, rows)
+        assert g["order"].index("P") < g["order"].index("Q")
+
+    def test_pin_outranks_band(self):
+        rows = [_row("M", priority="High"), _row("C", priority="Low")]
+        g = build_graph(HEADER, rows, manual_order=["C", "M"])
+        assert g["order"] == ["C", "M"]  # Paul's pin wins over the band sort
+
+    def test_band_change_flips_fingerprint(self):
+        base = build_graph(HEADER, [_row("1", priority="Low")])["fingerprint"]
+        assert base != build_graph(HEADER, [_row("1", priority="High")])["fingerprint"]
+        assert base != build_graph(HEADER, [_row("1")])["fingerprint"]  # band → untriaged
+        assert base == build_graph(HEADER, [_row("1", priority="Low")])["fingerprint"]
 
 
 class TestCyclesAndFingerprint:

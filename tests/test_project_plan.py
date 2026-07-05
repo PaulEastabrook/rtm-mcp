@@ -128,6 +128,15 @@ class TestBuildEnvelope:
         assert notes[0]["summary"] == "2026-04-05 — INCEPTION — the project"
         assert notes[0]["date"] == "2026-06-15"
 
+    def test_note_objects_carry_note_id(self):
+        # DC-4: the ORDER-note resolver tie-breaks by RTM note id, so every envelope note
+        # object (header.project.notes AND row notes) carries `id` — additive to the
+        # project-plan-seed/3 reference shape.
+        env = build_envelope(_sample_parsed(), PROJECT_ID)
+        assert env["header"]["project"]["notes"][0]["id"] == "n"
+        row_notes = [n for r in env["rows"] for n in r["notes"]]
+        assert row_notes and all(n["id"] == "n" for n in row_notes)
+
     def test_project_level_files_from_project_notes(self):
         # Project-level support material: filed paths scraped from the PROJECT's own notes,
         # AI Memory/ prefix stripped — the analog of row files[] (additive to the envelope).

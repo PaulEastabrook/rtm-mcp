@@ -64,12 +64,17 @@ def _first_line(body: str | None, cap: int = 160) -> str:
 
 
 def _note_objs(notes: list[dict[str, Any]], timezone: str | None = None) -> list[dict[str, str]]:
-    """Map raw RTM notes → envelope note objects with full bodies + a one-line summary."""
+    """Map raw RTM notes → envelope note objects with full bodies + a one-line summary.
+
+    `id` (the RTM note id) is additive to the `project-plan-seed/3` reference shape
+    (`rtm_fetch.py` parity is an upstream follow-up, like `files`/`redacted`): the gtd-side
+    ORDER-note resolver tie-breaks by note id, so the envelope must carry it (DC-4)."""
     out = []
     for n in notes:
         body = extract_note_body(n)
         out.append(
             {
+                "id": str(n.get("id") or ""),
                 "date": _norm_date(n.get("created"), timezone),
                 "summary": _first_line(body),
                 "body": body,

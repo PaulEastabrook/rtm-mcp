@@ -281,7 +281,11 @@ you just created elsewhere is picked up without waiting for the cache to expire.
 - `gtd_project_canvas` - **Read-only.** The read-sibling of `gtd_project_plan`: returns the
   *canvas-ready* seed (`{mode, frame, seed}`) with the deterministic plan-graph overlay already
   applied — `quick` (from `#quick_win`), sibling `deps`, and a dependency-respecting timeline
-  order — so the canvas never re-implements GTD ordering/blocking. Each row also carries an
+  order — so the canvas never re-implements GTD ordering/blocking. The timeline order honours the
+  latest valid **ORDER note** on the project (the durable manual-order intent written by
+  `gtd_apply_canvas_commit`) as the manual-order bias — cosmetic tiering only, never topology: a
+  consumer never sorts before its producer, unlisted items fall to their cohort end, departed ids
+  are pruned, and an invalid note is ignored (fall back to the next-latest valid; none → no bias). Each row also carries an
   optional `prog` (`"now"` from `#ai_progress_requested` / `"later"` from `#ai_progress_deferred`)
   so the execute pill reflects committed state on reload, and `redacted` (bool, from the item's
   `#redacted` tag) so the board can lock the row; `frame.redacted` is the project's own state (set
@@ -326,13 +330,22 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   Counts are vault-free — the enriched overlay stays gtd-side. The response is an object (was a bare
   list pre-1.10.0) but backward-compatible for the existing navigator, which reads `data.projects`.
 - `gtd_apply_canvas_commit` - **Constrained write.** The single governed write surface for a
-  canvas commit (adds / edits / completes / removes / execute / notes). `execute` is a durable
-  now/later split: `now`/`quick` write `#ai_progress_requested`; `later` writes
+  canvas commit (order / adds / edits / completes / removes / execute / notes). `execute` is a
+  durable now/later split: `now`/`quick` write `#ai_progress_requested`; `later` writes
   `#ai_progress_deferred` (the two are mutually exclusive — switching state drops the stale
-  sibling). Validates the whole commit up-front and writes nothing if anything is rejected
+  sibling). A non-empty `order` (the board drag) is persisted as an **ORDER note** on the project
+  task (`order-note/1`: strict-JSON body with `count` + `sha256` self-checks, `source:
+  "board-commit"`) — RTM has no sibling-order field, so the note IS the durable record of order
+  intent; both membrane sides (this server's thin plan-graph and gtd's enriched overlay refresh)
+  derive the manual-order bias from the latest valid note. Append-only: superseded ORDER notes are
+  retained. The return carries `order_persisted: "order-note"` when the note landed (the board
+  gates its "order saved" chip on exactly this value; `false` when the commit carried no order).
+  Validates the whole commit up-front and writes nothing if anything is rejected
   (cross-project id, non-canonical tag via the strict-tag gate, smart-list target, unconfirmed
-  destructive op), then applies durable-first and records each transaction. On any successful
-  (non-empty) commit it also stamps `#ai_overlay_refresh_needed` on the project — the durable signal
+  destructive op), then applies durable-first and records each transaction (so `batch_undo`
+  reverts the ORDER note with the rest). On any successful (non-empty) commit it also stamps
+  `#ai_overlay_refresh_needed` on the project — written **after** the ORDER note, so a finalise
+  fired off the mark always sees the note — the durable signal
   the gtd-side finalise engine drains to recompute the persisted plan-graph overlay (so a pure
   edit/reorder/note commit refreshes the enriched tier too, not only `execute` commits). That tag
   must exist in the RTM account under strict-tag mode. Identify the project by `project_id`.
