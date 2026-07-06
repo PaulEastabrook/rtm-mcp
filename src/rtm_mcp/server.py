@@ -144,7 +144,12 @@ This server provides full access to Remember The Milk's task management features
   #ai_progress_deferred (switching state drops the stale sibling so an item never carries
   both). Validates the whole commit up-front (cross-project, strict-tag gate,
   Processed/non-smart list, destructive-confirm) and writes nothing if rejected; applies
-  durable-first. On any successful commit it also stamps #ai_overlay_refresh_needed on the
+  durable-first. An optional scope label ("instant"|"item"|"project"|"plan", default "plan")
+  places the one per-commit audit note: instant/item on the referenced item, project on the
+  project entity (distinctly titled), plan the project-level COMMIT note (an unknown value is
+  rejected). The project-entity verbs are permitted — project_id itself is an accepted target for
+  rename (edits.text), complete (completes) and delete (removes); the carve-out is project_id-only.
+  On any successful commit it also stamps #ai_overlay_refresh_needed on the
   project (the gtd-side finalise engine drains it to refresh the persisted plan-graph overlay);
   that tag must exist in the account under strict-tag mode. Identify the project by project_id.
 - gtd_create_project: Constrained write — the create-sibling of gtd_apply_canvas_commit:
@@ -202,8 +207,10 @@ This server provides full access to Remember The Milk's task management features
   add_task_tags / remove_task_tags primitives). Resolves the task's triple by task_id from one
   rtm.tasks.getList (incomplete + completed, so done items redact too); redacted=true → addTags
   #redacted (strict-tag gated — #redacted must exist in the account); redacted=false → removeTags
-  #redacted (never gated). Records the transaction (undoable). Pairs with the derived `redacted`
-  field on gtd_project_canvas / gtd_project_index. A viewing-layer curtain, not a server-side vault.
+  #redacted (never gated). Records the transaction (undoable) and writes a one-line REDACTION audit
+  note on the item (no #ai_conversation — a viewing change, not an AI write). Pairs with the derived
+  `redacted` field on gtd_project_canvas / gtd_project_index. A viewing-layer curtain, not a
+  server-side vault.
 
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,

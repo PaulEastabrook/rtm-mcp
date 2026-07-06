@@ -149,3 +149,22 @@ class TestValidateCommit:
         # no adds → the creation target is irrelevant, not rejected
         no_adds = _validate({"edits": {"c1": {"priority": "1"}}}, processed=False)
         assert "smart_list_target" not in _reasons(no_adds)
+
+    def test_project_entity_verbs_accept_project_id(self):
+        # project_id ("P") is a valid target for rename/complete/delete — the carve-out.
+        ops = {
+            "edits": {"P": {"text": "Renamed"}},
+            "completes": ["P"],
+            "removes": ["P"],
+        }
+        assert _reasons(_validate(ops, confirm=True)) == set()
+
+    def test_project_id_still_rejected_for_non_carve_ops(self):
+        # execute/notes/order stay child-only — the project is not a valid target there.
+        assert "cross_project" in _reasons(_validate({"execute": {"P": "now"}}))
+        assert "cross_project" in _reasons(_validate({"notes": {"P": {"type": "x", "text": "y"}}}))
+        assert "cross_project" in _reasons(_validate({"order": ["P"]}))
+
+    def test_carve_out_is_project_id_only(self):
+        # a non-child that is NOT the project is still rejected in the carved-out maps
+        assert "cross_project" in _reasons(_validate({"edits": {"intruder": {"text": "x"}}}))

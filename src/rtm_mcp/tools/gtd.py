@@ -18,6 +18,7 @@ from ..canvas_commit import (
     COMMS_TAGS,
     CONTEXT_TAGS,
     OVERLAY_REFRESH,
+    VALID_SCOPES,
     classifiers_to_tags,
     collect_commit_tags,
     execute_progress_tags,
@@ -59,7 +60,7 @@ from ..project_plan import (
     resolve_focus,
     resolve_project,
 )
-from ..response_builder import build_response, get_transaction_info, record_and_build_response
+from ..response_builder import build_response, get_transaction_info
 from ..strict_tags import enforce_strict_tags, normalize_tag
 from ..tmpl_child import make_tmpl_child_note, new_slug, plan_backfill
 from ..tool_params import JsonObjArray, JsonObject, JsonStrArray, coerce_json
@@ -345,6 +346,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         execute: JsonObject = None,
         notes: JsonObject = None,
         confirm_destructive: bool = False,
+        scope: str = "plan",
     ) -> dict[str, Any]:
         """GTD — the single governed write surface for a project-plan-canvas commit. The artifact
         stages edits locally and commits them in ONE call here; governance lives in this tool, not
@@ -355,9 +357,19 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         batch_undo). It does not execute AI work — `execute` only writes the durable RTM signal.
 
         Identify the project by project_id (required); every referenced item id must be a child of
-        it (cross-project ids are rejected).
+        it (cross-project ids are rejected). EXCEPTION — the project-entity verbs: project_id itself
+        is an accepted target for rename (edits[project_id].text), complete (completes) and delete
+        (removes); the carve-out is project_id-only (arbitrary non-children are still rejected).
+        Completing/deleting the project writes the durable RTM state only — it does NOT fire the
+        gtd-side finalise engine (that is a board-side scheduled task).
 
         Args:
+            scope: the commit's audit-note placement label — "instant" | "item" | "project" |
+                "plan" (default "plan"). It is a label ONLY: it does not change validation, the
+                strict-tag gate, durable-first apply, or batch_undo. "instant"/"item" place the one
+                audit note on the referenced item; "project" on the project entity; "plan" writes the
+                project-level COMMIT note (the pre-scope behaviour). An unknown value is rejected with
+                nothing written.
             order: dragged open-item order (ids membership-checked). Persisted as an ORDER note
                 on the project task (order-note/1: strict-JSON body with count + sha256
                 self-checks, source "board-commit") — RTM has no sibling-order field, so the note
@@ -379,8 +391,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             confirm_destructive: must be True for any completes/removes.
 
         Tag writes pass the strict-tag existence gate and use a closed canonical classifier→tag
-        mapping; created/edited items carry #ai_conversation; a COMMIT note is written to the
-        project as an audit trail. On any successful commit the project is also stamped with
+        mapping; created/edited items carry #ai_conversation; one audit note is written per successful
+        commit, placed per `scope` (item for instant/item, project for project, the project-level
+        COMMIT note for plan). On any successful commit the project is also stamped with
         #ai_overlay_refresh_needed (the gtd-side finalise engine drains it to recompute + persist the
         enriched plan-graph overlay); this tag must exist in the RTM account under strict-tag mode.
 
@@ -392,6 +405,22 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         Returns (on rejection — nothing written): {"applied": [], "rejected": [...], "message": ...}.
         """
         client: RTMClient = await get_client()
+
+        if scope not in VALID_SCOPES:
+            return build_response(
+                data={
+                    "applied": [],
+                    "rejected": [
+                        {
+                            "reason": "invalid_scope",
+                            "scope": scope,
+                            "detail": f"scope {scope!r} not in {sorted(VALID_SCOPES)}",
+                        }
+                    ],
+                    "order_persisted": False,
+                    "message": "Commit rejected; nothing was written.",
+                }
+            )
 
         # Belt-and-braces: a client may pass a complex op as a JSON string. The typed parameter
         # schemas + BeforeValidator already coerce this for pydantic-validated calls; this also
@@ -478,6 +507,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # ── Phase 2: apply (durable-first), recording transactions ────────
         applied: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        created_item_triples: list[dict[str, Any]] = []  # for instant/item audit-note placement
 
         async def _write(
             method: str, label: str, _id: str | None = None, **kwargs: Any
@@ -523,6 +553,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "taskseries_id": new.get("taskseries_id"),
                 "list_id": new.get("list_id"),
             }
+            created_item_triples.append(nid)
             tags = classifiers_to_tags(add.get("type"), add.get("classifiers"))
             await _write("rtm.tasks.setTags", "add:tags", new_id, tags=",".join(tags), **nid)
             pr = (add.get("classifiers") or {}).get("priority")
@@ -657,25 +688,54 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             if order_res is not None:
                 order_persisted = "order-note"
 
-        # COMMIT audit note on the project
+        # Audit note (one per successful commit), placed per scope. plan → project-level COMMIT note
+        # (the pre-scope behaviour); project → the project entity, distinctly titled so it never
+        # reads as a plan-wide COMMIT; instant/item → the referenced item (its own id, else a
+        # freshly-created add). The overlay-refresh mark below always stays on the project regardless
+        # of scope — it is a project-level signal for the finalise engine, not an audit trail.
         if applied:
             counts = (
                 f"adds:{len(ops['adds'])} edits:{len(ops['edits'])} "
                 f"execute:{len(ops['execute'])} notes:{len(ops['notes'])} "
                 f"completes:{len(ops['completes'])} removes:{len(ops['removes'])}"
             )
+            proj_triple = {
+                "task_id": proj.get("id"),
+                "taskseries_id": proj.get("taskseries_id"),
+                "list_id": proj.get("list_id"),
+            }
+            if scope in ("plan", "project"):
+                note_target = proj_triple
+            else:  # instant / item — the single referenced/created item, else the project as fallback
+                referenced = [
+                    rid
+                    for rid in (
+                        list(ops["edits"].keys())
+                        + ops["completes"]
+                        + ops["removes"]
+                        + list(ops["execute"].keys())
+                        + list(ops["notes"].keys())
+                        + ops["order"]
+                    )
+                    if rid != pid and rid in by_id
+                ]
+                if referenced:
+                    note_target = _ids(referenced[0])
+                elif created_item_triples:
+                    note_target = created_item_triples[0]
+                else:
+                    note_target = proj_triple
+            note_title = "COMMIT" if scope == "plan" else f"COMMIT ({scope})"
             body = (
-                f"COMMIT (project-plan-canvas) — {counts}; "
+                f"COMMIT (project-plan-canvas, {scope}) — {counts}; "
                 f"{len(applied)} write(s), {len(errors)} error(s). #ai_conversation"
             )
             await _write(
                 "rtm.tasks.notes.add",
                 "commit-note",
-                note_title="COMMIT",
+                note_title=note_title,
                 note_text=body,
-                task_id=proj.get("id"),
-                taskseries_id=proj.get("taskseries_id"),
-                list_id=proj.get("list_id"),
+                **note_target,
             )
             # Piece 0b: stamp the overlay-refresh mark on the project so the gtd-side
             # gtd-project-finalise engine recomputes + persists the enriched plan-graph overlay
@@ -1534,17 +1594,39 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             gate = await enforce_strict_tags(client, [REDACTED_TAG], tool="gtd_set_redaction")
             if gate:
                 return build_response(data=gate)  # nothing written
-            write_res = await client.call(
-                "rtm.tasks.addTags", require_timeline=True, tags=REDACTED_TAG, **ids
-            )
+            tag_method = "rtm.tasks.addTags"
         else:
-            write_res = await client.call(
-                "rtm.tasks.removeTags", require_timeline=True, tags=REDACTED_TAG, **ids
-            )
+            tag_method = "rtm.tasks.removeTags"
+        write_res = await client.call(tag_method, require_timeline=True, tags=REDACTED_TAG, **ids)
 
-        return record_and_build_response(
-            client,
-            write_res,
+        # Record the tag-write transaction first (chronological — before the audit note below).
+        tag_tx, tag_undoable = get_transaction_info(write_res)
+        if tag_tx:
+            client.record_transaction(tag_tx, tag_method, tag_undoable, "gtd_set_redaction")
+
+        # One-line audit note recording the toggle. It carries NO #ai_conversation marker — this is a
+        # user viewing-state change, not an AI write. Best-effort (a note failure never undoes the tag
+        # write) and records its own transaction, so batch_undo reverts it alongside the tag change.
+        audit = "REDACTION — curtain drawn" if redacted else "REDACTION — curtain lifted"
+        try:
+            note_res = await client.call(
+                "rtm.tasks.notes.add",
+                require_timeline=True,
+                note_title="REDACTION",
+                note_text=audit,
+                **ids,
+            )
+            note_tx, note_undoable = get_transaction_info(note_res)
+            if note_tx:
+                client.record_transaction(
+                    note_tx, "rtm.tasks.notes.add", note_undoable, "gtd_set_redaction:audit"
+                )
+        except Exception:  # audit note is best-effort; the tag write is the durable state
+            pass
+
+        return build_response(
             data={"task_id": ids["task_id"], "redacted": redacted},
-            tool_name="gtd_set_redaction",
+            transaction_id=tag_tx,
+            transaction_undoable=tag_undoable if tag_tx else None,
+            timeline_id=client.timeline_id if tag_tx else None,
         )

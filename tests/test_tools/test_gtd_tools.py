@@ -899,6 +899,165 @@ class TestGtdApplyCanvasCommit:
         assert not stamped
 
 
+class TestGtdCommitScope:
+    """Commit `scope` (audit-note placement axis) + the project-entity verb carve-out."""
+
+    def _commit_notes(self, client):
+        return [c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add"]
+
+    @pytest.mark.asyncio
+    async def test_default_scope_is_plan_commit_note_on_project(self, gtd_tools):
+        """No scope → the pre-scope behaviour: a bare-titled COMMIT note on the project."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, edits={"c1": {"priority": "1"}}
+        )
+        note = next(c for c in self._commit_notes(client) if c.kwargs.get("note_title") == "COMMIT")
+        assert note.kwargs["task_id"] == PROJECT_ID
+
+    @pytest.mark.asyncio
+    async def test_unknown_scope_rejected_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, edits={"c1": {"priority": "1"}}, scope="bogus"
+        )
+        assert result["data"]["applied"] == []
+        assert {r["reason"] for r in result["data"]["rejected"]} == {"invalid_scope"}
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)  # nothing written — not even the read
+
+    @pytest.mark.asyncio
+    async def test_item_scope_note_on_referenced_item(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, edits={"c1": {"priority": "1"}}, scope="item"
+        )
+        note = next(
+            c for c in self._commit_notes(client) if c.kwargs.get("note_title") == "COMMIT (item)"
+        )
+        assert note.kwargs["task_id"] == "c1"  # on the item, not the project
+        assert note.kwargs["taskseries_id"] == "ts1"
+
+    @pytest.mark.asyncio
+    async def test_instant_scope_note_on_referenced_item(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, execute={"c1": "now"}, scope="instant"
+        )
+        note = next(
+            c
+            for c in self._commit_notes(client)
+            if c.kwargs.get("note_title") == "COMMIT (instant)"
+        )
+        assert note.kwargs["task_id"] == "c1"
+
+    @pytest.mark.asyncio
+    async def test_project_scope_note_distinct_from_plan_commit(self, gtd_tools):
+        """project scope → an audit note on the project, distinctly titled so it never reads as a
+        plan-wide COMMIT event."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            edits={PROJECT_ID: {"text": "Renamed project"}},
+            scope="project",
+        )
+        titles = {c.kwargs.get("note_title") for c in self._commit_notes(client)}
+        assert "COMMIT (project)" in titles
+        assert "COMMIT" not in titles  # not the plan-scope title
+        note = next(
+            c
+            for c in self._commit_notes(client)
+            if c.kwargs.get("note_title") == "COMMIT (project)"
+        )
+        assert note.kwargs["task_id"] == PROJECT_ID
+
+    @pytest.mark.asyncio
+    async def test_project_rename_via_edits(self, gtd_tools):
+        """The project itself is an accepted edits target (rename) — carved out of the child gate."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            edits={PROJECT_ID: {"text": "Renamed project"}},
+            scope="project",
+        )
+        assert "rejected" not in result["data"]
+        setname = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.setName")
+        assert setname.kwargs["task_id"] == PROJECT_ID
+        assert setname.kwargs["name"] == "Renamed project"
+
+    @pytest.mark.asyncio
+    async def test_project_complete_requires_confirm(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        # without confirmation → destructive rejection, nothing written
+        rej = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, completes=[PROJECT_ID], scope="project"
+        )
+        assert {r["reason"] for r in rej["data"]["rejected"]} == {"destructive_unconfirmed"}
+        assert not ({c.args[0] for c in client.call.call_args_list if c.args} & WRITE_METHODS)
+
+        # with confirmation → the project is completed
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+        ok = await tools["gtd_apply_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            completes=[PROJECT_ID],
+            confirm_destructive=True,
+            scope="project",
+        )
+        assert "rejected" not in ok["data"]
+        comp = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.complete")
+        assert comp.kwargs["task_id"] == PROJECT_ID
+
+    @pytest.mark.asyncio
+    async def test_project_delete_soft(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        ok = await tools["gtd_apply_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            removes=[PROJECT_ID],
+            confirm_destructive=True,
+            scope="project",
+        )
+        assert "rejected" not in ok["data"]
+        rem = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.delete")
+        assert rem.kwargs["task_id"] == PROJECT_ID
+
+    @pytest.mark.asyncio
+    async def test_carve_out_is_project_id_only(self, gtd_tools):
+        """An arbitrary non-child id is still rejected — the carve-out is project_id-only."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            edits={"not-a-child": {"text": "x"}},
+            scope="item",
+        )
+        reasons = {r["reason"] for r in result["data"]["rejected"]}
+        assert "cross_project" in reasons
+        assert result["data"]["applied"] == []
+        assert not ({c.args[0] for c in client.call.call_args_list if c.args} & WRITE_METHODS)
+
+
 class TestGtdOrderNoteDC4:
     """DC-4: durable reorder via the ORDER note — the commit writes it, the thin plan-graph
     honours it (single source of truth: RTM; the manual-order pin is pure derivation)."""
@@ -1726,6 +1885,44 @@ class TestGtdSetRedaction:
         assert rem["data"] == {"task_id": AREA_ID, "redacted": False}
         remc = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.removeTags")
         assert remc.kwargs["task_id"] == AREA_ID and remc.kwargs["tags"] == "redacted"
+
+    @pytest.mark.asyncio
+    async def test_add_path_writes_audit_note(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree()))
+
+        await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=True)
+
+        note = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add")
+        assert note.kwargs["note_title"] == "REDACTION"
+        assert "drawn" in note.kwargs["note_text"]
+        assert note.kwargs["task_id"] == "c1"  # on the target item
+        assert (
+            "ai_conversation" not in note.kwargs["note_text"]
+        )  # a viewing change, not an AI write
+
+    @pytest.mark.asyncio
+    async def test_remove_path_writes_audit_note(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree(tags=["redacted"])))
+
+        await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=False)
+
+        note = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add")
+        assert note.kwargs["note_title"] == "REDACTION"
+        assert "lifted" in note.kwargs["note_text"]
+
+    @pytest.mark.asyncio
+    async def test_strict_tag_rejection_writes_no_audit_note(self, gtd_tools):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=True, vault_root=None)
+        client.get_account_tags = AsyncMock(return_value=set())  # #redacted not provisioned
+        client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree()))
+
+        await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=True)
+
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert "rtm.tasks.notes.add" not in methods  # nothing written, not even the audit note
 
 
 # ── gtd_chat_post / gtd_chat_thread ──────────────────────────────────────────

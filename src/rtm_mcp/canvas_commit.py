@@ -42,6 +42,11 @@ QUICK_WIN = "quick_win"
 
 VALID_TYPES = frozenset(TYPE_TAG)
 VALID_EXECUTE = frozenset({"now", "later", "quick"})
+# Commit scope (audit-note placement axis; see the commit-granularity designed change). `plan` is
+# the default and preserves the pre-scope behaviour exactly. `instant`/`item` place the audit note
+# on the referenced item; `project` on the project entity; `plan` keeps the project-level COMMIT
+# note. Scope is a LABEL only — it does not change validation, gating, apply order, or batch_undo.
+VALID_SCOPES = frozenset({"instant", "item", "project", "plan"})
 
 
 def execute_progress_tags(mode: str) -> tuple[str, str]:
@@ -138,12 +143,19 @@ def validate_commit(
     Rejection reasons: `cross_project` (a referenced id is not a child of project_id),
     `destructive_unconfirmed` (completes/removes without confirm_destructive),
     `unknown_add_type`, `invalid_execute`, `smart_list_target` (target 'Processed' missing/smart).
-    An empty list means the commit may proceed."""
+    An empty list means the commit may proceed.
+
+    Project-entity carve-out: the project is not a child of itself, but the board may target it for
+    the entity verbs — rename (`edits`), complete (`completes`), delete (`removes`). Those three maps
+    accept `project_id` in addition to its children; `execute`/`notes`/`order` stay child-only (a
+    project is not progressed, journalled per-item, or ordered among its siblings)."""
     rejections: list[dict[str, Any]] = []
     plan_ids = set(plan_ids)
 
-    def _check_ids(id_iter: Any, op_label: str) -> None:
+    def _check_ids(id_iter: Any, op_label: str, *, allow_project: bool = False) -> None:
         for rid in id_iter:
+            if allow_project and rid == project_id:
+                continue  # project-entity verb (rename/complete/delete) — permitted target
             if rid not in plan_ids:
                 rejections.append(
                     {
@@ -154,9 +166,9 @@ def validate_commit(
                     }
                 )
 
-    _check_ids((ops.get("edits") or {}).keys(), "edits")
-    _check_ids(ops.get("completes") or [], "completes")
-    _check_ids(ops.get("removes") or [], "removes")
+    _check_ids((ops.get("edits") or {}).keys(), "edits", allow_project=True)
+    _check_ids(ops.get("completes") or [], "completes", allow_project=True)
+    _check_ids(ops.get("removes") or [], "removes", allow_project=True)
     _check_ids((ops.get("execute") or {}).keys(), "execute")
     _check_ids((ops.get("notes") or {}).keys(), "notes")
     _check_ids(ops.get("order") or [], "order")

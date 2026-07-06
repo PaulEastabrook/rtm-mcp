@@ -342,8 +342,18 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   gates its "order saved" chip on exactly this value; `false` when the commit carried no order).
   Validates the whole commit up-front and writes nothing if anything is rejected
   (cross-project id, non-canonical tag via the strict-tag gate, smart-list target, unconfirmed
-  destructive op), then applies durable-first and records each transaction (so `batch_undo`
-  reverts the ORDER note with the rest). On any successful (non-empty) commit it also stamps
+  destructive op, unknown `scope`), then applies durable-first and records each transaction (so
+  `batch_undo` reverts the ORDER note with the rest). An optional `scope`
+  (`"instant" | "item" | "project" | "plan"`, default `"plan"`) is an **audit-note placement label
+  only** — it does not change validation, gating, apply order, or `batch_undo`: `instant`/`item`
+  place the one per-commit audit note on the referenced item, `project` on the project entity
+  (distinctly titled so it never reads as a plan-wide COMMIT), `plan` writes the project-level
+  COMMIT note (the pre-scope behaviour). The **project-entity verbs** are permitted — `project_id`
+  itself is an accepted target for rename (`edits[project_id].text`), complete (`completes`) and
+  delete (`removes`, RTM soft-delete); both destructive verbs need `confirm_destructive=true`, and
+  the carve-out is `project_id`-only (arbitrary non-children are still rejected). Completing/deleting
+  the project writes the durable RTM state only — it does **not** fire the gtd-side finalise engine.
+  On any successful (non-empty) commit it also stamps
   `#ai_overlay_refresh_needed` on the project — written **after** the ORDER note, so a finalise
   fired off the mark always sees the note — the durable signal
   the gtd-side finalise engine drains to recompute the persisted plan-graph overlay (so a pure
@@ -410,9 +420,11 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   `add_task_tags` / `remove_task_tags` primitives). Resolves the task's triple by `task_id` from one
   `rtm.tasks.getList` (spanning incomplete + completed, so done items can be redacted too), then
   `redacted=true` → `addTags #redacted` (strict-tag gated — `#redacted` must exist in the account),
-  `redacted=false` → `removeTags #redacted` (never gated). Records the transaction (undoable). Pairs
-  with the derived `redacted` field on `gtd_project_canvas` / `gtd_project_index`. Redaction is a
-  viewing-layer curtain (the plaintext still flows to the board), not a server-side vault.
+  `redacted=false` → `removeTags #redacted` (never gated). Records the transaction (undoable) and
+  writes a one-line `REDACTION` audit note on the item (carrying **no** `#ai_conversation` marker — a
+  viewing-state change, not an AI write). Pairs with the derived `redacted` field on
+  `gtd_project_canvas` / `gtd_project_index`. Redaction is a viewing-layer curtain (the plaintext
+  still flows to the board), not a server-side vault.
 
 #### Tool naming convention
 Bare verbs (`add_task`, `list_tasks`, `get_task_notes`) are **generic RTM primitives** —
