@@ -41,7 +41,19 @@ OVERLAY_REFRESH = "ai_overlay_refresh_needed"
 QUICK_WIN = "quick_win"
 
 VALID_TYPES = frozenset(TYPE_TAG)
+# Set-modes: the progression directives create AND commit both accept. `execute_progress_tags`
+# maps each of these to the tag it writes.
 VALID_EXECUTE = frozenset({"now", "later", "quick"})
+# The commit tool additionally accepts "off" — the instant-control clear that REMOVES the
+# progression directive (the inverse of now/later/quick), so the board's execute pill can return to
+# an off state. Create keeps the set-only VALID_EXECUTE: a brand-new item has no directive to clear,
+# and `execute_progress_tags` has no "off" branch (it would wrongly ADD a progress tag).
+VALID_EXECUTE_COMMIT = VALID_EXECUTE | frozenset({"off"})
+# The progression-directive tags an "off" clear removes — the precise inverse of what the
+# now/later/quick set-paths write (now/quick → AI_PROGRESS; later → AI_PROGRESS_DEFERRED; a blocked
+# item additionally carries AI_DEFERRED). Built from the same constants so it cannot drift from the
+# set-paths.
+EXECUTE_CLEAR_TAGS = (AI_PROGRESS, AI_PROGRESS_DEFERRED, AI_DEFERRED)
 # Commit scope (audit-note placement axis; see the commit-granularity designed change). `plan` is
 # the default and preserves the pre-scope behaviour exactly. `instant`/`item` place the audit note
 # on the referenced item; `project` on the project entity; `plan` keeps the project-level COMMIT
@@ -97,8 +109,9 @@ def collect_commit_tags(ops: dict[str, Any]) -> set[str]:
 
     Bounded by the closed mapping: add classifier tags; edit context/comms tags; the execute tags
     (`ai_progress_requested` + `ai_deferred_pending_unblock`, since `blocked` is decided at apply,
-    plus `ai_progress_deferred` when any execute value is `later`); and `ai_conversation` whenever
-    any task-touching op is present."""
+    plus `ai_progress_deferred` when any execute value is `later`) for the set-modes only — an `off`
+    execute only REMOVES tags (never gated); and `ai_conversation` whenever any task-touching op is
+    present."""
     tags: set[str] = set()
     for add in ops.get("adds") or []:
         tags.update(classifiers_to_tags(add.get("type"), add.get("classifiers")))
@@ -111,11 +124,15 @@ def collect_commit_tags(ops: dict[str, Any]) -> set[str]:
             tags.add(comms)
         tags.add(AI_CONVERSATION)
     execute = ops.get("execute") or {}
-    if execute:
+    # Only the set-modes (now/later/quick) write tags and enter the existence gate; "off" only
+    # REMOVES tags (never gated — removal reduces entropy), so an off-only commit requires none of
+    # these to exist.
+    set_modes = [v for v in execute.values() if v != "off"]
+    if set_modes:
         tags.update({AI_PROGRESS, AI_DEFERRED, AI_CONVERSATION})
         # `later` writes the new deferred sibling; gate it only when actually present so a
         # now/quick-only commit stays backward-compatible (doesn't require the new tag to exist).
-        if any(v == "later" for v in execute.values()):
+        if any(v == "later" for v in set_modes):
             tags.add(AI_PROGRESS_DEFERRED)
     if ops.get("notes"):
         tags.add(AI_CONVERSATION)
@@ -199,13 +216,13 @@ def validate_commit(
             )
 
     for rid, val in (ops.get("execute") or {}).items():
-        if val not in VALID_EXECUTE:
+        if val not in VALID_EXECUTE_COMMIT:
             rejections.append(
                 {
                     "reason": "invalid_execute",
                     "id": rid,
                     "value": val,
-                    "detail": f"execute {val!r} not in {sorted(VALID_EXECUTE)}",
+                    "detail": f"execute {val!r} not in {sorted(VALID_EXECUTE_COMMIT)}",
                 }
             )
 

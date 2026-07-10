@@ -84,6 +84,18 @@ class TestCollectCommitTags:
     def test_empty_ops_no_tags(self):
         assert collect_commit_tags({}) == set()
 
+    def test_off_only_execute_gates_no_progress_tags(self):
+        # "off" only REMOVES tags (never gated), so an off-only commit must not require any of the
+        # progression tags to exist — only the unconditional overlay-refresh mark (actionable op).
+        tags = collect_commit_tags({"execute": {"y": "off"}})
+        assert {AI_PROGRESS, AI_PROGRESS_DEFERRED, AI_DEFERRED, AI_CONVERSATION}.isdisjoint(tags)
+        assert OVERLAY_REFRESH in tags
+
+    def test_mixed_off_and_set_still_gates_set_tags(self):
+        # a commit mixing off + now still gates the set-mode's tags
+        tags = collect_commit_tags({"execute": {"a": "off", "b": "now"}})
+        assert {AI_PROGRESS, AI_DEFERRED, AI_CONVERSATION} <= tags
+
 
 class TestOverlayRefreshGate:
     def test_present_for_each_actionable_op(self):
@@ -142,6 +154,14 @@ class TestValidateCommit:
     def test_invalid_execute_value_rejected(self):
         ops = {"execute": {"c1": "soon"}}
         assert "invalid_execute" in _reasons(_validate(ops))
+
+    def test_off_execute_value_accepted(self):
+        # "off" is a valid commit-side execute value (the instant-control clear)
+        assert "invalid_execute" not in _reasons(_validate({"execute": {"c1": "off"}}))
+
+    def test_off_execute_stays_child_only(self):
+        # execute (incl. "off") is not project-entity carved out — off on the project is rejected
+        assert "cross_project" in _reasons(_validate({"execute": {"P": "off"}}))
 
     def test_smart_list_target_rejected_only_with_adds(self):
         with_adds = _validate({"adds": [{"type": "action", "text": "x"}]}, processed=False)

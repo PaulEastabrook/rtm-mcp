@@ -822,6 +822,61 @@ class TestGtdApplyCanvasCommit:
         assert removetags.kwargs["tags"] == "ai_progress_requested"
 
     @pytest.mark.asyncio
+    async def test_execute_off_clears_progression_directive(self, gtd_tools):
+        """ "off" removes the progression-directive tags present on the item (the inverse of the
+        set-paths) via a single removeTags, and writes no addTags."""
+        tools, client = gtd_tools
+        tree = _commit_tree_c1_tags(
+            ["action", "ai_progress_requested", "ai_deferred_pending_unblock"]
+        )
+        client.call = AsyncMock(side_effect=_commit_dispatch(tree, _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, execute={"c1": "off"}
+        )
+        removetags = next(
+            c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.removeTags"
+        )
+        cleared = set(removetags.kwargs["tags"].split(","))
+        assert cleared == {"ai_progress_requested", "ai_deferred_pending_unblock"}
+        # off never ADDS a progression tag (the only addTags is the project overlay-refresh mark)
+        addtags = [c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags"]
+        assert all("ai_progress" not in c.kwargs["tags"] for c in addtags)
+
+    @pytest.mark.asyncio
+    async def test_execute_off_idempotent_no_directive(self, gtd_tools):
+        """ "off" on an item carrying no progression directive is a clean no-op — no removeTags."""
+        tools, client = gtd_tools
+        # c1 carries only its workflow tag — no progression directive present
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, execute={"c1": "off"}
+        )
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert "rtm.tasks.removeTags" not in methods
+        assert "rtm.tasks.addTags" not in methods
+
+    @pytest.mark.asyncio
+    async def test_execute_now_then_off_leaves_no_directive(self, gtd_tools):
+        """Inverse round-trip: set now, then off → the item carries no progression directive."""
+        tools, client = gtd_tools
+        # after a `now` commit the item carries #ai_progress_requested; a follow-up `off` clears it
+        tree = _commit_tree_c1_tags(["action", "ai_progress_requested"])
+        client.call = AsyncMock(side_effect=_commit_dispatch(tree, _lists()))
+
+        await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, execute={"c1": "off"}
+        )
+        removetags = next(
+            c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.removeTags"
+        )
+        assert removetags.kwargs["tags"] == "ai_progress_requested"
+        # the only addTags is the project overlay-refresh mark, never a progression tag
+        addtags = [c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags"]
+        assert all("ai_progress" not in c.kwargs["tags"] for c in addtags)
+
+    @pytest.mark.asyncio
     async def test_later_rejected_when_deferred_tag_missing(self, gtd_tools):
         """Dependency: until #ai_progress_deferred is provisioned in RTM, a `later` commit fails
         the strict-tag existence gate with a clear, recoverable error — no silent drop, no write."""

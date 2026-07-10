@@ -17,6 +17,7 @@ from ..canvas_commit import (
     AI_DEFERRED,
     COMMS_TAGS,
     CONTEXT_TAGS,
+    EXECUTE_CLEAR_TAGS,
     OVERLAY_REFRESH,
     VALID_SCOPES,
     classifiers_to_tags,
@@ -384,11 +385,15 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 to the project.
             completes / removes: lists of ids — DESTRUCTIVE, require confirm_destructive=True
                 (removes are RTM soft-deletes).
-            execute: {id: "now"|"later"|"quick"} — durable progression signal. "now"/"quick"
+            execute: {id: "now"|"later"|"quick"|"off"} — durable progression signal. "now"/"quick"
                 write #ai_progress_requested (drained immediately by the on-commit fire); "later"
                 writes #ai_progress_deferred (durable, NOT actioned by the fire). The two are
                 mutually exclusive — switching an item's state drops the stale sibling so it never
                 carries both. #ai_deferred_pending_unblock is still added when the item is blocked.
+                "off" is the inverse — it REMOVES the progression directive (any of
+                #ai_progress_requested / #ai_progress_deferred / #ai_deferred_pending_unblock),
+                returning the item to no directive; idempotent (a clean no-op when none present)
+                and fires no engine. execute is child-only (no project_id).
             notes: {id: {type, text}} — a journaling note per item.
             confirm_destructive: must be True for any completes/removes.
 
@@ -624,8 +629,23 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # execute → durable progression signal (no AI work here). now/quick request immediate
         # progress (#ai_progress_requested); later is the durable deferred sibling
         # (#ai_progress_deferred). The two are mutually exclusive, so a stale sibling left by a
-        # prior commit (e.g. later→now) is removed — an item never carries both.
+        # prior commit (e.g. later→now) is removed — an item never carries both. "off" is the
+        # instant-control clear: it REMOVES the progression directive (the inverse of the set-paths)
+        # and fires no engine. Idempotent — nothing present → no write; removal is never strict-gated.
         for rid, mode in ops["execute"].items():
+            if mode == "off":
+                present = [
+                    t for t in EXECUTE_CLEAR_TAGS if t in (by_id.get(rid, {}).get("tags") or [])
+                ]
+                if present:
+                    await _write(
+                        "rtm.tasks.removeTags",
+                        "execute:off",
+                        rid,
+                        tags=",".join(present),
+                        **_ids(rid),
+                    )
+                continue
             progress_tag, stale_sibling = execute_progress_tags(mode)
             tags = [progress_tag, AI_CONVERSATION]
             if blocked_by_id.get(rid):

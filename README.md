@@ -333,7 +333,9 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   canvas commit (order / adds / edits / completes / removes / execute / notes). `execute` is a
   durable now/later split: `now`/`quick` write `#ai_progress_requested`; `later` writes
   `#ai_progress_deferred` (the two are mutually exclusive — switching state drops the stale
-  sibling). A non-empty `order` (the board drag) is persisted as an **ORDER note** on the project
+  sibling); `off` clears the directive (removes any of `#ai_progress_requested` /
+  `#ai_progress_deferred` / `#ai_deferred_pending_unblock`; idempotent, fires no engine — the
+  instant-control off state). A non-empty `order` (the board drag) is persisted as an **ORDER note** on the project
   task (`order-note/1`: strict-JSON body with `count` + `sha256` self-checks, `source:
   "board-commit"`) — RTM has no sibling-order field, so the note IS the durable record of order
   intent; both membrane sides (this server's thin plan-graph and gtd's enriched overlay refresh)

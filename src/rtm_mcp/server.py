@@ -142,7 +142,9 @@ This server provides full access to Remember The Milk's task management features
   project-plan-canvas commit (adds/edits/completes/removes/execute/notes). execute is a
   durable now/later split: now/quick → #ai_progress_requested; later →
   #ai_progress_deferred (switching state drops the stale sibling so an item never carries
-  both). Validates the whole commit up-front (cross-project, strict-tag gate,
+  both); "off" clears the directive (removes any of #ai_progress_requested /
+  #ai_progress_deferred / #ai_deferred_pending_unblock; idempotent, fires no engine).
+  Validates the whole commit up-front (cross-project, strict-tag gate,
   Processed/non-smart list, destructive-confirm) and writes nothing if rejected; applies
   durable-first. An optional scope label ("instant"|"item"|"project"|"plan", default "plan")
   places the one per-commit audit note: instant/item on the referenced item, project on the
