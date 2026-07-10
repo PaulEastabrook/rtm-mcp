@@ -1057,6 +1057,43 @@ class TestGtdCommitScope:
         assert result["data"]["applied"] == []
         assert not ({c.args[0] for c in client.call.call_args_list if c.args} & WRITE_METHODS)
 
+    @pytest.mark.asyncio
+    async def test_project_note_via_notes_lands_on_project(self, gtd_tools):
+        """v1.27.0: notes[project_id] is carved out — a content note on the project task, in
+        addition to the scope:project COMMIT (project) audit note (two notes on the project)."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            notes={PROJECT_ID: {"type": "JOURNAL", "text": "Kicked off"}},
+            scope="project",
+        )
+        assert "rejected" not in result["data"]
+        proj_notes = [
+            c
+            for c in client.call.call_args_list
+            if c.args[0] == "rtm.tasks.notes.add" and c.kwargs.get("task_id") == PROJECT_ID
+        ]
+        titles = {c.kwargs.get("note_title") for c in proj_notes}
+        assert "JOURNAL" in titles  # the user's content note
+        assert "COMMIT (project)" in titles  # the per-scope audit note — both land on the project
+        content = next(c for c in proj_notes if c.kwargs.get("note_title") == "JOURNAL")
+        assert content.kwargs["note_text"] == "Kicked off"
+
+    @pytest.mark.asyncio
+    async def test_execute_on_project_id_still_rejected(self, gtd_tools):
+        """execute stays child-only — project_id is not a valid execute target."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_apply_canvas_commit"](
+            FakeContext(), project_id=PROJECT_ID, execute={PROJECT_ID: "now"}
+        )
+        assert "cross_project" in {r["reason"] for r in result["data"]["rejected"]}
+        assert not ({c.args[0] for c in client.call.call_args_list if c.args} & WRITE_METHODS)
+
 
 class TestGtdOrderNoteDC4:
     """DC-4: durable reorder via the ORDER note — the commit writes it, the thin plan-graph

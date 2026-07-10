@@ -146,9 +146,10 @@ def validate_commit(
     An empty list means the commit may proceed.
 
     Project-entity carve-out: the project is not a child of itself, but the board may target it for
-    the entity verbs — rename (`edits`), complete (`completes`), delete (`removes`). Those three maps
-    accept `project_id` in addition to its children; `execute`/`notes`/`order` stay child-only (a
-    project is not progressed, journalled per-item, or ordered among its siblings)."""
+    the entity verbs — rename (`edits`), add-project-note (`notes`), complete (`completes`), delete
+    (`removes`). Those four maps accept `project_id` in addition to its children; `execute`/`order`
+    stay child-only (a project is not progressed, nor ordered among its siblings). A note ON the
+    project is a legitimate project-level journal entry, so `notes[project_id]` is permitted."""
     rejections: list[dict[str, Any]] = []
     plan_ids = set(plan_ids)
 
@@ -169,8 +170,8 @@ def validate_commit(
     _check_ids((ops.get("edits") or {}).keys(), "edits", allow_project=True)
     _check_ids(ops.get("completes") or [], "completes", allow_project=True)
     _check_ids(ops.get("removes") or [], "removes", allow_project=True)
+    _check_ids((ops.get("notes") or {}).keys(), "notes", allow_project=True)
     _check_ids((ops.get("execute") or {}).keys(), "execute")
-    _check_ids((ops.get("notes") or {}).keys(), "notes")
     _check_ids(ops.get("order") or [], "order")
 
     completes = ops.get("completes") or []

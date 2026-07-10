@@ -148,8 +148,9 @@ This server provides full access to Remember The Milk's task management features
   places the one per-commit audit note: instant/item on the referenced item, project on the
   project entity (distinctly titled), plan the project-level COMMIT note (an unknown value is
   rejected). The project-entity verbs are permitted — project_id itself is an accepted target for
-  rename (edits.text), complete (completes) and delete (removes); the carve-out is project_id-only.
-  On any successful commit it also stamps #ai_overlay_refresh_needed on the
+  rename (edits.text), add-project-note (notes[project_id]), complete (completes) and delete
+  (removes); the carve-out is project_id-only, covering edits/notes/completes/removes
+  (execute/order stay child-only). On any successful commit it also stamps #ai_overlay_refresh_needed on the
   project (the gtd-side finalise engine drains it to refresh the persisted plan-graph overlay);
   that tag must exist in the account under strict-tag mode. Identify the project by project_id.
 - gtd_create_project: Constrained write — the create-sibling of gtd_apply_canvas_commit:

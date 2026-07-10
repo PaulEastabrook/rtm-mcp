@@ -358,10 +358,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         Identify the project by project_id (required); every referenced item id must be a child of
         it (cross-project ids are rejected). EXCEPTION — the project-entity verbs: project_id itself
-        is an accepted target for rename (edits[project_id].text), complete (completes) and delete
-        (removes); the carve-out is project_id-only (arbitrary non-children are still rejected).
-        Completing/deleting the project writes the durable RTM state only — it does NOT fire the
-        gtd-side finalise engine (that is a board-side scheduled task).
+        is an accepted target for rename (edits[project_id].text), add-project-note
+        (notes[project_id]), complete (completes) and delete (removes); the carve-out is
+        project_id-only (arbitrary non-children are still rejected) and covers edits/notes/completes/
+        removes only (execute/order stay child-only). Completing/deleting the project writes the
+        durable RTM state only — it does NOT fire the gtd-side finalise engine (that is a board-side
+        scheduled task).
 
         Args:
             scope: the commit's audit-note placement label — "instant" | "item" | "project" |

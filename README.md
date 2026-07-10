@@ -349,9 +349,11 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   place the one per-commit audit note on the referenced item, `project` on the project entity
   (distinctly titled so it never reads as a plan-wide COMMIT), `plan` writes the project-level
   COMMIT note (the pre-scope behaviour). The **project-entity verbs** are permitted — `project_id`
-  itself is an accepted target for rename (`edits[project_id].text`), complete (`completes`) and
-  delete (`removes`, RTM soft-delete); both destructive verbs need `confirm_destructive=true`, and
-  the carve-out is `project_id`-only (arbitrary non-children are still rejected). Completing/deleting
+  itself is an accepted target for rename (`edits[project_id].text`), add-project-note
+  (`notes[project_id]`), complete (`completes`) and delete (`removes`, RTM soft-delete); both
+  destructive verbs need `confirm_destructive=true`, and the carve-out is `project_id`-only
+  (arbitrary non-children are still rejected) covering `edits`/`notes`/`completes`/`removes` only
+  (`execute`/`order` stay child-only). Completing/deleting
   the project writes the durable RTM state only — it does **not** fire the gtd-side finalise engine.
   On any successful (non-empty) commit it also stamps
   `#ai_overlay_refresh_needed` on the project — written **after** the ORDER note, so a finalise
