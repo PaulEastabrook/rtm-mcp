@@ -134,10 +134,15 @@ This server provides full access to Remember The Milk's task management features
   (same gate) as {focus_id, focus, life, redacted (the area's #redacted state — collapses a whole
   focus to one "Redacted Area of Focus" row)}, including foci with no active projects. actions: every
   incomplete child under an active project (not #test) as {action_id, name, project_id, project,
-  focus, life, type, due, priority, blocked, redacted} for cockpit search/jump-to and the What's-hot
-  band (type action|waiting_for|calendar per the canvas r.k, due localised or "", priority
-  "1"|"2"|"3"|"", blocked per the thin plan-graph, redacted per the item's #redacted tag). Project
-  rows likewise carry redacted. Backward-compatible for the navigator (reads data.projects).
+  focus, life, type, due, priority, blocked, estimate, contexts, energy, exec, redacted} for cockpit
+  search/jump-to, the What's-hot band, and the engage lens (type action|waiting_for|calendar per the
+  canvas r.k, due localised or "", priority "1"|"2"|"3"|"", blocked per the thin plan-graph; the
+  engage funnel fields estimate (minutes or null), contexts (action-context tags, may be []), energy
+  (high|low|null), exec (quick|now|later|null — the execute classification behind the project ai_*
+  tallies)). redacted on an action is server-derived and CASCADES (own #redacted OR a redacted
+  project / focus); a shielded action carries no engage data (estimate/energy/exec null, contexts []).
+  Project rows carry redacted from their own tag. Backward-compatible for the navigator (reads
+  data.projects; the new action fields are additive).
 - gtd_apply_canvas_commit: Constrained write — the single governed write surface for a
   project-plan-canvas commit (adds/edits/completes/removes/execute/notes). execute is a
   durable now/later split: now/quick → #ai_progress_requested; later →
