@@ -320,12 +320,21 @@ you just created elsewhere is picked up without waiting for the cache to expire.
     row (set it via `gtd_set_redaction` with the focus id).
   - `actions`: every incomplete child under an active project (actions, waiting-fors and calendar
     entries — all jumpable; not `#test`) as `{action_id, name, project_id, project, focus, life,
-    type, due, priority, blocked}` for fast cockpit search / jump-to **and the "What's hot" band** —
-    `type` (`"action"|"waiting_for"|"calendar"`, the same `gtd_project_canvas` `r.k` classification,
-    so a cross-project result gets the right glyph), `due` (own due/chase/calendar date, localised,
-    `""` if none), `priority` (`"1"|"2"|"3"|""`), `blocked` (open `DEPENDS-ON` upstream, same
-    thin-graph judgement as `blocked_count`) and `redacted` (the action's `#redacted` state); sorted
-    `life` → `focus` → `project` → `name`. Project rows likewise carry `redacted`.
+    type, due, priority, blocked, estimate, contexts, energy, exec, redacted}` for fast cockpit
+    search / jump-to, the **"What's hot" band**, and the **engage lens** — `type`
+    (`"action"|"waiting_for"|"calendar"`, the same `gtd_project_canvas` `r.k` classification, so a
+    cross-project result gets the right glyph), `due` (own due/chase/calendar date, localised, `""` if
+    none), `priority` (`"1"|"2"|"3"|""`), `blocked` (open `DEPENDS-ON` upstream, same thin-graph
+    judgement as `blocked_count`), plus the engage-funnel fields `estimate` (RTM time estimate in
+    whole minutes, or `null`), `contexts` (the action-context tags present, verbatim, may be `[]`),
+    `energy` (`"high"|"low"|null` from the `#high_energy`/`#low_energy` pair — both present is a data
+    error → `null`), and `exec` (`"quick"|"now"|"later"|null` — a single-value read of the *same*
+    classifier behind the project `ai_*` tallies, so the engage lens's quick-win segment and the
+    board's execute pill agree). `redacted` on an action is **server-derived and cascades** — the
+    action's own `#redacted` OR a redacted project / focus — and a shielded action carries **no**
+    engage data (`estimate`/`energy`/`exec` `null`, `contexts` `[]`), so hidden work never leaks its
+    size, context, or state; sorted `life` → `focus` → `project` → `name`. Project rows carry
+    `redacted` from their own tag.
 
   Counts are vault-free — the enriched overlay stays gtd-side. The response is an object (was a bare
   list pre-1.10.0) but backward-compatible for the existing navigator, which reads `data.projects`.

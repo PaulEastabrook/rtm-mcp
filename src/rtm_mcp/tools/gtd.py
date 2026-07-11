@@ -295,8 +295,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         - actions: every incomplete child under an active project (actions, waiting-fors, and
           calendar entries — all jumpable), NOT #test. Each carries its project/focus/life context,
           the item type (action/waiting_for/calendar — the canvas r.k classification, for the
-          find-result glyph), plus the urgency signal the "What's hot" band triages on: due,
-          priority, blocked.
+          find-result glyph), the urgency signal the "What's hot" band triages on (due, priority,
+          blocked), and the engage-lens funnel fields (estimate in minutes, contexts, energy, exec —
+          the same execute classification behind the project ai_* tallies). Redaction is
+          server-derived and CASCADES onto actions (own #redacted OR a redacted project / focus); a
+          shielded action carries no engage data (estimate/energy/exec null, contexts []).
 
         Args:
             include_someday: include #someday projects AND foci in the portfolio (default False;
@@ -317,7 +320,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 by life → focus;
             actions: [{action_id, name, project_id, project, focus, life, type
                 ("action"|"waiting_for"|"calendar"), due (YYYY-MM-DD localised, or ""), priority
-                ("1"|"2"|"3"|""), blocked (bool), redacted (bool, the action's #redacted state)}],
+                ("1"|"2"|"3"|""), blocked (bool), estimate (int minutes or null), contexts (list of
+                action-context tags, may be []), energy ("high"|"low"|null), exec
+                ("quick"|"now"|"later"|null — the execute classification behind the project ai_*
+                tallies), redacted (bool — the action's own #redacted OR a cascade from a redacted
+                project / focus; a shielded row's estimate/energy/exec are null and contexts [])}],
                 sorted by life → focus → project → name.
         Returns (on empty portfolio): {"projects": [], "foci": [], "actions": []}.
         """

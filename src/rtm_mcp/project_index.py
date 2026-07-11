@@ -15,8 +15,9 @@ Area-of-Focus, the project priority, and the modified date come from the project
 
 from typing import Any
 
-from .canvas_seed import map_kind, map_prog
+from .canvas_seed import _CONTEXT_TAGS, map_kind, map_prog
 from .gtd_chat import AI_CHAT, AI_OUTPUT_REVIEW_NEEDED
+from .parsers import parse_estimate_minutes
 from .plan_graph import build_graph
 from .project_plan import (
     _LIFE_TAGS,
@@ -40,10 +41,61 @@ _FOCUS_TAG = "focus"
 # RTM numeric priorities the navigator renders; anything else (RTM's "N") maps to "".
 _PRIORITY_CODES = {"1", "2", "3"}
 
+# Canonical energy-level tag pair (gtd tag-taxonomy). Surfaced per-action as "high"/"low"/None; both
+# present is a tagging error → None (defensive — the gtd tag-audit flags the double-tag). The tags
+# are codified gtd-side in parallel and may be absent in the account when this ships (→ None).
+_ENERGY_HIGH = "high_energy"
+_ENERGY_LOW = "low_energy"
+
 
 def _life(tags: list[str]) -> str:
     """The first life-context tag on a task, or '' when none is present."""
     return next((tg for tg in tags if tg in _LIFE_TAGS), "")
+
+
+def _contexts(tags: list[str]) -> list[str]:
+    """The action-context tags present on the item, in the canonical `_CONTEXT_TAGS` order (may be
+    empty). A pass-through of gtd's taxonomy — the server does NOT validate membership beyond this
+    known set (gtd owns the taxonomy). Unlike `canvas_seed.map_context` (a single value with a
+    default), this is the full multi-value set with no default, feeding the engage funnel's context
+    criterion — an empty list simply exempts the item from that filter."""
+    return [t for t in _CONTEXT_TAGS if t in tags]
+
+
+def _energy(tags: list[str]) -> str | None:
+    """The item's energy level from the `high_energy`/`low_energy` tag pair → "high"/"low"/None.
+    Both tags present is a data error → None (defensive: never guess; the gtd tag-audit catches the
+    double-tag). Absent (the common case until the tags are provisioned) → None, exempting the item
+    from the engage funnel's energy criterion."""
+    hi = _ENERGY_HIGH in tags
+    lo = _ENERGY_LOW in tags
+    if hi and lo:
+        return None
+    if hi:
+        return "high"
+    if lo:
+        return "low"
+    return None
+
+
+def _exec(tags: list[str], judged: dict[str, Any]) -> str | None:
+    """Per-action execute classification — a single-value read of the SAME judgement that feeds the
+    project-level ai_quick/ai_now/ai_later tallies (one classifier, two aggregations), so the engage
+    lens's quick-win segment and the board's execute pill read one truth. Precedence `now > later >
+    quick`: `now`/`later` are the explicit progression directives (`map_prog`, an authored intent),
+    `quick` the derived unblocked-2-minute judgement (`plan_graph.quick_ready`). None when the
+    classifier abstains. Mirrors the tallies exactly on non-overlapping rows: a blocked-`now` item is
+    excluded (as ai_now excludes it); a `later` item may be blocked (as ai_later counts it). The one
+    divergence is a genuine overlap (a #quick_win item ALSO flagged progress-now/later) — it resolves
+    to the explicit directive here while both tallies still count it; overlap is a tagging accident."""
+    prog = map_prog(tags)
+    if prog == "now" and not judged.get("blocked"):
+        return "now"
+    if prog == "later":
+        return "later"
+    if judged.get("quick_ready"):
+        return "quick"
+    return None
 
 
 def _priority_code(task: dict[str, Any]) -> str:
@@ -265,13 +317,28 @@ def build_actions(
       the same thin plan-graph judgement that feeds each project's `blocked_count` (cross-project /
       completed upstreams don't count).
 
+    And the engage-lens funnel fields (the Allen four-criteria model — context / time / energy /
+    priority — each independently absent-able, a null exempting the item from that filter, never
+    hiding it):
+    - `estimate` — the RTM time estimate normalised to whole minutes (`parse_estimate_minutes`), or
+      None when unset/unparseable (the common case).
+    - `contexts` — the action-context tags present (`_contexts`), verbatim (may be `[]`).
+    - `energy` — "high"/"low"/None from the `high_energy`/`low_energy` pair (`_energy`).
+    - `exec` — the single-value execute classification "quick"/"now"/"later"/None (`_exec`), the same
+      judgement behind the project ai_quick/ai_now/ai_later tallies.
+
+    Redaction is server-derived and CASCADES: a row is `redacted` when the action's own #redacted tag
+    is set OR its project OR its Area-of-Focus is redacted — so the cockpit locks anything under a
+    shielded parent (the earlier client-side cascade is now enforced here). A shielded row carries
+    NO engage data: `estimate`/`energy`/`exec` are None and `contexts` is `[]` — hidden work must not
+    leak its size, context, or state.
+
     timezone: forwarded to `build_envelope` for date localisation parity with the canvas (so each
         action's `due` matches the project `next_tickle` / canvas date convention).
 
     Returns a list (sorted by life → focus → project → name for deterministic, grouped output) of
-        {action_id, name, project_id, project, focus, life, type, due, priority, blocked, redacted}.
-
-    `redacted` is the action's own #redacted viewing-curtain state (the cockpit locks the result row).
+        {action_id, name, project_id, project, focus, life, type, due, priority, blocked, estimate,
+         contexts, energy, exec, redacted}.
     """
     by_id = {t["id"]: t for t in parsed}
     out: list[dict[str, Any]] = []
@@ -288,6 +355,11 @@ def build_actions(
         parent = by_id.get(str(proj.get("parent_task_id") or ""))
         focus = (parent.get("name") or "") if parent else "(unfiled)"
         project_name = proj.get("name") or ""
+        # Redaction cascade sources: the project's own curtain and its Area-of-Focus's. A row under
+        # either is shielded even when its own tag is absent (server-derived, so the engage
+        # suppression below can trust one flag).
+        proj_redacted = REDACTED_TAG in tags
+        focus_redacted = bool(parent) and REDACTED_TAG in (parent.get("tags") or [])
 
         env = build_envelope(parsed, pid, timezone=timezone)
         rows = env["rows"]
@@ -300,6 +372,18 @@ def build_actions(
             # parsed set must not surface done items as jumpable actions.
             if _TEST_TAG in row_tags or r.get("completed"):
                 continue
+            redacted = (REDACTED_TAG in row_tags) or proj_redacted or focus_redacted
+            # A shielded row leaks NO characterising engage data (size / context / energy / state).
+            if redacted:
+                estimate: int | None = None
+                contexts: list[str] = []
+                energy: str | None = None
+                execv: str | None = None
+            else:
+                estimate = parse_estimate_minutes(r.get("estimate"))
+                contexts = _contexts(row_tags)
+                energy = _energy(row_tags)
+                execv = _exec(row_tags, judgement.get(r["id"], {}))
             out.append(
                 {
                     "action_id": r["id"],
@@ -312,9 +396,14 @@ def build_actions(
                     "due": r["due"],  # already localised by build_envelope
                     "priority": _priority_code(by_id.get(r["id"], {})),
                     "blocked": bool(judgement.get(r["id"], {}).get("blocked")),
-                    # Viewing-curtain flag from the action's own #redacted tag (the board redacts at
-                    # item level too) — the cockpit locks the result row.
-                    "redacted": REDACTED_TAG in row_tags,
+                    # Engage-lens funnel fields (suppressed to null/[] on a shielded row).
+                    "estimate": estimate,
+                    "contexts": contexts,
+                    "energy": energy,
+                    "exec": execv,
+                    # Viewing-curtain flag — the action's own #redacted tag OR a cascade from a
+                    # redacted project / Area-of-Focus. The cockpit locks the result row.
+                    "redacted": redacted,
                 }
             )
 

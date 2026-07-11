@@ -22,6 +22,7 @@ def _t(
     tags=None,
     notes=None,
     modified=None,
+    estimate=None,
 ):
     """Task dict in the shape parse_tasks_response emits (subset used by build_index)."""
     return {
@@ -34,7 +35,7 @@ def _t(
         "completed": completed,
         "deleted": None,
         "priority": priority,
-        "estimate": None,
+        "estimate": estimate,
         "tags": tags or [],
         "notes": notes or [],
         "url": None,
@@ -505,6 +506,10 @@ class TestActions:
             "due",
             "priority",
             "blocked",
+            "estimate",
+            "contexts",
+            "energy",
+            "exec",
             "redacted",
         }
         assert a["name"] == "Attend webinar"
@@ -512,6 +517,11 @@ class TestActions:
         assert a["project"] == "Open days"
         assert a["focus"] == "Sam — University"
         assert a["life"] == "personal"
+        # baseline: an un-annotated action → all engage fields at their absent value.
+        assert a["estimate"] is None
+        assert a["contexts"] == []
+        assert a["energy"] is None
+        assert a["exec"] is None
 
     def test_test_tagged_action_excluded(self):
         parsed = [
@@ -649,6 +659,121 @@ class TestActionUrgencyFields:
         assert by_id["cal"]["due"] == "2026-07-20"  # calendar date
 
 
+class TestActionEngageFields:
+    """The engage-lens funnel fields on action rows (Allen four-criteria: context / time / energy /
+    priority). Each is independently absent-able — a null exempts, never hides."""
+
+    def _wrap(self, *children):
+        return [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            *children,
+        ]
+
+    def test_estimate_normalised_to_minutes(self):
+        parsed = self._wrap(
+            _t("m", name="Half hour", parent=P1, estimate="30 minutes", tags=["action"]),
+            _t("hm", name="ISO", parent=P1, estimate="PT1H30M", tags=["action"]),
+            _t("none", name="Unsized", parent=P1, tags=["action"]),
+        )
+        by_id = {a["action_id"]: a for a in build_actions(parsed)}
+        assert by_id["m"]["estimate"] == 30
+        assert by_id["hm"]["estimate"] == 90
+        assert by_id["none"]["estimate"] is None  # unset → null, exempt from the time filter
+
+    def test_contexts_pass_through_verbatim(self):
+        parsed = self._wrap(
+            _t(
+                "c",
+                name="Two contexts",
+                parent=P1,
+                tags=["action", "location_home", "using_device"],
+            ),
+            _t("cn", name="No context", parent=P1, tags=["action"]),
+        )
+        by_id = {a["action_id"]: a for a in build_actions(parsed)}
+        # canonical _CONTEXT_TAGS order: using_device before location_home
+        assert by_id["c"]["contexts"] == ["using_device", "location_home"]
+        assert by_id["cn"]["contexts"] == []
+
+    def test_energy_mapping(self):
+        parsed = self._wrap(
+            _t("hi", name="High", parent=P1, tags=["action", "high_energy"]),
+            _t("lo", name="Low", parent=P1, tags=["action", "low_energy"]),
+            _t(
+                "both",
+                name="Contradiction",
+                parent=P1,
+                tags=["action", "high_energy", "low_energy"],
+            ),
+            _t("neither", name="Unrated", parent=P1, tags=["action"]),
+        )
+        by_id = {a["action_id"]: a for a in build_actions(parsed)}
+        assert by_id["hi"]["energy"] == "high"
+        assert by_id["lo"]["energy"] == "low"
+        assert by_id["both"]["energy"] is None  # both tags → data error → null
+        assert by_id["neither"]["energy"] is None
+
+    def test_exec_values(self):
+        parsed = self._wrap(
+            _t("q", name="Quick", parent=P1, tags=["action", "quick_win"]),
+            _t("n", name="Now", parent=P1, tags=["action", "ai_progress_requested"]),
+            _t("l", name="Later", parent=P1, tags=["action", "ai_progress_deferred"]),
+            _t("plain", name="Plain", parent=P1, tags=["action"]),
+        )
+        by_id = {a["action_id"]: a for a in build_actions(parsed)}
+        assert by_id["q"]["exec"] == "quick"
+        assert by_id["n"]["exec"] == "now"
+        assert by_id["l"]["exec"] == "later"
+        assert by_id["plain"]["exec"] is None  # classifier abstains
+
+    def test_exec_now_directive_wins_over_quick(self):
+        # precedence now > later > quick: an explicit progress-now directive wins over the derived
+        # 2-minute judgement even when the item is also a #quick_win.
+        parsed = self._wrap(
+            _t(
+                "qn",
+                name="Quick+now",
+                parent=P1,
+                tags=["action", "quick_win", "ai_progress_requested"],
+            ),
+        )
+        assert build_actions(parsed)[0]["exec"] == "now"
+
+    def test_exec_blocked_now_abstains(self):
+        # a blocked progress-now item is excluded from ai_now AND from exec (both None) — consistent.
+        # (DEPENDS-ON upstreams are matched by a digits-only regex → numeric ids required.)
+        parsed = self._wrap(
+            _t("301", name="Upstream", parent=P1, tags=["action"]),
+            _t(
+                "302",
+                name="Blocked now",
+                parent=P1,
+                tags=["action", "ai_progress_requested"],
+                notes=[_depends_on("301")],
+            ),
+        )
+        by_id = {a["action_id"]: a for a in build_actions(parsed)}
+        assert by_id["302"]["blocked"] is True
+        assert by_id["302"]["exec"] is None
+
+    def test_exec_tallies_match_project_counts(self):
+        # one classifier, two aggregations: over non-overlapping rows, the per-action exec buckets
+        # reproduce the project's ai_quick / ai_now / ai_later counts exactly.
+        children = [
+            _t("q", name="Quick", parent=P1, tags=["action", "quick_win"]),
+            _t("n", name="Now", parent=P1, tags=["action", "ai_progress_requested"]),
+            _t("l", name="Later", parent=P1, tags=["action", "ai_progress_deferred"]),
+            _t("plain", name="Plain", parent=P1, tags=["action"]),
+        ]
+        parsed = self._wrap(*children)
+        proj_row = _p1(build_index(parsed))
+        actions = [a for a in build_actions(parsed) if a["project_id"] == P1]
+        assert sum(1 for a in actions if a["exec"] == "quick") == proj_row["ai_quick"] == 1
+        assert sum(1 for a in actions if a["exec"] == "now") == proj_row["ai_now"] == 1
+        assert sum(1 for a in actions if a["exec"] == "later") == proj_row["ai_later"] == 1
+
+
 class TestRedaction:
     def test_project_row_redacted_flag(self):
         # build_index row carries the project's own #redacted state; absent tag → False.
@@ -661,8 +786,8 @@ class TestRedaction:
         assert _p1(build_index(parsed))["redacted"] is True
 
     def test_action_row_redacted_flag(self):
-        # build_actions row carries the action's OWN #redacted state (board redacts items too),
-        # independent of the project's.
+        # build_actions row carries the action's OWN #redacted state (board redacts items too); under
+        # a non-redacted parent, only the item's own tag drives it.
         parsed = [
             _area(AREA1, "Sam — University", life="personal"),
             _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
@@ -672,6 +797,45 @@ class TestRedaction:
         by_id = {a["action_id"]: a for a in build_actions(parsed)}
         assert by_id["101"]["redacted"] is True
         assert by_id["102"]["redacted"] is False
+
+    def test_action_redacted_cascades_from_project(self):
+        # a redacted PROJECT shields every child action (server-derived cascade), even one with no
+        # #redacted tag of its own.
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project", "redacted"]),
+            _t("101", name="Under redacted project", parent=P1, tags=["action"]),
+        ]
+        assert build_actions(parsed)[0]["redacted"] is True
+
+    def test_action_redacted_cascades_from_focus(self):
+        # a redacted Area of Focus shields the actions of its projects too.
+        parsed = [
+            _area(AREA1, "Sam — University", tags=["focus", "personal", "redacted"]),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t("101", name="Under redacted focus", parent=P1, tags=["action"]),
+        ]
+        assert build_actions(parsed)[0]["redacted"] is True
+
+    def test_shielded_action_suppresses_engage_fields(self):
+        # a shielded row (own tag OR a cascade) must leak no characterising engage data.
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project", "redacted"]),
+            _t(
+                "101",
+                name="Hidden work",
+                parent=P1,
+                estimate="30 minutes",
+                tags=["action", "location_home", "high_energy", "ai_progress_requested"],
+            ),
+        ]
+        a = build_actions(parsed)[0]
+        assert a["redacted"] is True
+        assert a["estimate"] is None
+        assert a["contexts"] == []
+        assert a["energy"] is None
+        assert a["exec"] is None
 
     def test_focus_row_redacted_flag(self):
         # build_foci row carries the Area-of-Focus task's own #redacted state — the navigator

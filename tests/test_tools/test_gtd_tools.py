@@ -1805,6 +1805,10 @@ class TestGtdProjectIndex:
             "due",
             "priority",
             "blocked",
+            "estimate",
+            "contexts",
+            "energy",
+            "exec",
             "redacted",
         }
         assert a["project_id"] == PROJECT_ID
@@ -1843,8 +1847,9 @@ class TestGtdProjectIndex:
 
     @pytest.mark.asyncio
     async def test_project_action_and_focus_redacted(self, gtd_tools):
-        # Redaction surfaces at every level the navigator renders: the focus row, the project row,
-        # and the action row — each derived from that task's own #redacted tag.
+        # Redaction surfaces at every level the navigator renders: the focus row and the project row
+        # from their own #redacted tag; the action row is server-derived and CASCADES — an action
+        # under a redacted project / focus is shielded even without its own tag.
         tools, client = gtd_tools
         client.call = AsyncMock(
             return_value=_getlist(
@@ -1874,8 +1879,8 @@ class TestGtdProjectIndex:
         proj = next(r for r in data["projects"] if r["project_id"] == PROJECT_ID)
         assert proj["redacted"] is True
         by_id = {a["action_id"]: a for a in data["actions"]}
-        assert by_id["101"]["redacted"] is True
-        assert by_id["102"]["redacted"] is False
+        assert by_id["101"]["redacted"] is True  # own tag
+        assert by_id["102"]["redacted"] is True  # cascade from the redacted project + focus
 
 
 # ── gtd_set_redaction ────────────────────────────────────────────────────────
