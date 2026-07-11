@@ -6,7 +6,7 @@ derived_at: 2026-07-11
 target_repo: rtm-mcp — ~/Library/CloudStorage/Dropbox/Coding/rtm-mcp
 artifact:
   version: 1.29.0
-  feature_commit: da131f2
+  feature_commit: 012a3f1
   branch: feat/engage-part2-index-fields
 relates_to:
   - brief: general/plugin-marketplace-architect/designed-changes/2026-07-05-gtd-engage-part2-live-artifact.md (Part 2 § B, wave 1)
