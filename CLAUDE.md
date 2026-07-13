@@ -699,16 +699,35 @@ tag, no strict-tag interaction on read**:
   (the board redacts at all three levels), derived in `project_index.build_index` / `build_actions` /
   `build_foci`. Project and foci rows derive it from the task's own tag; the **action** row is
   server-derived and **cascades** (since v1.29.0): own tag OR a redacted project OR a redacted focus
-  (this is what gates the action's engage-field suppression, so it must be a single server-side flag).
-  The focus flag (since v1.17.1) lets the navigator collapse a whole Area of Focus — name + its
-  projects hidden — to a single "Redacted Area of Focus" row; the cascade onto that focus's *projects*
-  is still client-side (only the *action* cascade moved server-side with the engage fields).
+  (so the cockpit locks anything under a shielded parent from a single server-side flag). The focus
+  flag (since v1.17.1) lets the navigator collapse a whole Area of Focus — name + its projects
+  hidden — to a single "Redacted Area of Focus" row; the cascade onto that focus's *projects* is
+  client-side. The `redacted` flag is **surface only** — every row (shielded or not) still carries its
+  full data, including the engage fields; see the invariant below.
 
 The tag constant `REDACTED_TAG = "redacted"` is defined once in `project_plan.py` (the low membership-
 tag layer, alongside `_PROJECT_TAG`/`_TEST_TAG`) and imported upward (`canvas_seed`, `project_index`,
-`tools/gtd`) — the same convention as those tags. No server-side name stripping: redaction is a
-viewing-layer curtain (the plaintext still flows to the board), **not** a vault; hardening to null
-names/notes of redacted rows is a deliberate out-of-scope follow-up.
+`tools/gtd`) — the same convention as those tags.
+
+**Invariant — redaction is SURFACED, never ENFORCED, server-side (since v1.30.0).** Redaction is a
+**client-side viewing curtain, not a server data vault** (Paul, 2026-07-13). The plaintext — names,
+dates, notes, and the engage-lens funnel fields (`estimate`/`contexts`/`energy`/`exec`) — **flows to
+the board for every row, shielded or not**; the board renders the locked placeholder, makes the row
+non-selectable, and excludes it from the funnel (counts never leak). Enforcement — the actual
+hiding — is **100% client-side**.
+- **Allowed server-side (surface + write):** derive and emit the `redacted` boolean on read-tool
+  rows / items / frames; set/unset `#redacted` via `gtd_set_redaction`. Metadata + the marking
+  mechanism — not enforcement.
+- **Forbidden server-side (enforce):** nulling, stripping, withholding, or dropping **any** field or
+  row based on `redacted`. `grep -rn "redact" src/` must show only flag-emission + the
+  `gtd_set_redaction` write — never a field/row suppressed on `redacted`. (v1.29.0 briefly nulled the
+  action engage fields on shielded rows — an inconsistent over-hardening, since names already flowed;
+  v1.30.0 removed it and codified this invariant. `test_project_index.py`'s
+  `test_shielded_action_still_carries_engage_fields` /
+  `test_own_tag_shielded_action_still_carries_engage_fields` are the guard.)
+
+Hardening to a true data vault (null names/notes of redacted rows) would contradict this invariant
+and is explicitly **not** wanted.
 
 **Write side (`gtd_set_redaction`, constrained write).** Keyed by `task_id` (the board always has it
 from the index/seed — no fragile name resolution). Resolves the task's full triple from **one**
@@ -883,12 +902,12 @@ call-surface assertion, strict-tag rejection setup) are canonical in
 
 This inventory is the canonical per-file test count (keep it in sync — CONTRIBUTING.md § 9).
 
-Test files (850 tests total):
+Test files (851 tests total):
 - `tests/test_client.py` — client signing, API calls, settings + account-tag caching (incl. failure-not-cached + concurrent-timeline lock), transaction log, 503 retry, connection retry incl. connect-phase-timeout-on-write retry + mid-flight ReadError wrap + non-JSON response, POST/GET split (46 tests)
 - `tests/test_config.py` — config load/save, file fallback (corrupt/wrong-type/unreadable JSON), RTM_AUTH_TOKEN env + token/auth_token kwargs, safety-margin bounds, 0600 save permissions, strict-tag toggle (22 tests)
 - `tests/test_strict_tags.py` — strict-tag guard: normalize/split/SmartAdd-extract + enforce_strict_tags (off / reject / live-refetch / input normalization) (13 tests)
 - `tests/test_project_plan.py` — project-plan-seed/3 envelope builder: header/row mapping, priority word-form, id-based permalink (absent ancestor), deps/files extraction, project-level `header.project.files`, None→"" coercion, tz date-localisation (BST off-by-one fix, GMT-unaffected, no-tz fallback, completed/note dates), resolve_project disambiguation, resolve_focus (by id/name/substring, area-from-project-parents, ambiguity, miss, project-less area), header.project.redacted flag, envelope note objects carry the RTM note id, seed-3.1 repeating signals (is_repeating/taskseries_id default-false on rows + header.project; surface True from the parsed rrule flag), seed-3.1 resolve-references token surfacing (template_child_id default-"" on rows; a TMPL-CHILD `tmpl-child/1` note surfaces the row token; a DEPENDS-ON `Template-child-id:` line authors the dep in token-space) (34 tests)
-- `tests/test_project_index.py` — portfolio builders: `build_index` (selection (incomplete/#project/not-#test; #hold always excluded; #someday default-out/opt-in; completed-project excluded; empty), field-set shape, life-from-tag, focus/focus_id from parent (+ top-level → `(unfiled)` not dropped), priority mapping (1/2/3 and N→""), `updated` tz-localisation (BST), open_count = all incomplete children, blocked_count from a DEPENDS-ON edge, next_tickle earliest incl. overdue (+ empty), life→focus→project sort); AI-progressible counts (ai_quick unblocked #quick_win actions, excludes blocked + waiting-for; ai_now #ai_progress_requested excl. blocked; ai_later #ai_progress_deferred incl. blocked; zero-not-absent; canvas-seed parity); conversation counts (chat_count incomplete #ai_chat + chat_review_count #ai_output_review_needed; completed excluded; review subset-not-additive; project-scoped counts the project; zero-not-absent); engage counts (waiting_count incomplete #waiting_for, canvas-kind parity, completed excluded, zero-not-absent); `build_foci` (all #focus areas incl. project-less; field-set; life-from-tag; #test/#hold excluded; #someday gated; untagged area not a focus; life→focus sort); `build_actions` (incomplete children of active project; field-set + attribution incl. type/due/priority/blocked; #test child excluded; excluded-project child not emitted (+#someday opt-in); top-level → `(unfiled)`; deterministic grouped sort); action kind + urgency fields (type matches canvas r.k incl. default; due carried + localised + empty; priority encoding; blocked matches plan-graph (+ false on absent/cross-project upstream); waiting-for/calendar due); action engage fields (estimate normalised to minutes incl. ISO + null; contexts pass-through in canonical order + empty; energy high/low/both-null/neither-null; exec quick/now/later/abstain + now-directive-beats-quick + blocked-now-abstains + tallies-match-project ai_* counts); redaction (project-row + focus-row `redacted` from own `#redacted`; action-row own tag + CASCADE from redacted project + CASCADE from redacted focus; shielded action suppresses estimate/contexts/energy/exec); completed-row guards (counts/next_tickle/actions exclude completed children when fed a broader parsed set) (72 tests)
+- `tests/test_project_index.py` — portfolio builders: `build_index` (selection (incomplete/#project/not-#test; #hold always excluded; #someday default-out/opt-in; completed-project excluded; empty), field-set shape, life-from-tag, focus/focus_id from parent (+ top-level → `(unfiled)` not dropped), priority mapping (1/2/3 and N→""), `updated` tz-localisation (BST), open_count = all incomplete children, blocked_count from a DEPENDS-ON edge, next_tickle earliest incl. overdue (+ empty), life→focus→project sort); AI-progressible counts (ai_quick unblocked #quick_win actions, excludes blocked + waiting-for; ai_now #ai_progress_requested excl. blocked; ai_later #ai_progress_deferred incl. blocked; zero-not-absent; canvas-seed parity); conversation counts (chat_count incomplete #ai_chat + chat_review_count #ai_output_review_needed; completed excluded; review subset-not-additive; project-scoped counts the project; zero-not-absent); engage counts (waiting_count incomplete #waiting_for, canvas-kind parity, completed excluded, zero-not-absent); `build_foci` (all #focus areas incl. project-less; field-set; life-from-tag; #test/#hold excluded; #someday gated; untagged area not a focus; life→focus sort); `build_actions` (incomplete children of active project; field-set + attribution incl. type/due/priority/blocked; #test child excluded; excluded-project child not emitted (+#someday opt-in); top-level → `(unfiled)`; deterministic grouped sort); action kind + urgency fields (type matches canvas r.k incl. default; due carried + localised + empty; priority encoding; blocked matches plan-graph (+ false on absent/cross-project upstream); waiting-for/calendar due); action engage fields (estimate normalised to minutes incl. ISO + null; contexts pass-through in canonical order + empty; energy high/low/both-null/neither-null; exec quick/now/later/abstain + now-directive-beats-quick + blocked-now-abstains + tallies-match-project ai_* counts); redaction (project-row + focus-row `redacted` from own `#redacted`; action-row own tag + CASCADE from redacted project + CASCADE from redacted focus; shielded action still carries full engage fields via own tag AND via cascade — surface-not-enforce invariant); completed-row guards (counts/next_tickle/actions exclude completed children when fed a broader parsed set) (73 tests)
 - `tests/test_canvas_seed.py` — canvas mapper: kind/priority/context/comms, `map_prog` tri-state + per-row `prog` emit, parse_note (dash/colon forms, body-omit), parse_file filtering, map_row, `map_redacted` + per-item `redacted` always-emitted + `frame.redacted` from project, build_seed frame + sibling-deps + history placement + v1 `frame.files` from project files (23 tests)
 - `tests/test_plan_graph.py` — plan-graph engine: DEPENDS-ON edges + blocked, quick-from-tag (and blocked/waiting-for guards), tiered topological order, cycle fallback, fingerprint stability; manual-order pin (clamping parity with the gtd suite one-for-one: pin reorders independent siblings, cannot violate topology, unpinned fall after pinned, cleaned to current ids, no-pin unchanged, excluded from fingerprint); MoSCoW band within-tier sort (parity with the gtd suite one-for-one: Must>Should>Could>untriaged-last, untriaged after Could, numeric "1"/"2"/"3" surface accepted, band-beats-date, tier-outranks-band, never-violates-topology, pin-outranks-band, band change flips fingerprint incl. band→absent); resolve-references token resolution (parity with the gtd `test_plan_graph_series.py` cases: token-space dep resolves to the current re-keyed id, stale-id-without-token dropped, mixed raw+token, token ORDER-pin resolves, stale pin entry dropped, no-tokens byte-unchanged) (32 tests)
 - `tests/test_canvas_overlay.py` — apply_graph (reorder + quick + sorted deps, no blocked/order field) and lean_seed (body-strip, cap, honest nc) (5 tests)

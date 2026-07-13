@@ -329,9 +329,11 @@ def build_actions(
 
     Redaction is server-derived and CASCADES: a row is `redacted` when the action's own #redacted tag
     is set OR its project OR its Area-of-Focus is redacted — so the cockpit locks anything under a
-    shielded parent (the earlier client-side cascade is now enforced here). A shielded row carries
-    NO engage data: `estimate`/`energy`/`exec` are None and `contexts` is `[]` — hidden work must not
-    leak its size, context, or state.
+    shielded parent. Redaction is a CLIENT-side viewing curtain, not a server data vault: the engage
+    fields (`estimate`/`contexts`/`energy`/`exec`) are computed for EVERY row, shielded or not — the
+    server only SURFACES the `redacted` flag and the client shields the display (locked placeholder,
+    excluded from the funnel, counts never leak). The server never ENFORCES redaction by suppressing
+    data (see the redaction invariant in CLAUDE.md).
 
     timezone: forwarded to `build_envelope` for date localisation parity with the canvas (so each
         action's `due` matches the project `next_tickle` / canvas date convention).
@@ -373,17 +375,14 @@ def build_actions(
             if _TEST_TAG in row_tags or r.get("completed"):
                 continue
             redacted = (REDACTED_TAG in row_tags) or proj_redacted or focus_redacted
-            # A shielded row leaks NO characterising engage data (size / context / energy / state).
-            if redacted:
-                estimate: int | None = None
-                contexts: list[str] = []
-                energy: str | None = None
-                execv: str | None = None
-            else:
-                estimate = parse_estimate_minutes(r.get("estimate"))
-                contexts = _contexts(row_tags)
-                energy = _energy(row_tags)
-                execv = _exec(row_tags, judgement.get(r["id"], {}))
+            # Redaction is a CLIENT-side viewing curtain, not a server data vault (Paul, 2026-07-13).
+            # Names and dates already flow for shielded rows; the client renders the locked placeholder
+            # and excludes shielded rows from the funnel (counts never leak). So the engage fields flow
+            # too — always computed — and the `redacted` flag below tells the client to shield the display.
+            estimate = parse_estimate_minutes(r.get("estimate"))
+            contexts = _contexts(row_tags)
+            energy = _energy(row_tags)
+            execv = _exec(row_tags, judgement.get(r["id"], {}))
             out.append(
                 {
                     "action_id": r["id"],
@@ -396,7 +395,8 @@ def build_actions(
                     "due": r["due"],  # already localised by build_envelope
                     "priority": _priority_code(by_id.get(r["id"], {})),
                     "blocked": bool(judgement.get(r["id"], {}).get("blocked")),
-                    # Engage-lens funnel fields (suppressed to null/[] on a shielded row).
+                    # Engage-lens funnel fields — computed for EVERY row; the client shields the
+                    # display via the `redacted` flag (viewing curtain, not a server data vault).
                     "estimate": estimate,
                     "contexts": contexts,
                     "energy": energy,

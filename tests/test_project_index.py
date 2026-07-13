@@ -817,8 +817,11 @@ class TestRedaction:
         ]
         assert build_actions(parsed)[0]["redacted"] is True
 
-    def test_shielded_action_suppresses_engage_fields(self):
-        # a shielded row (own tag OR a cascade) must leak no characterising engage data.
+    def test_shielded_action_still_carries_engage_fields(self):
+        # Redaction is a CLIENT-side viewing curtain, not a server data vault: a shielded row
+        # (via a CASCADE here — a redacted project) still carries its full engage data. The server
+        # only SURFACES the `redacted` flag; the client shields the display. The server must never
+        # ENFORCE redaction by suppressing fields — this is the guard that stops that creeping back.
         parsed = [
             _area(AREA1, "Sam — University", life="personal"),
             _t(P1, name="Open days", parent=AREA1, tags=["personal", "project", "redacted"]),
@@ -832,10 +835,31 @@ class TestRedaction:
         ]
         a = build_actions(parsed)[0]
         assert a["redacted"] is True
-        assert a["estimate"] is None
-        assert a["contexts"] == []
-        assert a["energy"] is None
-        assert a["exec"] is None
+        assert a["estimate"] == 30
+        assert a["contexts"] == ["location_home"]
+        assert a["energy"] == "high"
+        assert a["exec"] == "now"
+
+    def test_own_tag_shielded_action_still_carries_engage_fields(self):
+        # The same, but the row is shielded by its OWN #redacted tag (not a cascade) — full data
+        # flows behind the flag either way.
+        parsed = [
+            _area(AREA1, "Sam — University", life="personal"),
+            _t(P1, name="Open days", parent=AREA1, tags=["personal", "project"]),
+            _t(
+                "101",
+                name="Hidden work",
+                parent=P1,
+                estimate="30 minutes",
+                tags=["action", "redacted", "location_home", "high_energy", "ai_progress_requested"],
+            ),
+        ]
+        a = build_actions(parsed)[0]
+        assert a["redacted"] is True
+        assert a["estimate"] == 30
+        assert a["contexts"] == ["location_home"]
+        assert a["energy"] == "high"
+        assert a["exec"] == "now"
 
     def test_focus_row_redacted_flag(self):
         # build_foci row carries the Area-of-Focus task's own #redacted state — the navigator
