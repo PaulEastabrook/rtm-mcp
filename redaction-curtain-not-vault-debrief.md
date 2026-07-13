@@ -5,7 +5,7 @@ date: 2026-07-13
 from: Claude Code (rtm-mcp)
 to: Cowork/GTD session (Paul)
 supersedes: engage-part2-index-fields (v1.29.0) — for the redaction-of-actions behaviour only
-feature-commit: <fill after commit>
+feature-commit: d535966
 ---
 
 # Handback debrief — redaction is a client-side viewing curtain, not a server data vault (v1.30.0)
