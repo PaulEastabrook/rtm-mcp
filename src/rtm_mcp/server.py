@@ -219,6 +219,22 @@ This server provides full access to Remember The Milk's task management features
   note on the item (no #ai_conversation — a viewing change, not an AI write). Pairs with the derived
   `redacted` field on gtd_project_canvas / gtd_project_index. A viewing-layer curtain, not a
   server-side vault.
+- gtd_engage_seed: Read-only — the overdue + soft-parked set for the engage renegotiation sweep.
+  One rtm.tasks.getList (status:incomplete) + the cached settings read; returns every incomplete
+  dated item on-or-before today (NOT #test / #someday, all kinds) with server-derived flags: kind,
+  has_deadline (= RTM has_due_time, a timed due = the GTD hard landscape), blocked (the thin
+  plan-graph), postponed, the deterministic pre-triage `suggested` verdict, and redacted (+ the
+  localised current_date). Curtain-not-vault: emits `redacted` but never suppresses a field.
+- gtd_apply_engage_commit: Constrained write — the governed commit for an engage-sweep batch (gtd's
+  Anti-Corruption Layer over the board's advisory askClaude). Accepts {items:[{id, verdict,
+  date_phrase?}]} and re-validates everything server-side (kind/has_deadline/blocked re-derived —
+  client flags never trusted); dates resolve through parse_time (Europe/London, authoritative). Maps
+  each legal verdict to its RTM write (next_actions/resurface → clear due; today/bump → set due;
+  defer_start → set start; nudge → re-tickle; someday → #someday; to_calendar → #calendar_entry;
+  draft → #ai_progress_requested; keep/do_now → no-op; drop → soft-delete), #ai_conversation on every
+  write, someday/resurface signal the progression engine (#ai_overlay_refresh_needed on the nearest
+  #project). HARD-FAIL: an off-enum / type-illegal / hallucinated-date / not-found item rejects the
+  whole batch with nothing written. One undoable batch. No new tag.
 
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,

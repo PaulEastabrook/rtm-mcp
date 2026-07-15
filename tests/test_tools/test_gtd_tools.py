@@ -2892,3 +2892,299 @@ class TestGtdApplyCanvasCommitRepeatingAdds:
             c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.notes.add"
         ]
         assert not any("TMPL-CHILD" in c.kwargs.get("note_title", "") for c in adds)
+
+
+# ── Engage renegotiation surface (gtd_engage_seed / gtd_apply_engage_commit) ──────────────────
+
+
+def _ets(ts_id, task_id, name, due="", tags=None, has_due_time="0", parent="", notes=None):
+    """A taskseries dict with a configurable has_due_time (the base _ts hardcodes '0')."""
+    return {
+        "id": ts_id,
+        "name": name,
+        "created": "2026-01-01T00:00:00Z",
+        "modified": "2026-01-01T00:00:00Z",
+        "url": "",
+        "location_id": "",
+        "parent_task_id": parent,
+        "tags": {"tag": tags} if tags else [],
+        "notes": {"note": notes} if notes else [],
+        "task": {
+            "id": task_id,
+            "due": due,
+            "has_due_time": has_due_time,
+            "completed": "",
+            "deleted": "",
+            "priority": "N",
+            "postponed": "0",
+            "estimate": "",
+            "start": "",
+            "has_start_time": "0",
+        },
+    }
+
+
+def _engage_tree():
+    """Overdue items across kinds + a blocked pair under a project."""
+    return _getlist(
+        [
+            _ets("tsArea", "areaX", "Area", tags=["focus"]),
+            _ets("tsP", "P", "Project", parent="areaX", tags=["personal", "project"]),
+            _ets("ts1", "a1", "Soft action", due="2020-01-01", tags=["action"]),
+            _ets(
+                "tsHd",
+                "hd",
+                "Hard deadline",
+                due="2020-01-01T09:00:00Z",
+                has_due_time="1",
+                tags=["action"],
+            ),
+            _ets("tsWf", "wf", "Waiting on Bob", due="2020-01-01", tags=["waiting_for"]),
+            _ets("ts201", "201", "Upstream", parent="P", due="2020-01-01", tags=["action"]),
+            _ets(
+                "ts202",
+                "202",
+                "Downstream",
+                parent="P",
+                due="2020-01-01",
+                tags=["action"],
+                notes=[
+                    {
+                        "id": "n",
+                        "created": "2026-06-01T00:00:00Z",
+                        "title": "",
+                        "$t": 'DEPENDS-ON\nUpstream RTM IDs:\n  task_id: "201"\n'
+                        '  list_id: "' + LIST_ID + '"\nStatus: active\n',
+                    }
+                ],
+            ),
+        ]
+    )
+
+
+def _engage_dispatch(tree, parse_iso="2026-07-16T00:00:00Z"):
+    async def _call(method, **kwargs):
+        if method == "rtm.tasks.getList":
+            return tree
+        if method == "rtm.time.parse":
+            return {"time": {"$t": parse_iso} if parse_iso else {}}
+        return {"transaction": {"id": f"tx_{method.rsplit('.', 1)[-1]}", "undoable": "1"}}
+
+    return _call
+
+
+class TestGtdEngageSeed:
+    @pytest.mark.asyncio
+    async def test_read_only_call_surface(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        await tools["gtd_engage_seed"](FakeContext())
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"]  # no write, no timeline
+        assert client.record_transaction.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_flags_and_suggestions(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        data = (await tools["gtd_engage_seed"](FakeContext()))["data"]
+        by = {r["id"]: r for r in data["items"]}
+        assert set(by) == {"a1", "hd", "wf", "201", "202"}
+        assert by["hd"]["has_deadline"] is True and by["hd"]["suggested"] == "keep"
+        assert by["a1"]["has_deadline"] is False and by["a1"]["suggested"] == "next_actions"
+        assert by["wf"]["kind"] == "waiting_for" and by["wf"]["suggested"] == "nudge"
+        assert by["202"]["blocked"] is True and by["202"]["suggested"] == "resurface"
+        assert by["201"]["blocked"] is False
+        assert data["current_date"]  # today stamped
+
+
+class TestGtdApplyEngageCommit:
+    @pytest.mark.asyncio
+    async def test_next_actions_clears_due(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "a1", "verdict": "next_actions"}]
+        )
+        assert res["data"]["errors"] == []
+        due_calls = [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.setDueDate"
+        ]
+        assert due_calls and due_calls[0].kwargs["due"] == ""  # cleared
+        # #ai_conversation stamped
+        tag_calls = [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.addTags"
+        ]
+        assert any("ai_conversation" in c.kwargs.get("tags", "") for c in tag_calls)
+
+    @pytest.mark.asyncio
+    async def test_today_sets_due_via_parse_time(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "a1", "verdict": "today"}]
+        )
+        assert res["data"]["errors"] == []
+        assert any(c.args[0] == "rtm.time.parse" for c in client.call.call_args_list if c.args)
+        due = next(
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.setDueDate"
+        )
+        assert due.kwargs["due"] == "2026-07-16T00:00:00Z"  # the parse_time result, not client text
+
+    @pytest.mark.asyncio
+    async def test_someday_adds_tag_and_overlay_refresh_on_project(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "202", "verdict": "someday"}]
+        )
+        assert res["data"]["errors"] == []
+        addtags = [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.addTags"
+        ]
+        # someday tag on the item, overlay-refresh mark on the nearest #project ancestor (P)
+        assert any("someday" in c.kwargs.get("tags", "") for c in addtags)
+        assert any(
+            c.kwargs.get("tags") == "ai_overlay_refresh_needed" and c.kwargs.get("task_id") == "P"
+            for c in addtags
+        )
+
+    @pytest.mark.asyncio
+    async def test_resurface_clears_due_and_signals(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "202", "verdict": "resurface"}]
+        )
+        assert res["data"]["errors"] == []
+        due = next(
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.setDueDate"
+        )
+        assert due.kwargs["due"] == ""
+        assert any(
+            c.kwargs.get("tags") == "ai_overlay_refresh_needed"
+            for c in client.call.call_args_list
+            if c.args and c.args[0] == "rtm.tasks.addTags"
+        )
+
+    @pytest.mark.asyncio
+    async def test_draft_adds_progress_tag(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "a1", "verdict": "draft"}]
+        )
+        assert res["data"]["errors"] == []
+        addtags = [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.addTags"
+        ]
+        assert any("ai_progress_requested" in c.kwargs.get("tags", "") for c in addtags)
+
+    @pytest.mark.asyncio
+    async def test_keep_is_no_op(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "hd", "verdict": "keep"}]
+        )
+        assert res["data"]["errors"] == []
+        writes = [c for c in client.call.call_args_list if c.args and c.args[0] in WRITE_METHODS]
+        assert writes == []  # keep writes nothing
+
+    @pytest.mark.asyncio
+    async def test_drop_requires_confirm(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "a1", "verdict": "drop"}]
+        )
+        assert res["data"]["applied"] == []
+        assert any(r["reason"] == "confirm_destructive_required" for r in res["data"]["rejected"])
+        assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
+
+    @pytest.mark.asyncio
+    async def test_acl_rejects_deferring_a_hard_deadline(self, gtd_tools):
+        # ACL: re-derived has_deadline (has_due_time) makes next_actions type-illegal — nothing written
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "hd", "verdict": "next_actions"}]
+        )
+        assert res["data"]["applied"] == []
+        rej = res["data"]["rejected"][0]
+        assert rej["reason"] == "type-illegal" and rej["suggestion"] == "keep"
+        assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
+
+    @pytest.mark.asyncio
+    async def test_acl_rejects_off_enum(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "a1", "verdict": "obliterate"}]
+        )
+        assert res["data"]["applied"] == []
+        assert res["data"]["rejected"][0]["reason"] == "off-enum"
+        assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
+
+    @pytest.mark.asyncio
+    async def test_acl_rejects_hallucinated_date(self, gtd_tools):
+        # parse_time returns no $t → bad_date → whole batch rejected, nothing written
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree(), parse_iso=""))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(),
+            items=[{"id": "a1", "verdict": "defer_start", "date_phrase": "the 32nd of Neveruary"}],
+        )
+        assert res["data"]["applied"] == []
+        assert res["data"]["rejected"][0]["reason"] == "bad_date"
+        assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
+
+    @pytest.mark.asyncio
+    async def test_not_found_rejects_batch(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(),
+            items=[{"id": "a1", "verdict": "next_actions"}, {"id": "ghost", "verdict": "keep"}],
+        )
+        assert res["data"]["applied"] == []
+        assert any(r["reason"] == "not_found" for r in res["data"]["rejected"])
+        assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
+
+    @pytest.mark.asyncio
+    async def test_records_transactions_for_undo(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "a1", "verdict": "next_actions"}]
+        )
+        assert client.record_transaction.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_strict_tag_rejection_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+        client.config = MagicMock(strict_tags=True, vault_root=None)
+        # #someday is absent from the account → the gate rejects the someday commit
+        client.get_account_tags = AsyncMock(return_value={"ai_conversation"})
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "a1", "verdict": "someday"}]
+        )
+        assert res["data"]["applied"] == []
+        assert any(r["reason"] == "non_canonical_tag" for r in res["data"]["rejected"])
+        assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
