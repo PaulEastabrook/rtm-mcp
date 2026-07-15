@@ -9,12 +9,14 @@ mechanical move.
 
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastmcp import Context
 
 from ..canvas_commit import (
     AI_CONVERSATION,
     AI_DEFERRED,
+    AI_PROGRESS,
     COMMS_TAGS,
     CONTEXT_TAGS,
     EXECUTE_CLEAR_TAGS,
@@ -35,6 +37,18 @@ from ..canvas_overlay import apply_graph, lean_seed
 from ..canvas_seed import build_seed
 from ..client import RTMClient
 from ..companion import enrich_files, resolve_vault_root
+from ..engage_commit import (
+    CALENDAR_ENTRY_TAG,
+    SOMEDAY_TAG,
+    base_verdict,
+    collect_engage_tags,
+    date_phrase_for,
+    verdict_arg,
+)
+from ..engage_commit import validate as validate_engage
+from ..engage_seed import _blocked_map as engage_blocked_map
+from ..engage_seed import _kind as engage_kind
+from ..engage_seed import build_engage_seed
 from ..gtd_chat import (
     AI_CHAT,
     AI_CHAT_REQUESTED,
@@ -66,6 +80,12 @@ from ..strict_tags import enforce_strict_tags, normalize_tag
 from ..tmpl_child import make_tmpl_child_note, new_slug, plan_backfill
 from ..tool_params import JsonObjArray, JsonObject, JsonStrArray, coerce_json
 from ..urls import build_task_url
+
+
+def _utc_today() -> str:
+    """Today's calendar date (YYYY-MM-DD) in UTC — the safe fallback when the account timezone is
+    unknown or invalid (mirrors the raw-UTC fallback in project_plan._norm_date)."""
+    return datetime.now(UTC).date().isoformat()
 
 
 def register_gtd_tools(mcp: Any, get_client: Any) -> None:
@@ -1658,4 +1678,341 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             transaction_id=tag_tx,
             transaction_undoable=tag_undoable if tag_tx else None,
             timeline_id=client.timeline_id if tag_tx else None,
+        )
+
+    @mcp.tool()
+    async def gtd_engage_seed(ctx: Context) -> dict[str, Any]:
+        """GTD — return the overdue + soft-parked set for the engage renegotiation sweep: every dated
+        item at/after its date, each with server-derived flags. The read ground truth both engage
+        surfaces (the chat funnel and the live board, incl. its advisory askClaude) reason over; the
+        read-sibling of gtd_apply_engage_commit. Model: gtd_project_index (same read-only discipline,
+        same flag-emission style).
+
+        Read-only. ONE signed rtm.tasks.getList (status:incomplete) plus a session-cached
+        rtm.settings.getList for the account timezone; no write, no timeline. Flags are vault-free —
+        `blocked` is the THIN plan-graph judgement (an open DEPENDS-ON upstream within the item's own
+        project, the SAME judgement gtd_project_index emits), never the AI-Memory overlay.
+        `has_deadline` is the RTM has_due_time primitive (a due carrying a specific TIME is genuinely
+        day/time-specific — the GTD hard landscape; a date-only due is a soft parked-date). Dates are
+        localised to the account timezone (RTM returns UTC).
+
+        Selection (the overdue set): incomplete items with a due date on-or-before today (overdue OR
+        due today), NOT #test, NOT #someday (a #someday item is deliberately parked, not overdue). All
+        kinds carrying a date are included — action, waiting-for, calendar entry, and a #project task
+        with its own due.
+
+        Redaction is CURTAIN-NOT-VAULT (CLAUDE.md § Redaction surface): each row carries a `redacted`
+        flag (own #redacted OR a cascade from a redacted #project/#focus ancestor) but the server
+        NEVER nulls or withholds any field on it — a shielded row flows its full name/flags exactly
+        like an unshielded one. Enforcement (the locked placeholder, funnel exclusion, the askClaude
+        PII shield) is 100% client-side.
+
+        Returns: {items: [{id, name, kind ("action"|"waiting_for"|"calendar_entry"|"project"),
+            has_deadline (bool — RTM has_due_time), blocked (bool — thin plan-graph), postponed (int —
+            RTM postpone count, the bump-fatigue signal), suggested (the deterministic pre-triage
+            verdict — keep for a deadline, resurface for a blocked item, nudge for a waiting-for,
+            next_actions for a soft action), redacted (bool — the viewing-curtain flag), due
+            (YYYY-MM-DD localised)}], current_date (YYYY-MM-DD, account tz), count}, items sorted by
+            due → name.
+        """
+        client: RTMClient = await get_client()
+        result = await client.call("rtm.tasks.getList", filter="status:incomplete")
+        parsed = parse_tasks_response(result)
+        tz = await client.get_timezone()
+        try:
+            today = datetime.now(ZoneInfo(tz)).date().isoformat() if tz else _utc_today()
+        except Exception:  # unknown/invalid tz → UTC calendar date (never raises)
+            today = _utc_today()
+        return build_response(data=build_engage_seed(parsed, today=today, timezone=tz))
+
+    # Per-verdict tag additions written on the ITEM (grammar § 4). Date-writing verdicts additionally
+    # carry #ai_conversation (added in the apply loop); do_now/keep write no tag; drop deletes.
+    _ENGAGE_ITEM_TAGS = {
+        "someday": [SOMEDAY_TAG, AI_CONVERSATION],
+        "to_calendar": [CALENDAR_ENTRY_TAG, AI_CONVERSATION],
+        "draft": [AI_PROGRESS, AI_CONVERSATION],
+    }
+
+    @mcp.tool()
+    async def gtd_apply_engage_commit(
+        ctx: Context,
+        items: JsonObjArray = None,
+        confirm_destructive: bool = False,
+    ) -> dict[str, Any]:
+        """GTD — the single governed write surface for an engage renegotiation-sweep commit: gtd's
+        Anti-Corruption Layer over an untrusted client (the board's askClaude is advisory — it stages
+        intent but never authorises a write). Accepts a bounded payload and re-validates EVERYTHING
+        server-side, writing NOTHING if any item is rejected (hard-fail, per the verdict grammar). The
+        write-counterpart of gtd_engage_seed; model: gtd_apply_canvas_commit.
+
+        The ACL — the ONLY trusted client inputs are each item's `id`, `verdict`, and optional
+        `date_phrase` (a hint). Every legality flag (kind, has_deadline, blocked) is RE-DERIVED
+        server-side from a fresh read; a deliberately-wrong client cannot smuggle a bad flag past the
+        deadline/blocked guards. Dates resolve through the server's parse_time (Europe/London,
+        authoritative) — a hallucinated/unparseable phrase is rejected before any write.
+
+        Args:
+            items: [{id, verdict, date_phrase?}] — `verdict` is one of the engage verdict grammar's
+                enum (do_now / draft / nudge / to_calendar / next_actions / today / defer_start /
+                bump / resurface / someday / keep / drop), optionally carrying an inline `:<arg>`
+                (defer_start:<phrase>, bump:+<n>d). A verdict is HARD-FAILED if off-enum or
+                type-illegal for the item's server-derived kind + flags (deadline guard: a
+                has_deadline item allows only do_now/to_calendar/keep/drop; blocked guard: resurface
+                only when blocked) — with a closest-legal suggestion.
+            confirm_destructive: must be True for any `drop` verdict (a soft-delete); a drop without
+                it rejects the whole batch.
+
+        Verdict → RTM write (grammar § 4): next_actions / resurface → clear the due date; today / bump
+        → set the due via parse_time; defer_start → set the START date via parse_time; nudge →
+        re-tickle the waiting-for's due to today (the chase draft is a separate chat concern); someday
+        → add #someday; to_calendar → add #calendar_entry; draft → add #ai_progress_requested (hand to
+        the progression engine; a blocked draft also gets #ai_deferred_pending_unblock); do_now / keep
+        → no durable write; drop → soft-delete. Every tag/date write carries #ai_conversation. someday
+        and resurface additionally signal the progression engine by stamping #ai_overlay_refresh_needed
+        on the item's nearest #project ancestor (the server-side equivalent of firing state_transition,
+        reusing the canvas-commit overlay-refresh signal). No new tag is introduced (all are existing
+        gtd taxonomy) → no strict-tag activation hazard.
+
+        The batch is one timeline; each write records its transaction (undoable via batch_undo);
+        per-op failures are captured in `errors` and the batch continues.
+
+        Returns (on success): {"applied": [{op, id, transaction_id}, ...], "errors": [...], "count",
+            "message"} — the echo names each item by id + op ONLY, never its name/contents (so a
+            redacted item leaks nothing).
+        Returns (on rejection — nothing written): {"applied": [], "rejected": [...], "message": ...}.
+        """
+        client: RTMClient = await get_client()
+        items = coerce_json(items) or []
+        if not items:
+            return build_response(
+                data={"applied": [], "rejected": [], "count": 0, "message": "No items supplied."}
+            )
+
+        result = await client.call(
+            "rtm.tasks.getList", filter="status:incomplete OR status:completed"
+        )
+        parsed = parse_tasks_response(result)
+        by_id = {t["id"]: t for t in parsed}
+        tz = await client.get_timezone()
+
+        # ── Phase 1: validate (no writes). Re-derive every flag server-side (the ACL). ──
+        blocked_map = engage_blocked_map(parsed, tz)
+        rejections: list[dict[str, Any]] = []
+        val_items: list[dict[str, Any]] = []
+        for it in items:
+            rid = str(it.get("id") or "")
+            verdict = it.get("verdict") or ""
+            t = by_id.get(rid)
+            if t is None:
+                rejections.append({"id": rid, "verdict": verdict, "reason": "not_found"})
+                continue
+            tags = t.get("tags") or []
+            val_items.append(
+                {
+                    "id": rid,
+                    "verdict": verdict,
+                    "kind": engage_kind(tags),
+                    "has_deadline": bool(t.get("has_due_time")),
+                    "blocked": bool(blocked_map.get(rid)),
+                    "date_phrase": it.get("date_phrase"),
+                }
+            )
+
+        report = validate_engage(val_items)
+        for r in report["errors"]:
+            rejections.append(
+                {
+                    "id": r["id"],
+                    "verdict": r["verdict"],
+                    "reason": r["reason"],
+                    "suggestion": r["suggestion"],
+                }
+            )
+
+        # Destructive gate: any drop needs confirm_destructive.
+        if not confirm_destructive:
+            for v in val_items:
+                if base_verdict(v["verdict"]) == "drop":
+                    rejections.append(
+                        {
+                            "id": v["id"],
+                            "verdict": v["verdict"],
+                            "reason": "confirm_destructive_required",
+                        }
+                    )
+
+        # Strict-tag existence gate over the tags the batch would write (all existing gtd tags).
+        gate = await enforce_strict_tags(
+            client, sorted(collect_engage_tags(val_items)), tool="gtd_apply_engage_commit"
+        )
+        if gate:
+            rejections.append({**gate, "reason": "non_canonical_tag"})
+
+        if rejections:
+            return build_response(
+                data={
+                    "applied": [],
+                    "rejected": rejections,
+                    "count": len(items),
+                    "message": "Engage commit rejected; nothing was written.",
+                }
+            )
+
+        # Date resolution through parse_time (authoritative) — reached only when every verdict is
+        # legal. A bad/hallucinated phrase rejects the whole batch (the ACL), still writing nothing.
+        resolved_dates: dict[str, str] = {}
+        for v in val_items:
+            verb = base_verdict(v["verdict"])
+            phrase = date_phrase_for(verb, verdict_arg(v["verdict"]), v.get("date_phrase"))
+            if verb == "nudge":  # re-tickle the waiting-for's due to today
+                phrase = "today"
+            if phrase is None:
+                continue
+            parse_params: dict[str, Any] = {"text": phrase}
+            if tz:
+                parse_params["timezone"] = tz
+            try:
+                pres = await client.call("rtm.time.parse", **parse_params)
+                iso = ((pres.get("time") or {}) if isinstance(pres, dict) else {}).get("$t")
+            except Exception:
+                iso = None
+            if not iso:
+                rejections.append(
+                    {"id": v["id"], "verdict": v["verdict"], "reason": "bad_date", "phrase": phrase}
+                )
+            else:
+                resolved_dates[v["id"]] = iso
+
+        if rejections:
+            return build_response(
+                data={
+                    "applied": [],
+                    "rejected": rejections,
+                    "count": len(items),
+                    "message": "Engage commit rejected; nothing was written.",
+                }
+            )
+
+        # ── Phase 2: apply (durable-first), recording transactions ──
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        refresh_projects: set[str] = set()
+
+        async def _write(
+            method: str, label: str, _id: str | None = None, **kwargs: Any
+        ) -> dict[str, Any] | None:
+            try:
+                res = await client.call(method, require_timeline=True, **kwargs)
+                tx_id, undoable = get_transaction_info(res)
+                if tx_id:
+                    client.record_transaction(tx_id, method, undoable, label)
+                applied.append({"op": label, "id": _id, "transaction_id": tx_id})
+                return res
+            except Exception as exc:  # batch resilience
+                errors.append({"op": label, "id": _id, "error": str(exc)})
+                return None
+
+        def _ids(rid: str) -> dict[str, Any]:
+            t = by_id.get(rid, {})
+            return {
+                "task_id": t.get("id"),
+                "taskseries_id": t.get("taskseries_id"),
+                "list_id": t.get("list_id"),
+            }
+
+        def _nearest_project(rid: str) -> str | None:
+            cur = rid
+            seen: set[str] = set()
+            for _ in range(10):
+                if not cur or cur in seen:
+                    break
+                seen.add(cur)
+                t = by_id.get(cur)
+                if not t:
+                    break
+                if _PROJECT_TAG in (t.get("tags") or []):
+                    return cur
+                cur = str(t.get("parent_task_id") or "")
+            return None
+
+        for v in val_items:
+            rid = v["id"]
+            verb = base_verdict(v["verdict"])
+            ids = _ids(rid)
+
+            if verb in ("keep", "do_now"):
+                applied.append({"op": f"engage:{verb}", "id": rid, "transaction_id": None})
+                continue
+            if verb == "drop":
+                await _write("rtm.tasks.delete", "engage:drop (soft-delete)", rid, **ids)
+                continue
+
+            # Date writes (grammar § 4).
+            if verb in ("next_actions", "resurface"):
+                await _write(
+                    "rtm.tasks.setDueDate",
+                    f"engage:{verb}:clear-due",
+                    rid,
+                    due="",
+                    parse="0",
+                    **ids,
+                )
+            elif verb in ("today", "bump", "nudge"):
+                await _write(
+                    "rtm.tasks.setDueDate",
+                    f"engage:{verb}",
+                    rid,
+                    due=resolved_dates.get(rid, ""),
+                    parse="0",
+                    **ids,
+                )
+            elif verb == "defer_start":
+                await _write(
+                    "rtm.tasks.setStartDate",
+                    "engage:defer_start",
+                    rid,
+                    start=resolved_dates.get(rid, ""),
+                    parse="0",
+                    **ids,
+                )
+
+            # Tag writes. Verbs with a durable tag payload carry it (+#ai_conversation); the pure date
+            # verbs still stamp #ai_conversation so every write is marked.
+            add_tags = list(_ENGAGE_ITEM_TAGS.get(verb, [AI_CONVERSATION]))
+            if verb == "draft" and blocked_map.get(rid):
+                add_tags.append(AI_DEFERRED)
+            await _write(
+                "rtm.tasks.addTags", f"engage:{verb}:tags", rid, tags=",".join(add_tags), **ids
+            )
+
+            # Progression signal (someday/resurface) — stamp the overlay-refresh mark on the item's
+            # nearest #project ancestor so the gtd-side finalise engine recomputes the plan-graph
+            # overlay (the server-side equivalent of firing state_transition). Deduped per project.
+            if verb in ("someday", "resurface"):
+                proj_id = _nearest_project(rid)
+                if proj_id:
+                    refresh_projects.add(proj_id)
+
+        for proj_id in sorted(refresh_projects):
+            p = by_id.get(proj_id)
+            if not p:
+                continue
+            await _write(
+                "rtm.tasks.addTags",
+                "engage:overlay-refresh-mark",
+                proj_id,
+                tags=OVERLAY_REFRESH,
+                task_id=p.get("id"),
+                taskseries_id=p.get("taskseries_id"),
+                list_id=p.get("list_id"),
+            )
+
+        return build_response(
+            data={
+                "applied": applied,
+                "errors": errors,
+                "count": len(val_items),
+                "message": f"Applied {len(applied)} write(s); {len(errors)} error(s).",
+            },
+            timeline_id=client.timeline_id,
         )
