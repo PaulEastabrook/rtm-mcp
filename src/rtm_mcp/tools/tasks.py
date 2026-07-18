@@ -1,12 +1,19 @@
 """Task management tools for RTM MCP."""
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import Context
+from pydantic import Field
 
 from ..client import RTMClient
 from ..lookup import find_task, resolve_list_id, resolve_task_ids
+from ..models import (
+    DELETE_TASK_OUTPUT,
+    LIST_TASKS_OUTPUT,
+    TASK_WRITE_OUTPUT,
+)
 from ..parsers import (
+    PRIORITY_INPUT_CODES,
     analyze_tasks,
     format_task,
     parse_lists_response,
@@ -14,10 +21,20 @@ from ..parsers import (
     priority_to_code,
 )
 from ..response_builder import (
+    ADDITIVE_WRITE_ANNOTATIONS,
+    DESTRUCTIVE_WRITE_ANNOTATIONS,
+    READ_ONLY_ANNOTATIONS,
     build_response,
     record_and_build_response,
 )
 from ..strict_tags import enforce_strict_tags, extract_smartadd_tags, split_tags
+
+# Advisory input-constraint metadata (surface 4). Sourced from the canonical constants so the
+# advertised enum can never drift from what the handler validates. json_schema_extra is a typed
+# dict[str, Any] (pyright requires it).
+_PRIORITY_ENUM: dict[str, Any] = {"enum": sorted(PRIORITY_INPUT_CODES)}
+MOVE_DIRECTIONS = ("up", "down")
+_DIRECTION_ENUM: dict[str, Any] = {"enum": list(MOVE_DIRECTIONS)}
 
 
 def _apply_subtask_counts(tasks: list[dict[str, Any]]) -> None:
@@ -52,13 +69,28 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             tool_name=tool_name,
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=LIST_TASKS_OUTPUT)
     async def list_tasks(
         ctx: Context,
-        filter: str | None = None,
-        list_name: str | None = None,
-        include_completed: bool = False,
-        parent_task_id: str | None = None,
+        filter: Annotated[
+            str | None,
+            Field(
+                description="RTM advanced-search filter string; supports operators like "
+                "priority:/due:/tag:/list:/status:/name: combined with AND, OR, NOT and parentheses."
+            ),
+        ] = None,
+        list_name: Annotated[
+            str | None,
+            Field(description="Restrict results to this list by name (case-insensitive)."),
+        ] = None,
+        include_completed: Annotated[
+            bool,
+            Field(description="Include completed tasks in results (default: false)."),
+        ] = False,
+        parent_task_id: Annotated[
+            str | None,
+            Field(description="Return only the direct subtasks of this parent task ID."),
+        ] = None,
     ) -> dict[str, Any]:
         """Search and retrieve tasks from Remember The Milk. Use this tool to find tasks
         by due date, priority, tag, list, or any combination of RTM's advanced search
@@ -192,14 +224,35 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             analysis=analyze_tasks(tasks, timezone=timezone) if tasks else None,
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def add_task(
         ctx: Context,
-        name: str,
-        list_name: str | None = None,
-        parse: bool = True,
-        parent_task_id: str | None = None,
-        external_id: str | None = None,
+        name: Annotated[
+            str,
+            Field(
+                description="Task name; may include Smart Add tokens (^date !priority #tag "
+                "@location =estimate *repeat) when parse=True."
+            ),
+        ],
+        list_name: Annotated[
+            str | None,
+            Field(
+                description="Target list name (case-insensitive); defaults to the account's "
+                "default list, or the parent's list for a subtask."
+            ),
+        ] = None,
+        parse: Annotated[
+            bool,
+            Field(description="Parse Smart Add syntax in the name (default: True)."),
+        ] = True,
+        parent_task_id: Annotated[
+            str | None,
+            Field(description="Create the task as a subtask under this parent task ID (RTM Pro)."),
+        ] = None,
+        external_id: Annotated[
+            str | None,
+            Field(description="Attach an external reference ID (e.g. 'JIRA-1234') to the task."),
+        ] = None,
     ) -> dict[str, Any]:
         """Create a new task in Remember The Milk. Supports Smart Add syntax to set
         due date, priority, tags, location, estimate, and recurrence inline with the
@@ -295,13 +348,34 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             tool_name="add_task",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def complete_task(
         ctx: Context,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Mark a task as complete. For recurring tasks, this completes the current
         occurrence and generates the next one. Use undo with the returned
@@ -362,13 +436,34 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             tool_name="complete_task",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def uncomplete_task(
         ctx: Context,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Reopen a previously completed task, setting it back to incomplete. Use this
         instead of undo when the original completion is no longer the most recent action.
@@ -432,13 +527,34 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             tool_name="uncomplete_task",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=DELETE_TASK_OUTPUT)
     async def delete_task(
         ctx: Context,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Permanently delete a task. If you only want to mark it done, use complete_task
         instead. The deletion can be reversed with undo using the returned transaction_id.
@@ -492,14 +608,37 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             tool_name="delete_task",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def set_task_name(
         ctx: Context,
-        new_name: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        new_name: Annotated[
+            str, Field(description="New task name; replaces the existing name entirely.")
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Rename a task. The new name replaces the existing name entirely.
 
@@ -529,14 +668,41 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             client, result, f"Renamed to: {new_name}", "set_task_name"
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def set_task_due_date(
         ctx: Context,
-        due: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        due: Annotated[
+            str,
+            Field(
+                description="Due date, natural-language ('tomorrow', 'next friday') or ISO; "
+                "empty string clears the due date."
+            ),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Set or change a task's due date. Accepts natural language dates like
         "tomorrow", "next friday", "dec 25", or ISO format "2026-12-25". Pass an
@@ -568,14 +734,41 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         message = f"Due date set to: {due}" if due else "Due date cleared"
         return await _task_write_response(client, result, message, "set_task_due_date")
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def set_task_priority(
         ctx: Context,
-        priority: str | int,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        priority: Annotated[
+            str | int,
+            Field(
+                description="Priority: 1/high, 2/medium, 3/low, or 0/none to clear.",
+                json_schema_extra=_PRIORITY_ENUM,
+            ),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Set a task's priority level. Values: 1 (high), 2 (medium), 3 (low),
         or 0/none to clear priority. Use move_task_priority to shift one level
@@ -608,14 +801,41 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             client, result, f"Priority set to: {priority}", "set_task_priority"
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def move_task_priority(
         ctx: Context,
-        direction: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        direction: Annotated[
+            str,
+            Field(
+                description="Shift priority one level: 'up' (higher) or 'down' (lower).",
+                json_schema_extra=_DIRECTION_ENUM,
+            ),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Shift a task's priority by one level. "up" means higher priority (e.g.,
         low → medium → high). "down" means lower (high → medium → low → none).
@@ -630,7 +850,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"task": {...}, "message": "Priority moved up/down"} with transaction_id.
         """
-        if direction not in ("up", "down"):
+        if direction not in MOVE_DIRECTIONS:
             return build_response(
                 data={
                     "error": "direction must be 'up' (higher priority) or 'down' (lower priority)."
@@ -653,13 +873,34 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             client, result, f"Priority moved {direction}", "move_task_priority"
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def postpone_task(
         ctx: Context,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Postpone a task by one day. Moves the due date forward and increments
         the postpone counter. If the task has no due date, one is assigned. Use
@@ -687,14 +928,38 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         return await _task_write_response(client, result, "Task postponed", "postpone_task")
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def move_task(
         ctx: Context,
-        to_list_name: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        to_list_name: Annotated[
+            str,
+            Field(description="Destination list name (case-insensitive); cannot be a Smart List."),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Move a task to a different list. Use get_lists to find available list names.
         Cannot move tasks to Smart Lists (read-only). The task's current list is
@@ -732,14 +997,40 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         return await _task_write_response(client, result, f"Moved to: {to_list_name}", "move_task")
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def add_task_tags(
         ctx: Context,
-        tags: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        tags: Annotated[
+            str,
+            Field(
+                description="Comma-separated tag names to add (no # prefix), e.g. 'work,urgent'."
+            ),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Add one or more tags to a task without removing existing tags. To replace
         all tags at once, use set_task_tags. To remove specific tags, use remove_task_tags.
@@ -777,14 +1068,41 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         return await _task_write_response(client, result, f"Added tags: {tags}", "add_task_tags")
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def remove_task_tags(
         ctx: Context,
-        tags: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        tags: Annotated[
+            str,
+            Field(
+                description="Comma-separated tag names to remove, e.g. 'work,urgent'; "
+                "tags not present are ignored."
+            ),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Remove one or more tags from a task. Tags not present on the task are
         silently ignored. To replace all tags at once, use set_task_tags.
@@ -817,14 +1135,41 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             client, result, f"Removed tags: {tags}", "remove_task_tags"
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def set_task_tags(
         ctx: Context,
-        tags: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        tags: Annotated[
+            str,
+            Field(
+                description="Comma-separated tag names replacing all existing tags; "
+                "empty string clears all tags."
+            ),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Replace all tags on a task with a new set. Any existing tags not in the
         new list are removed. Pass an empty string to clear all tags. For incremental
@@ -866,14 +1211,41 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         message = f"Tags set to: {tags}" if tags else "All tags cleared"
         return await _task_write_response(client, result, message, "set_task_tags")
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def set_task_recurrence(
         ctx: Context,
-        repeat: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        repeat: Annotated[
+            str,
+            Field(
+                description="Recurrence pattern, e.g. 'every day', 'every monday', 'after 1 week'; "
+                "empty string clears recurrence."
+            ),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Set or clear a task's recurrence pattern. Two recurrence types:
         - "every ..." repeats on a fixed schedule (shares one task series)
@@ -908,14 +1280,41 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         message = f"Recurrence set: {repeat}" if repeat else "Recurrence cleared"
         return await _task_write_response(client, result, message, "set_task_recurrence")
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def set_task_start_date(
         ctx: Context,
-        start: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        start: Annotated[
+            str,
+            Field(
+                description="Start date, natural-language or ISO; empty string clears the "
+                "start date."
+            ),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Set or clear a task's start date. The start date must be on or before any
         existing due date (error 4080). Accepts natural language ("tomorrow", "next
@@ -946,14 +1345,41 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         message = f"Start date set: {start}" if start else "Start date cleared"
         return await _task_write_response(client, result, message, "set_task_start_date")
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def set_task_estimate(
         ctx: Context,
-        estimate: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        estimate: Annotated[
+            str,
+            Field(
+                description="Time estimate, e.g. '30 minutes', '1 hour', '2 hrs 30 min'; "
+                "empty string clears the estimate."
+            ),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Set or clear a task's time estimate. Accepts natural language durations
         like "30 minutes", "1 hour", "2 hrs 30 min". Pass an empty string to clear.
@@ -983,14 +1409,38 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         message = f"Estimate set: {estimate}" if estimate else "Estimate cleared"
         return await _task_write_response(client, result, message, "set_task_estimate")
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def set_task_url(
         ctx: Context,
-        url: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        url: Annotated[
+            str,
+            Field(description="URL to attach to the task; empty string removes the URL."),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Attach a URL to a task or clear an existing one. Pass an empty string to
         remove the URL. Each task can have one URL.
@@ -1019,14 +1469,38 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         message = f"URL set: {url}" if url else "URL cleared"
         return await _task_write_response(client, result, message, "set_task_url")
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)
     async def set_parent_task(
         ctx: Context,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
-        parent_task_id: str | None = None,
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended "
+                "task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to "
+                "target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the "
+                "exact-task id triple."
+            ),
+        ] = None,
+        parent_task_id: Annotated[
+            str | None,
+            Field(description="New parent task's ID; omit/None promotes the task to top-level."),
+        ] = None,
     ) -> dict[str, Any]:
         """Move a task under a parent (making it a subtask) or promote it to top-level.
         Requires RTM Pro. Max 3 levels of nesting.

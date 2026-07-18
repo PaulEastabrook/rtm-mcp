@@ -1,21 +1,42 @@
 """Utility tools for RTM MCP."""
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import Context
+from pydantic import BeforeValidator, Field, WithJsonSchema
 
 from ..client import RTMClient
 from ..lookup import resolve_list_id, resolve_task_ids
+from ..models import (
+    BATCH_UNDO_OUTPUT,
+    CHECK_AUTH_OUTPUT,
+    CONTACTS_OUTPUT,
+    GET_LOCATIONS_OUTPUT,
+    GET_SETTINGS_OUTPUT,
+    GET_TAGS_OUTPUT,
+    GROUPS_OUTPUT,
+    LIST_URL_OUTPUT,
+    PARSE_TIME_OUTPUT,
+    RATE_LIMIT_OUTPUT,
+    TASK_URL_OUTPUT,
+    TEST_CONNECTION_OUTPUT,
+    TIMELINE_INFO_OUTPUT,
+    UNDO_OUTPUT,
+)
 from ..parsers import ensure_list, parse_tags_response
-from ..response_builder import build_response
-from ..tool_params import JsonStrArrayRequired, coerce_json
+from ..response_builder import (
+    ADDITIVE_WRITE_ANNOTATIONS,
+    READ_ONLY_ANNOTATIONS,
+    build_response,
+)
+from ..tool_params import coerce_json, coerced_str_array_schema
 from ..urls import build_list_url, resolve_task_url
 
 
 def register_utility_tools(mcp: Any, get_client: Any) -> None:
     """Register utility and diagnostic tools."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TEST_CONNECTION_OUTPUT)
     async def test_connection(ctx: Context) -> dict[str, Any]:
         """Test connectivity to the RTM API. Use this to diagnose connection issues
         before attempting other operations. Returns response time in milliseconds.
@@ -50,7 +71,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
                 },
             )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CHECK_AUTH_OUTPUT)
     async def check_auth(ctx: Context) -> dict[str, Any]:
         """Verify that the stored auth token is valid and check permission level.
         Use this to confirm authentication before performing write operations.
@@ -85,7 +106,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
                 },
             )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GET_TAGS_OUTPUT)
     async def get_tags(ctx: Context) -> dict[str, Any]:
         """Retrieve all tags used across your tasks, sorted alphabetically. Use this to
         discover existing tags before adding them to tasks, or to check tag names for
@@ -107,7 +128,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             },
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GET_LOCATIONS_OUTPUT)
     async def get_locations(ctx: Context) -> dict[str, Any]:
         """Retrieve all saved locations. Locations can be assigned to tasks using
         the @location syntax in add_task, or filtered with list_tasks(filter="location:name").
@@ -141,7 +162,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             },
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GET_SETTINGS_OUTPUT)
     async def get_settings(ctx: Context) -> dict[str, Any]:
         """Retrieve user account settings including timezone, date/time format
         preferences, default list, and language. Useful for understanding how dates
@@ -174,11 +195,23 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             },
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=PARSE_TIME_OUTPUT)
     async def parse_time(
         ctx: Context,
-        text: str,
-        timezone: str | None = None,
+        text: Annotated[
+            str,
+            Field(
+                description="Natural-language date/time to parse, e.g. 'tomorrow', "
+                "'next friday', 'in 2 hours', 'dec 25', '3pm'."
+            ),
+        ],
+        timezone: Annotated[
+            str | None,
+            Field(
+                description="IANA timezone for interpretation (e.g. 'America/New_York'); "
+                "defaults to UTC."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Parse a natural language time/date string into an ISO 8601 timestamp using
         RTM's parser. Useful for previewing how RTM will interpret date expressions
@@ -210,10 +243,16 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             },
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=UNDO_OUTPUT)
     async def undo(
         ctx: Context,
-        transaction_id: str,
+        transaction_id: Annotated[
+            str,
+            Field(
+                description="The transaction_id from a prior write's response metadata "
+                "or from get_timeline_info."
+            ),
+        ],
     ) -> dict[str, Any]:
         """Undo a previous write operation using its transaction_id. Most write tools
         return a transaction_id in their metadata. Not all operations are undoable —
@@ -282,10 +321,20 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
                 },
             )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=BATCH_UNDO_OUTPUT)
     async def batch_undo(
         ctx: Context,
-        transaction_ids: JsonStrArrayRequired,
+        transaction_ids: Annotated[
+            list[str],
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema(
+                    "Transaction ids to undo, most-recent-first is applied "
+                    "automatically; order irrelevant.",
+                    required=True,
+                )
+            ),
+        ],
     ) -> dict[str, Any]:
         """Undo multiple write operations in one call. Operations are undone in
         reverse chronological order (most recent first) to maintain data consistency.
@@ -359,7 +408,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             },
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TIMELINE_INFO_OUTPUT)
     async def get_timeline_info(ctx: Context) -> dict[str, Any]:
         """View the current session's timeline and full transaction history. Use this
         to review what write operations have been performed, which can be undone, and
@@ -402,7 +451,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             },
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CONTACTS_OUTPUT)
     async def get_contacts(ctx: Context) -> dict[str, Any]:
         """Retrieve RTM contacts for task sharing. Contacts are users you can share
         tasks with via the RTM sharing feature. Use list_tasks with filter
@@ -434,7 +483,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             },
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GROUPS_OUTPUT)
     async def get_groups(ctx: Context) -> dict[str, Any]:
         """Retrieve contact groups with member counts. Groups organize contacts for
         batch task sharing.
@@ -467,7 +516,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             },
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=RATE_LIMIT_OUTPUT)
     async def get_rate_limit_status(ctx: Context) -> dict[str, Any]:
         """View current rate limiter state and request statistics. No API call
         is made — reads in-memory state only. Use this to diagnose unexpected
@@ -511,13 +560,28 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             },
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TASK_URL_OUTPUT)
     async def get_task_url(
         ctx: Context,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy match across tasks incl. completed "
+                "(may hit an unintended task; prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(description="Task ID from list_tasks."),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(description="List ID from list_tasks."),
+        ] = None,
     ) -> dict[str, Any]:
         """Get the Remember The Milk web UI URL for a task, including its full
         hierarchy path. Use this to give the user a clickable link that opens
@@ -567,11 +631,17 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         )
         return build_response(data=result)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=LIST_URL_OUTPUT)
     async def get_list_url(
         ctx: Context,
-        list_name: str | None = None,
-        list_id: str | None = None,
+        list_name: Annotated[
+            str | None,
+            Field(description="List name (exact, from get_lists)."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(description="List ID (from get_lists)."),
+        ] = None,
     ) -> dict[str, Any]:
         """Get the Remember The Milk web UI URL for a list. Use this to give
         the user a clickable link that opens the list in the RTM web app.

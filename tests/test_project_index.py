@@ -851,7 +851,13 @@ class TestRedaction:
                 name="Hidden work",
                 parent=P1,
                 estimate="30 minutes",
-                tags=["action", "redacted", "location_home", "high_energy", "ai_progress_requested"],
+                tags=[
+                    "action",
+                    "redacted",
+                    "location_home",
+                    "high_energy",
+                    "ai_progress_requested",
+                ],
             ),
         ]
         a = build_actions(parsed)[0]

@@ -61,12 +61,16 @@ module-responsibility table (see § 9, Documentation lockstep).
 ## 3. Tool implementation pattern
 
 Tools are registered by a `register_<group>_tools(mcp, get_client)` function and decorated with
-`@mcp.tool()`. The body always starts by acquiring the client:
+`@mcp.tool(annotations=..., output_schema=...)`. Every tool carries the **six documentation
+surfaces** (below). The body always starts by acquiring the client:
 
 ```python
 def register_<group>_tools(mcp: Any, get_client: Any) -> None:
-    @mcp.tool()
-    async def my_tool(ctx: Context, ...) -> dict[str, Any]:
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=MY_TOOL_OUTPUT)
+    async def my_tool(
+        ctx: Context,
+        name: Annotated[str, Field(description="…one line…")],
+    ) -> dict[str, Any]:
         """<enriched docstring — see § 7>"""
         client: RTMClient = await get_client()
         ...
@@ -81,6 +85,47 @@ def register_<group>_tools(mcp: Any, get_client: Any) -> None:
   three ids; returns `{task_id, taskseries_id, list_id}` or `{"error": ...}`). **Identify lists**
   with `resolve_list_id(...)`.
 - Tools accept `task_name` (fuzzy) **or** explicit ids; document the fuzzy-match caution.
+
+### The six documentation surfaces
+
+Every tool is documented so a calling LLM can *choose, call, chain, and recover* from the schema
+alone. This is the family-wide **MCP tool-documentation standard**
+(`mcp-tool-documentation-standard.md` in the git-ops plugin references — the normative source;
+`agent-memory-mcp` is the reference implementation). All six are **additive schema metadata**:
+they never change tool behaviour, returns, capability, or write safety. Enforced by
+`tests/test_tool_schemas.py` (§ 8).
+
+1. **Enriched docstring** (§ 7) — the primary contract.
+2. **Per-parameter description** — every param except `ctx` is
+   `Annotated[T, Field(description="…")]`. FastMCP does not lift the docstring `Args:` into the JSON
+   schema, and clients render the schema, so a bare-typed param is undocumented to the model. For a
+   **complex (array/object) coercion param**, `WithJsonSchema` *replaces* the field schema and drops
+   a sibling `Field(description=…)`, so bake the description (and any nested enum) into the schema
+   via the `tool_params.coerced_*_schema(...)` builders — never revert to a plain `Field` there (see
+   § 12 step 8).
+3. **Behaviour annotations** — `@mcp.tool(annotations=…)` via the three constants in
+   `response_builder.py`: `READ_ONLY_ANNOTATIONS` (reads), `ADDITIVE_WRITE_ANNOTATIONS` (creates /
+   additive field-tag updates / undo path), `DESTRUCTIVE_WRITE_ANNOTATIONS` (deletes and reachable
+   removes — e.g. the canvas/engage commit tools, even though `undo` can reverse them; classify
+   honestly and put the undo path in the docstring). `openWorldHint=True` everywhere (RTM is SaaS).
+   Hints are signals, **not** enforcement — the strict-tag gate / `confirm_destructive` / actionable
+   errors stay the sole safety authority.
+4. **Input constraint metadata** — for a closed-vocabulary / bounded / structured param, add
+   `json_schema_extra={"enum": …}` (a module-level `dict[str, Any]`, required by pyright) **sourced
+   from the canonical constant** it validates against (`PRIORITY_INPUT_CODES`, `MOVE_DIRECTIONS`,
+   `VALID_SCOPES`, `VALID_ROLES`, `VALID_MODES`, `VALID_EXECUTE_COMMIT`, `VERDICT_FAMILY`), so the
+   advertised set can never drift from the handler. **Ownership rule:** only advertise vocabularies
+   the *server* owns — **never** a tag enum (deliberately non-canonical server-side; gtd's
+   `tag-taxonomy.md` owns it) or a list-name enum (account data).
+5. **Output schema** — `output_schema=` from `models.py` (schema-only Pydantic models; NOT used at
+   runtime). `data` is always advertised as the `success | ErrorData` union (`anyOf`). Match models
+   to the actual returns; leave genuinely-open payloads (`raw`, evolving envelope rows) open.
+6. **Typed errors (recovery half)** — this server's error shape is the free-text
+   `{"error": "<actionable prose>"}` string (§ 5), modelled as `ErrorData` (`extra="allow"`) so the
+   structured siblings ride along (`strict_tag_mode`/`how_to_proceed`; `candidates`; the commit
+   engines' `rejected[].reason` enums). **Document what exists; do not invent codes** in an additive
+   pass — a full typed-code vocabulary is a return-value change (SemVer), captured as an improvement
+   candidate.
 
 ## 4. Response envelope
 
@@ -151,8 +196,12 @@ Tag writes go through the **strict-tag existence gate** (`strict_tags.py`; backg
   - For identifier choices: an **"Identify … by EXACTLY ONE of:"** block.
   - An `Args:` section for the remaining parameters.
   - A **multi-case `Returns`**: `Returns (on success): … Returns (on ambiguity): … Returns
-    (on miss / bad input): …`.
+    (on miss / bad input): …` — naming the error discriminator the tool actually returns (this
+    server's `data.error` string contract + any structured siblings, e.g. `strict_tag_mode` /
+    `rejected[].reason`).
   - The fuzzy-match caution where `task_name` is accepted.
+- The docstring is **surface 1** of the six-surface standard (§ 3); it is complemented by the
+  per-parameter `Field(description=…)` (surface 2). Both are model-facing — keep them consistent.
 
 ## 8. Testing
 
@@ -165,6 +214,13 @@ Tag writes go through the **strict-tag existence gate** (`strict_tags.py`; backg
 - Test classes are `TestXxx`; async tests use `@pytest.mark.asyncio` (`asyncio_mode = auto`).
 - **Read-only tools assert their call surface:**
   `assert [c.args[0] for c in client.call.call_args_list if c.args] == ["rtm.tasks.getList"]`.
+- **The six documentation surfaces (§ 3) are enforced by `tests/test_tool_schemas.py`**, which
+  introspects the REAL server (`from rtm_mcp.server import mcp` → `await mcp.get_tools()` →
+  `to_mcp_tool()`): every tool + param is described; annotations are correct per behaviour class;
+  closed-vocabulary enums are asserted **equal to the canonical constants** (drift-proof); complex
+  params expose a clean single-typed schema; every tool's `outputSchema.properties.data` is a
+  `success | error` union. A new tool that skips a surface fails this suite. **FakeMCP doubles** in
+  `tests/test_tools/*.py` accept the decorator kwargs via `def tool(self, *_args, **_kwargs)`.
 - **Strict-tag rejection tests** flip `client.config = MagicMock(strict_tags=True)` and stub
   `client.get_account_tags` (cf. `tests/test_strict_tags.py`, `tests/test_task_tools.py`).
 - Run with `make test` (= `uv run pytest`); coverage via `make test/coverage`.
@@ -212,18 +268,26 @@ re-run `make format` if a ruff bump changes formatting).
 
 1. Identify the RTM API method (or the domain composition shape).
 2. Add the tool to the appropriate `tools/*.py` `register_*` function.
-3. Write an **enriched docstring** (§ 7).
+3. Ship **all six documentation surfaces** (§ 3): enriched docstring (§ 7); a
+   `Field(description=…)` on every non-`ctx` param; the right `annotations=` constant; a canonical-
+   constant-sourced `json_schema_extra` enum for any closed-vocabulary param; an `output_schema=`
+   model in `models.py` whose `data` is the `success | ErrorData` union; the actionable-error shape.
 4. `require_timeline=True` for writes; `record_and_build_response()` for write tools.
 5. Resolve ids via `resolve_task_ids()` / `resolve_list_id()` (§ 3).
 6. Return **actionable** error messages (§ 5).
 7. If the tool **adds/sets tags**, gate with `enforce_strict_tags()` (§ 6) — never gate removal.
-8. For any **complex (array/object) parameter**, use the `tool_params` `Annotated` types
-   (`JsonObjArray` / `JsonStrArray` / `JsonObject` / `JsonStrArrayRequired`) instead of a bare
-   `list[...] | None` / `dict[...] | None`. They emit a clean single-typed JSON schema (no
-   `anyOf`/null union — which some MCP clients stringify) and coerce a stringified value; also
-   call `coerce_json()` on the param in-body as belt-and-braces.
+8. For any **complex (array/object) parameter**, keep the coercion machinery AND carry a
+   description: annotate inline as `Annotated[list[...] | None, BeforeValidator(coerce_json),
+   WithJsonSchema(coerced_*_schema("…description…", …))]` (the `tool_params.coerced_str_array_schema`
+   / `coerced_obj_array_schema` / `coerced_object_schema` builders emit the clean single-typed schema
+   — no `anyOf`/null union some MCP clients stringify — with the description, and an optional nested
+   `item_schema`/`extra` for a value/element enum). Also call `coerce_json()` on the param in-body as
+   belt-and-braces. (The bare `JsonObjArray` / `JsonStrArray` / `JsonObject` / `JsonStrArrayRequired`
+   aliases remain but carry NO description — do not use them for a documented tool param.)
 9. Add tests (pure-helper tests + FakeMCP tool tests), including the read-only call-surface
-   assertion for read tools and every rejection path for write tools (§ 8).
+   assertion for read tools and every rejection path for write tools (§ 8). The schema-contract
+   suite (`tests/test_tool_schemas.py`) auto-covers the six surfaces — extend its enum/spot-check
+   assertions for any new closed vocabulary.
 10. Update all four documentation touchpoints + the test-count inventory (§ 9).
 11. Bump the version (§ 10) and pass the quality gate (§ 11).
 12. Write a **handback debrief** (§ 14) — required when the change ships behaviour a consumer or a

@@ -1,23 +1,43 @@
 """List management tools for RTM MCP."""
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import Context
+from pydantic import Field
 
 from ..client import RTMClient
 from ..lookup import resolve_list_id
+from ..models import (
+    GET_LISTS_OUTPUT,
+    LIST_MESSAGE_OUTPUT,
+    LIST_WRITE_OUTPUT,
+)
 from ..parsers import format_list, parse_lists_response
-from ..response_builder import build_response, record_and_build_response
+from ..response_builder import (
+    ADDITIVE_WRITE_ANNOTATIONS,
+    DESTRUCTIVE_WRITE_ANNOTATIONS,
+    READ_ONLY_ANNOTATIONS,
+    build_response,
+    record_and_build_response,
+)
 
 
 def register_list_tools(mcp: Any, get_client: Any) -> None:
     """Register all list-related tools."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GET_LISTS_OUTPUT)
     async def get_lists(
         ctx: Context,
-        include_archived: bool = False,
-        include_smart: bool = True,
+        include_archived: Annotated[
+            bool,
+            Field(description="Include archived (hidden) lists in the result."),
+        ] = False,
+        include_smart: Annotated[
+            bool,
+            Field(
+                description="Include smart lists (saved-search views); set False for only writable lists."
+            ),
+        ] = True,
     ) -> dict[str, Any]:
         """Retrieve all RTM lists. Returns both regular and smart lists by default,
         sorted by position. Use this to find list names needed by move_task, add_task,
@@ -60,11 +80,16 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             },
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=LIST_WRITE_OUTPUT)
     async def add_list(
         ctx: Context,
-        name: str,
-        filter: str | None = None,
+        name: Annotated[str, Field(description="Name for the new list.")],
+        filter: Annotated[
+            str | None,
+            Field(
+                description="Optional RTM filter string; supplying it creates a read-only smart list. Omit for a regular list."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Create a new list. Optionally provide a filter string to create a smart list
         (a saved search). Smart lists are read-only — tasks cannot be added directly.
@@ -98,11 +123,16 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             tool_name="add_list",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=LIST_WRITE_OUTPUT)
     async def rename_list(
         ctx: Context,
-        list_name: str,
-        new_name: str,
+        list_name: Annotated[
+            str,
+            Field(
+                description="Current name of the list to rename (resolved to its id via get_lists)."
+            ),
+        ],
+        new_name: Annotated[str, Field(description="New name for the list.")],
     ) -> dict[str, Any]:
         """Rename a list. Locked system lists (e.g., Inbox, Sent) cannot be renamed.
         Use get_lists to see available list names.
@@ -135,10 +165,15 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             tool_name="rename_list",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=LIST_MESSAGE_OUTPUT)
     async def delete_list(
         ctx: Context,
-        list_name: str,
+        list_name: Annotated[
+            str,
+            Field(
+                description="Name of the list to delete (locked system lists like Inbox/Sent are rejected)."
+            ),
+        ],
     ) -> dict[str, Any]:
         """Delete a list. Locked system lists (e.g., Inbox, Sent) cannot be deleted.
         Tasks in the list should be moved or deleted first. Use get_lists to see
@@ -173,10 +208,15 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             tool_name="delete_list",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=LIST_WRITE_OUTPUT)
     async def archive_list(
         ctx: Context,
-        list_name: str,
+        list_name: Annotated[
+            str,
+            Field(
+                description="Name of the list to archive (hides it from default views; tasks remain filterable)."
+            ),
+        ],
     ) -> dict[str, Any]:
         """Archive a list. Archived lists are hidden from default views but their
         tasks remain accessible via filters. Use unarchive_list to restore.
@@ -208,10 +248,15 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             tool_name="archive_list",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=LIST_WRITE_OUTPUT)
     async def unarchive_list(
         ctx: Context,
-        list_name: str,
+        list_name: Annotated[
+            str,
+            Field(
+                description="Name of the archived list to restore (find it via get_lists(include_archived=True))."
+            ),
+        ],
     ) -> dict[str, Any]:
         """Restore an archived list back to active. Use get_lists(include_archived=True)
         to find archived list names.
@@ -243,10 +288,15 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             tool_name="unarchive_list",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=LIST_MESSAGE_OUTPUT)
     async def set_default_list(
         ctx: Context,
-        list_name: str,
+        list_name: Annotated[
+            str,
+            Field(
+                description="Name of the list to make the default target for add_task calls that omit a list."
+            ),
+        ],
     ) -> dict[str, Any]:
         """Set the default list for new tasks. When add_task is called without a
         list_name, tasks go to this list. Use get_lists to find available list names.
