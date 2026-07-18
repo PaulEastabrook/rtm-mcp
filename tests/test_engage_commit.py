@@ -14,11 +14,16 @@ from rtm_mcp.canvas_commit import (
 from rtm_mcp.engage_commit import (
     CALENDAR_ENTRY_TAG,
     SOMEDAY_TAG,
+    STEER_MAX_LEN,
+    STEER_VERBS,
     VERDICT_FAMILY,
     base_verdict,
     collect_engage_tags,
     date_phrase_for,
     is_legal,
+    make_steer_note,
+    sanitize_steer,
+    steer_note_text,
     suggest_verdict,
     validate,
     verdict_arg,
@@ -207,3 +212,53 @@ class TestCollectTags:
             AI_CONVERSATION,
             OVERLAY_REFRESH,
         }
+
+
+class TestProgressSteer:
+    def test_only_progress_verbs_consume_the_note(self):
+        assert STEER_VERBS == ("draft", "do_now", "nudge")
+
+    def test_sanitize_passes_clean_text(self):
+        clean, warning = sanitize_steer("chase Roshni re the course")
+        assert clean == "chase Roshni re the course"
+        assert warning is None
+
+    def test_sanitize_none_and_empty_are_noops(self):
+        assert sanitize_steer(None) == (None, None)
+        assert sanitize_steer("   ") == (None, None)
+        assert sanitize_steer("") == (None, None)
+
+    def test_sanitize_non_string_dropped_with_warning(self):
+        assert sanitize_steer(42) == (None, "note_not_string")
+        assert sanitize_steer({"x": 1}) == (None, "note_not_string")
+        assert sanitize_steer(["a"]) == (None, "note_not_string")
+
+    def test_sanitize_strips_control_chars_and_collapses_whitespace(self):
+        clean, warning = sanitize_steer("chase\tBob\n\n  now\x00")
+        assert clean == "chase Bob now"
+        assert warning is None
+
+    def test_sanitize_truncates_oversize_with_warning(self):
+        clean, warning = sanitize_steer("x" * (STEER_MAX_LEN + 50))
+        assert len(clean) == STEER_MAX_LEN
+        assert warning == "note_truncated"
+
+    def test_make_steer_note_title_and_pure_body(self):
+        title, text = make_steer_note("2026-07-18 14:30", "draft", "chase Roshni")
+        assert title == "2026-07-18 14:30 — STEER — draft"
+        assert text == "chase Roshni"  # body is pure — no marker pollution
+
+    def test_steer_note_text_round_trips(self):
+        title, text = make_steer_note("2026-07-18 14:30", "draft", "chase Roshni")
+        body = f"{title}\n{text}"
+        assert steer_note_text(body) == "chase Roshni"
+
+    def test_steer_note_text_multiline_body(self):
+        body = "2026-07-18 14:30 — STEER — do_now\nline one\nline two"
+        assert steer_note_text(body) == "line one\nline two"
+
+    def test_steer_note_text_rejects_non_steer_notes(self):
+        assert steer_note_text("COMMIT\nsome audit body") is None
+        assert steer_note_text("2026-07-18 14:30 — CHAT — me — scope\nhi") is None
+        assert steer_note_text("") is None
+        assert steer_note_text("just a plain note") is None

@@ -8,6 +8,38 @@ analysis.  RTM-specific parsing and formatting live in ``parsers.py``.
 from datetime import datetime
 from typing import Any
 
+from mcp.types import ToolAnnotations
+
+# --------------------------------------------------------------------------- #
+# Tool behaviour annotations — the MCP-standard hints a client/agent uses to
+# reason about a tool BEFORE calling it (safe to call speculatively? does it
+# mutate? is it reversible? is it idempotent?). Three constants span this
+# server's postures (see CONTRIBUTING § 3). `openWorldHint=True` everywhere:
+# every tool ultimately reaches the Remember The Milk SaaS API (an open,
+# non-deterministic world), unlike a local-only backend.
+#
+# `idempotentHint` is set conservatively (False) on both write constants — the
+# safe/pessimistic default (a retry is NOT assumed replay-safe). Where a specific
+# write IS naturally idempotent (e.g. set_task_name), that nuance is documented
+# in the tool's docstring, not the annotation. Hints are UX + speculative-call
+# signals, NOT enforcement: the deterministic gates (confirm_destructive, the
+# strict-tag existence gate, actionable typed errors) remain the sole safety
+# authority.
+# --------------------------------------------------------------------------- #
+
+READ_ONLY_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True)
+# Creates, additive field/tag updates, and the undo recovery path: mutate state
+# but never delete or blindly overwrite; reversible via undo/batch_undo.
+ADDITIVE_WRITE_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True
+)
+# Deletes and irreversible removals (delete_task/list/note; canvas/engage commit
+# completes+removes). `destructiveHint=True` even though undo can often reverse
+# them — classify honestly; the undo path lives in the docstring.
+DESTRUCTIVE_WRITE_ANNOTATIONS = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True
+)
+
 
 def build_response(
     data: dict[str, Any] | list[Any],

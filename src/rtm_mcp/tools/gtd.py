@@ -8,10 +8,11 @@ mechanical move.
 """
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
 from fastmcp import Context
+from pydantic import BeforeValidator, Field, WithJsonSchema
 
 from ..canvas_commit import (
     AI_CONVERSATION,
@@ -21,6 +22,7 @@ from ..canvas_commit import (
     CONTEXT_TAGS,
     EXECUTE_CLEAR_TAGS,
     OVERLAY_REFRESH,
+    VALID_EXECUTE_COMMIT,
     VALID_SCOPES,
     classifiers_to_tags,
     collect_commit_tags,
@@ -40,9 +42,14 @@ from ..companion import enrich_files, resolve_vault_root
 from ..engage_commit import (
     CALENDAR_ENTRY_TAG,
     SOMEDAY_TAG,
+    STEER_VERBS,
+    VERDICT_FAMILY,
     base_verdict,
     collect_engage_tags,
     date_phrase_for,
+    make_steer_note,
+    sanitize_steer,
+    steer_note_text,
     verdict_arg,
 )
 from ..engage_commit import validate as validate_engage
@@ -62,6 +69,20 @@ from ..gtd_chat import (
     project_descendants,
 )
 from ..lookup import resolve_list_id
+from ..models import (
+    CANVAS_COMMIT_OUTPUT,
+    CHAT_INFLIGHT_OUTPUT,
+    CHAT_POST_OUTPUT,
+    CHAT_THREAD_OUTPUT,
+    CREATE_PROJECT_OUTPUT,
+    ENGAGE_COMMIT_OUTPUT,
+    ENGAGE_SEED_OUTPUT,
+    PROJECT_CANVAS_OUTPUT,
+    PROJECT_INDEX_OUTPUT,
+    PROJECT_PLAN_OUTPUT,
+    SET_REDACTION_OUTPUT,
+    STAMP_TOKENS_OUTPUT,
+)
 from ..order_note import from_envelope as resolve_order_note
 from ..order_note import make as make_order_note
 from ..parsers import extract_note_body, parse_tasks_response, priority_to_code
@@ -75,10 +96,21 @@ from ..project_plan import (
     resolve_focus,
     resolve_project,
 )
-from ..response_builder import build_response, get_transaction_info
+from ..response_builder import (
+    ADDITIVE_WRITE_ANNOTATIONS,
+    DESTRUCTIVE_WRITE_ANNOTATIONS,
+    READ_ONLY_ANNOTATIONS,
+    build_response,
+    get_transaction_info,
+)
 from ..strict_tags import enforce_strict_tags, normalize_tag
 from ..tmpl_child import make_tmpl_child_note, new_slug, plan_backfill
-from ..tool_params import JsonObjArray, JsonObject, JsonStrArray, coerce_json
+from ..tool_params import (
+    coerce_json,
+    coerced_obj_array_schema,
+    coerced_object_schema,
+    coerced_str_array_schema,
+)
 from ..urls import build_task_url
 
 
@@ -88,16 +120,52 @@ def _utc_today() -> str:
     return datetime.now(UTC).date().isoformat()
 
 
+# Advisory input-constraint metadata (surface 4) — every enum is sourced from the canonical
+# constant it validates against (VALID_SCOPES / VALID_ROLES / VALID_MODES / VALID_EXECUTE_COMMIT /
+# VERDICT_FAMILY), so the advertised set can never drift from the handler. Typed dict[str, Any]
+# (pyright requires it for json_schema_extra / WithJsonSchema).
+_SCOPE_ENUM: dict[str, Any] = {"enum": sorted(VALID_SCOPES)}
+_ROLE_ENUM: dict[str, Any] = {"enum": sorted(VALID_ROLES)}
+_MODE_ENUM: dict[str, Any] = {"enum": sorted(VALID_MODES)}
+# execute is a {id: value} map — type the VALUE space with the closed set (now/later/quick/off).
+_EXECUTE_EXTRA: dict[str, Any] = {
+    "additionalProperties": {"type": "string", "enum": sorted(VALID_EXECUTE_COMMIT)}
+}
+# engage items[] — type the element object, surfacing the closed verdict enum.
+_ENGAGE_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "verdict": {"type": "string", "enum": sorted(VERDICT_FAMILY)},
+        "date_phrase": {"type": "string"},
+        "note": {"type": "string"},
+    },
+    "required": ["id", "verdict"],
+}
+
+
 def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     """Register GTD domain-composition tools."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=PROJECT_PLAN_OUTPUT)
     async def gtd_project_plan(
         ctx: Context,
-        project_id: str | None = None,
-        project_name: str | None = None,
-        list_id: str | None = None,
-        include_completed: bool = True,
+        project_id: Annotated[
+            str | None, Field(description="The project (parent) task id. Preferred when known.")
+        ] = None,
+        project_name: Annotated[
+            str | None,
+            Field(
+                description="Project name; resolved to an incomplete #project task (ambiguous → candidates)."
+            ),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(description="Optional — scope the fetch to one list (smaller/faster)."),
+        ] = None,
+        include_completed: Annotated[
+            bool, Field(description="Include completed children as history rows (default True).")
+        ] = True,
     ) -> dict[str, Any]:
         """GTD — return a whole project plan (the project + all its descendant items + every
         note, with full bodies) as the `project-plan-seed` envelope consumed by the GTD canvas.
@@ -166,15 +234,35 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         tz = await client.get_timezone()
         return build_response(data=build_envelope(parsed, pid, timezone=tz))
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=PROJECT_CANVAS_OUTPUT)
     async def gtd_project_canvas(
         ctx: Context,
-        project_id: str | None = None,
-        project_name: str | None = None,
-        list_id: str | None = None,
-        include_completed: bool = True,
-        lean: bool = True,
-        note_cap: int = 3,
+        project_id: Annotated[
+            str | None, Field(description="The project (parent) task id. Preferred when known.")
+        ] = None,
+        project_name: Annotated[
+            str | None,
+            Field(
+                description="Project name; resolved to an incomplete #project task (ambiguous → candidates)."
+            ),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(description="Optional — scope the fetch to one list (smaller/faster)."),
+        ] = None,
+        include_completed: Annotated[
+            bool,
+            Field(description="Include completed children as inert history rows (default True)."),
+        ] = True,
+        lean: Annotated[
+            bool,
+            Field(
+                description="Emit the inline-widget profile — drop note bodies, cap notes per item (default True)."
+            ),
+        ] = True,
+        note_cap: Annotated[
+            int, Field(description="Max notes kept per item when lean (default 3).")
+        ] = 3,
     ) -> dict[str, Any]:
         """GTD — return a project plan as the canvas-ready seed the project-plan-canvas artifact
         renders directly. The read-sibling of gtd_project_plan: same single read, but with the
@@ -281,10 +369,15 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         return build_response(data=seed, analysis=analysis)
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=PROJECT_INDEX_OUTPUT)
     async def gtd_project_index(
         ctx: Context,
-        include_someday: bool = False,
+        include_someday: Annotated[
+            bool,
+            Field(
+                description="Include #someday projects AND foci (default False; #hold always excluded)."
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         """GTD — return the active-project portfolio for the cockpit navigator: per-project rows
         (open / blocked counts + next tickle, grouped by life → focus), the complete focus list, and
@@ -362,19 +455,92 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             }
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CANVAS_COMMIT_OUTPUT)
     async def gtd_apply_canvas_commit(
         ctx: Context,
-        project_id: str,
-        order: JsonStrArray = None,
-        edits: JsonObject = None,
-        adds: JsonObjArray = None,
-        completes: JsonStrArray = None,
-        removes: JsonStrArray = None,
-        execute: JsonObject = None,
-        notes: JsonObject = None,
-        confirm_destructive: bool = False,
-        scope: str = "plan",
+        project_id: Annotated[
+            str,
+            Field(
+                description="The project (parent) task id; every referenced child id must belong to it."
+            ),
+        ],
+        order: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema(
+                    "Dragged open-item order (ids); persisted as a durable ORDER note on the project."
+                )
+            ),
+        ] = None,
+        edits: Annotated[
+            dict[str, Any] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_object_schema(
+                    "{id: {priority?, context?, comms?, chase?/calendar_date?/due?, text?}} — per-item field edits."
+                )
+            ),
+        ] = None,
+        adds: Annotated[
+            list[dict[str, Any]] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_obj_array_schema(
+                    "[{type: action|waiting_for|calendar, text, classifiers:{context?,comms?,priority?,quick?}, "
+                    "chase?/calendar_date?/due?}] — items created on Processed, parented to the project."
+                )
+            ),
+        ] = None,
+        completes: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema(
+                    "Ids to complete — DESTRUCTIVE, requires confirm_destructive=True."
+                )
+            ),
+        ] = None,
+        removes: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema(
+                    "Ids to remove (RTM soft-delete) — DESTRUCTIVE, requires confirm_destructive=True."
+                )
+            ),
+        ] = None,
+        execute: Annotated[
+            dict[str, Any] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_object_schema(
+                    "{id: 'now'|'later'|'quick'|'off'} — durable progression signal (child-only). "
+                    "'off' clears the directive.",
+                    extra=_EXECUTE_EXTRA,
+                )
+            ),
+        ] = None,
+        notes: Annotated[
+            dict[str, Any] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_object_schema("{id: {type, text}} — a journaling note per item.")
+            ),
+        ] = None,
+        confirm_destructive: Annotated[
+            bool,
+            Field(
+                description="Must be True for any completes/removes; else the batch is rejected."
+            ),
+        ] = False,
+        scope: Annotated[
+            str,
+            Field(
+                description="Audit-note placement label: instant | item | project | plan (default plan). Label only.",
+                json_schema_extra=_SCOPE_ENUM,
+            ),
+        ] = "plan",
     ) -> dict[str, Any]:
         """GTD — the single governed write surface for a project-plan-canvas commit. The artifact
         stages edits locally and commits them in ONE call here; governance lives in this tool, not
@@ -811,12 +977,37 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CREATE_PROJECT_OUTPUT)
     async def gtd_create_project(
         ctx: Context,
-        frame: JsonObject = None,
-        items: JsonObjArray = None,
-        notes: JsonObjArray = None,
+        frame: Annotated[
+            dict[str, Any] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_object_schema(
+                    "{life (work|personal|leanworking), focus (area name/id), name (required), outcome}."
+                )
+            ),
+        ] = None,
+        items: Annotated[
+            list[dict[str, Any]] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_obj_array_schema(
+                    "[{id, type, text, classifiers, chase?/calendar_date?/due?, start?, estimate?, "
+                    "deps:[in-draft ids], done?, execute?, notes}] — the child items in dependency order."
+                )
+            ),
+        ] = None,
+        notes: Annotated[
+            list[dict[str, Any]] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_obj_array_schema(
+                    "[{title?/type?, text/body}] — project-level notes (e.g. the authored INCEPTION)."
+                )
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """GTD — the single governed write surface for creating a NEW project from a canvas draft.
         The create-sibling of gtd_apply_canvas_commit: where commit edits an existing project, this
@@ -1143,11 +1334,18 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=STAMP_TOKENS_OUTPUT)
     async def gtd_stamp_tokens(
         ctx: Context,
-        project_id: str | None = None,
-        dry_run: bool = False,
+        project_id: Annotated[
+            str | None,
+            Field(
+                description="Repeating project's task id; omit to sweep every active repeating templated project."
+            ),
+        ] = None,
+        dry_run: Annotated[
+            bool, Field(description="Compute and return the plan WITHOUT writing anything.")
+        ] = False,
     ) -> dict[str, Any]:
         """GTD — stamp durable template-child tokens on a repeating templated project's children so
         its dependencies survive recurrence (repeating-templated-project Wave B). A bounded,
@@ -1334,14 +1532,36 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CHAT_POST_OUTPUT)
     async def gtd_chat_post(
         ctx: Context,
-        task_id: str,
-        text: str,
-        role: str = "me",
-        scope: str | None = None,
-        mode: str | None = None,
+        task_id: Annotated[
+            str,
+            Field(
+                description="Target task id (a project or item, from gtd_project_index/list_tasks)."
+            ),
+        ],
+        text: Annotated[str, Field(description="The message body (plain; markdown allowed).")],
+        role: Annotated[
+            str,
+            Field(
+                description="'me' (Paul's turn, default) or 'ai' (the worker's reply).",
+                json_schema_extra=_ROLE_ENUM,
+            ),
+        ] = "me",
+        scope: Annotated[
+            str | None,
+            Field(
+                description="Optional short display label for the title; defaults to the task name."
+            ),
+        ] = None,
+        mode: Annotated[
+            str | None,
+            Field(
+                description="Posture for a 'me' turn — 'discuss' | 'act' (ignored for 'ai' turns).",
+                json_schema_extra=_MODE_ENUM,
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """GTD — post one turn of the in-board AI conversation surface (the CHAT note class) to a
         task and manage the worker's drain signal in ONE signed call. The board's governed write
@@ -1491,11 +1711,18 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CHAT_THREAD_OUTPUT)
     async def gtd_chat_thread(
         ctx: Context,
-        task_id: str,
-        since: str | None = None,
+        task_id: Annotated[
+            str, Field(description="Target task id (a project or item, incomplete or completed).")
+        ],
+        since: Annotated[
+            str | None,
+            Field(
+                description="Optional ISO-8601 timestamp — return only turns created strictly after it."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """GTD — return just the CHAT turns for a task: the cheap poll path for the in-board AI
         conversation surface (vs re-reading the whole canvas). The read-sibling of gtd_chat_post.
@@ -1560,7 +1787,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         requested = AI_CHAT_REQUESTED in tags
         return build_response(data={"task_id": task["id"], "turns": turns, "requested": requested})
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CHAT_INFLIGHT_OUTPUT)
     async def gtd_chat_inflight(ctx: Context) -> dict[str, Any]:
         """GTD — the conversation cockpit's cross-project live band: every incomplete item with an
         open CHAT thread (#ai_chat), across all lists/projects, in one read. The per-project canvas
@@ -1587,11 +1814,16 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         result = await client.call("rtm.tasks.getList", filter="status:incomplete")
         return build_response(data=build_inflight(parse_tasks_response(result)))
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=SET_REDACTION_OUTPUT)
     async def gtd_set_redaction(
         ctx: Context,
-        task_id: str,
-        redacted: bool,
+        task_id: Annotated[
+            str,
+            Field(description="Target task id (a #project or an item, incomplete or completed)."),
+        ],
+        redacted: Annotated[
+            bool, Field(description="True to add #redacted (draw the curtain); False to remove it.")
+        ],
     ) -> dict[str, Any]:
         """GTD — mark or unmark a task's #redacted viewing curtain: the single governed write surface
         the project-plan-canvas is given for redaction (the sandboxed board may not call the bare
@@ -1680,7 +1912,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id if tag_tx else None,
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ENGAGE_SEED_OUTPUT)
     async def gtd_engage_seed(ctx: Context) -> dict[str, Any]:
         """GTD — return the overdue + soft-parked set for the engage renegotiation sweep: every dated
         item at/after its date, each with server-derived flags. The read ground truth both engage
@@ -1733,11 +1965,26 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         "draft": [AI_PROGRESS, AI_CONVERSATION],
     }
 
-    @mcp.tool()
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=ENGAGE_COMMIT_OUTPUT)
     async def gtd_apply_engage_commit(
         ctx: Context,
-        items: JsonObjArray = None,
-        confirm_destructive: bool = False,
+        items: Annotated[
+            list[dict[str, Any]] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_obj_array_schema(
+                    "[{id, verdict, date_phrase?, note?}] — the renegotiation verdicts to apply "
+                    "(re-validated server-side; nothing written if any is rejected).",
+                    item_schema=_ENGAGE_ITEM_SCHEMA,
+                )
+            ),
+        ] = None,
+        confirm_destructive: Annotated[
+            bool,
+            Field(
+                description="Must be True for any 'drop' verdict (a soft-delete); else the batch is rejected."
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         """GTD — the single governed write surface for an engage renegotiation-sweep commit: gtd's
         Anti-Corruption Layer over an untrusted client (the board's askClaude is advisory — it stages
@@ -1752,13 +1999,19 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         authoritative) — a hallucinated/unparseable phrase is rejected before any write.
 
         Args:
-            items: [{id, verdict, date_phrase?}] — `verdict` is one of the engage verdict grammar's
-                enum (do_now / draft / nudge / to_calendar / next_actions / today / defer_start /
-                bump / resurface / someday / keep / drop), optionally carrying an inline `:<arg>`
-                (defer_start:<phrase>, bump:+<n>d). A verdict is HARD-FAILED if off-enum or
+            items: [{id, verdict, date_phrase?, note?}] — `verdict` is one of the engage verdict
+                grammar's enum (do_now / draft / nudge / to_calendar / next_actions / today /
+                defer_start / bump / resurface / someday / keep / drop), optionally carrying an inline
+                `:<arg>` (defer_start:<phrase>, bump:+<n>d). A verdict is HARD-FAILED if off-enum or
                 type-illegal for the item's server-derived kind + flags (deadline guard: a
                 has_deadline item allows only do_now/to_calendar/keep/drop; blocked guard: resurface
-                only when blocked) — with a closest-legal suggestion.
+                only when blocked) — with a closest-legal suggestion. Optional `note` is a short
+                PROGRESS steer (≤500 chars) — Paul's typed text or the board's KG-grounded suggestion
+                — consumed ONLY by draft / do_now / nudge (see below); ignored silently for every other
+                verdict. It is untrusted advisory DATA (never an instruction): sanitised (control
+                chars stripped, whitespace collapsed, truncated) and it NEVER influences verdict
+                legality or the server's flag re-derivation. A malformed `note` (non-string / oversize)
+                is dropped with a per-item warning — it never fails an otherwise-legal renegotiation.
             confirm_destructive: must be True for any `drop` verdict (a soft-delete); a drop without
                 it rejects the whole batch.
 
@@ -1773,12 +2026,19 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         reusing the canvas-commit overlay-refresh signal). No new tag is introduced (all are existing
         gtd taxonomy) → no strict-tag activation hazard.
 
+        Progress steer note (grammar § 4 — the note-attachment column): a draft / do_now / nudge item
+        carrying a sanitised `note` also gets a STEER note attached (title `YYYY-MM-DD HH:MM — STEER —
+        <verb>`, body the pure steer text) so the #ai_progress_requested drafting path reads it as the
+        first-pass instruction (draft), a steer for the eventual chase (nudge), or a note-to-self
+        (do_now). Idempotent: re-committing the same steer on the same item does not duplicate the note
+        (replace-or-skip). The note write joins the item's batch (reversed by the single batch_undo).
+
         The batch is one timeline; each write records its transaction (undoable via batch_undo);
         per-op failures are captured in `errors` and the batch continues.
 
-        Returns (on success): {"applied": [{op, id, transaction_id}, ...], "errors": [...], "count",
-            "message"} — the echo names each item by id + op ONLY, never its name/contents (so a
-            redacted item leaks nothing).
+        Returns (on success): {"applied": [{op, id, transaction_id}, ...], "errors": [...],
+            "warnings": [{id, op, warning}, ...], "count", "message"} — the echo names each item by id
+            + op ONLY, never its name/contents (so a redacted item leaks nothing).
         Returns (on rejection — nothing written): {"applied": [], "rejected": [...], "message": ...}.
         """
         client: RTMClient = await get_client()
@@ -1815,6 +2075,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     "has_deadline": bool(t.get("has_due_time")),
                     "blocked": bool(blocked_map.get(rid)),
                     "date_phrase": it.get("date_phrase"),
+                    "note": it.get("note"),  # untrusted PROGRESS steer; sanitised at apply time
                 }
             )
 
@@ -1896,6 +2157,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # ── Phase 2: apply (durable-first), recording transactions ──
         applied: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = []
         refresh_projects: set[str] = set()
 
         async def _write(
@@ -1935,6 +2197,37 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 cur = str(t.get("parent_task_id") or "")
             return None
 
+        async def _attach_steer(rid: str, verb: str, raw_note: Any, ids: dict[str, Any]) -> None:
+            """Attach the sanitised PROGRESS steer as a STEER note (draft/do_now/nudge only). A
+            malformed note is dropped with a per-item warning; the verdict write stands. Idempotent:
+            an identical STEER note already on the item is left as-is (replace-or-skip)."""
+            if verb not in STEER_VERBS:
+                return
+            clean, warning = sanitize_steer(raw_note)
+            if warning:
+                warnings.append({"id": rid, "op": f"engage:{verb}", "warning": warning})
+            if not clean:
+                return
+            for n in by_id.get(rid, {}).get("notes") or []:
+                if steer_note_text(extract_note_body(n)) == clean:
+                    applied.append(
+                        {
+                            "op": f"engage:{verb}:steer-note (skipped, duplicate)",
+                            "id": rid,
+                            "transaction_id": None,
+                        }
+                    )
+                    return
+            title, text = make_steer_note(local_stamp(tz), verb, clean)
+            await _write(
+                "rtm.tasks.notes.add",
+                f"engage:{verb}:steer-note",
+                rid,
+                note_title=title,
+                note_text=text,
+                **ids,
+            )
+
         for v in val_items:
             rid = v["id"]
             verb = base_verdict(v["verdict"])
@@ -1942,6 +2235,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
             if verb in ("keep", "do_now"):
                 applied.append({"op": f"engage:{verb}", "id": rid, "transaction_id": None})
+                await _attach_steer(rid, verb, v.get("note"), ids)  # do_now → note-to-self
                 continue
             if verb == "drop":
                 await _write("rtm.tasks.delete", "engage:drop (soft-delete)", rid, **ids)
@@ -1985,6 +2279,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "rtm.tasks.addTags", f"engage:{verb}:tags", rid, tags=",".join(add_tags), **ids
             )
 
+            # PROGRESS steer note (draft/nudge among the fall-through verbs; do_now handled above).
+            await _attach_steer(rid, verb, v.get("note"), ids)
+
             # Progression signal (someday/resurface) — stamp the overlay-refresh mark on the item's
             # nearest #project ancestor so the gtd-side finalise engine recomputes the plan-graph
             # overlay (the server-side equivalent of firing state_transition). Deduped per project.
@@ -2011,6 +2308,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             data={
                 "applied": applied,
                 "errors": errors,
+                "warnings": warnings,
                 "count": len(val_items),
                 "message": f"Applied {len(applied)} write(s); {len(errors)} error(s).",
             },

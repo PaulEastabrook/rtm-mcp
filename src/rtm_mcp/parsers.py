@@ -94,26 +94,31 @@ def _priority_label(priority: str) -> str:
     return labels.get(priority, "none")
 
 
+# The single canonical priority-INPUT vocabulary: the accepted tokens a caller may pass to the
+# `priority` param (set_task_priority) mapped to RTM's wire codes ("1"/"2"/"3"/"N"). This is the ONE
+# source of truth for that param's advertised `enum` (sorted(PRIORITY_INPUT_CODES)) so the schema can
+# never drift from what priority_to_code() actually accepts. (Distinct from the read-side word/code
+# maps in canvas_seed/project_plan/project_index, which convert RTM's stored "High"/"Medium"/… forms
+# — a different fact, not a copy of this one.)
+PRIORITY_INPUT_CODES: dict[str, str] = {
+    "high": "1",
+    "1": "1",
+    "medium": "2",
+    "2": "2",
+    "low": "3",
+    "3": "3",
+    "none": "N",
+    "0": "N",
+    "n": "N",
+}
+
+
 def priority_to_code(priority: str | int | None) -> str:
     """Convert priority label/number to RTM code."""
     if priority is None:
         return "N"
 
-    priority_str = str(priority).lower()
-
-    mapping = {
-        "high": "1",
-        "1": "1",
-        "medium": "2",
-        "2": "2",
-        "low": "3",
-        "3": "3",
-        "none": "N",
-        "0": "N",
-        "n": "N",
-    }
-
-    return mapping.get(priority_str, "N")
+    return PRIORITY_INPUT_CODES.get(str(priority).lower(), "N")
 
 
 # ---------------------------------------------------------------------------

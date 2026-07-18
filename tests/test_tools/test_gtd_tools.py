@@ -15,7 +15,7 @@ class FakeMCP:
     def __init__(self):
         self.tools: dict[str, Any] = {}
 
-    def tool(self):
+    def tool(self, *_args, **_kwargs):
         def decorator(fn):
             self.tools[fn.__name__] = fn
             return fn
@@ -3188,3 +3188,142 @@ class TestGtdApplyEngageCommit:
         assert res["data"]["applied"] == []
         assert any(r["reason"] == "non_canonical_tag" for r in res["data"]["rejected"])
         assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
+
+    # ── PROGRESS steer note (the per-item `note` — Tier 1) ──────────────────────────────────────
+
+    @staticmethod
+    def _steer_notes(client):
+        return [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.notes.add"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_draft_with_note_attaches_steer_note(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(),
+            items=[{"id": "a1", "verdict": "draft", "note": "chase Roshni re course"}],
+        )
+        assert res["data"]["errors"] == []
+        notes = self._steer_notes(client)
+        assert len(notes) == 1
+        assert "— STEER — draft" in notes[0].kwargs["note_title"]
+        assert notes[0].kwargs["note_text"] == "chase Roshni re course"  # pure body
+        # the drafting signal still fired
+        addtags = [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.addTags"
+        ]
+        assert any("ai_progress_requested" in c.kwargs.get("tags", "") for c in addtags)
+        # note write recorded a transaction (reversed by batch_undo with the verdict write)
+        assert client.record_transaction.call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_do_now_with_note_attaches_note_to_self_no_progress_tag(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "a1", "verdict": "do_now", "note": "just do it"}]
+        )
+        assert res["data"]["errors"] == []
+        notes = self._steer_notes(client)
+        assert len(notes) == 1
+        assert "— STEER — do_now" in notes[0].kwargs["note_title"]
+        # do_now has no durable tag write
+        assert not any(
+            c.args[0] == "rtm.tasks.addTags" for c in client.call.call_args_list if c.args
+        )
+
+    @pytest.mark.asyncio
+    async def test_nudge_with_note_retickles_and_attaches_steer(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "wf", "verdict": "nudge", "note": "chase Bob"}]
+        )
+        assert res["data"]["errors"] == []
+        due = next(
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.setDueDate"
+        )
+        assert due.kwargs["due"] == "2026-07-16T00:00:00Z"  # re-tickled to today
+        notes = self._steer_notes(client)
+        assert len(notes) == 1 and "— STEER — nudge" in notes[0].kwargs["note_title"]
+
+    @pytest.mark.asyncio
+    async def test_note_ignored_on_defer_and_guard_verdicts(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(),
+            items=[
+                {"id": "a1", "verdict": "today", "note": "should be ignored"},
+                {"id": "hd", "verdict": "keep", "note": "also ignored"},
+            ],
+        )
+        assert res["data"]["errors"] == []
+        assert self._steer_notes(client) == []  # no note written for defer/guard verdicts
+
+    @pytest.mark.asyncio
+    async def test_oversize_note_truncated_with_warning(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "a1", "verdict": "draft", "note": "x" * 700}]
+        )
+        assert res["data"]["errors"] == []
+        notes = self._steer_notes(client)
+        assert len(notes) == 1 and len(notes[0].kwargs["note_text"]) == 500
+        assert any(w["warning"] == "note_truncated" for w in res["data"]["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_non_string_note_dropped_gracefully(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "a1", "verdict": "draft", "note": {"not": "a string"}}]
+        )
+        assert res["data"]["errors"] == []
+        assert self._steer_notes(client) == []  # note dropped
+        assert any(w["warning"] == "note_not_string" for w in res["data"]["warnings"])
+        # the verdict write still committed
+        addtags = [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.addTags"
+        ]
+        assert any("ai_progress_requested" in c.kwargs.get("tags", "") for c in addtags)
+
+    @pytest.mark.asyncio
+    async def test_idempotent_recommit_does_not_duplicate_note(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ets(
+                    "ts1",
+                    "a1",
+                    "Soft action",
+                    due="2020-01-01",
+                    tags=["action"],
+                    notes=[
+                        {
+                            "id": "s1",
+                            "created": "2026-07-01T00:00:00Z",
+                            "title": "",
+                            "$t": "2026-07-01 09:00 — STEER — draft\nchase Bob",
+                        }
+                    ],
+                ),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_engage_dispatch(tree))
+
+        res = await tools["gtd_apply_engage_commit"](
+            FakeContext(), items=[{"id": "a1", "verdict": "draft", "note": "chase Bob"}]
+        )
+        assert res["data"]["errors"] == []
+        assert self._steer_notes(client) == []  # identical steer already present → skipped
+        assert any("skipped, duplicate" in a["op"] for a in res["data"]["applied"])

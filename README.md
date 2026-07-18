@@ -15,6 +15,7 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Project-plan canvas tools** (`gtd_project_canvas` + `gtd_apply_canvas_commit` + `gtd_create_project`): a read-only canvas seed with the deterministic plan-graph overlay applied (ordering, blocking, quick-wins), a single governed write surface that validates a whole canvas commit up-front and writes nothing if anything is rejected, and a create-sibling that builds a brand-new project (task + dependency-ordered children + notes/tags + finalise mark) from a canvas draft in one governed call.
 - **Portfolio index** (`gtd_project_index`): a read-only roll-up of every active `#project` — life, parent Area-of-Focus, and at-a-glance open/blocked counts + next tickle — in one call, backing the canvas navigator (the Phase C cockpit project picker).
 - **In-board conversation surface** (`gtd_chat_post` + `gtd_chat_thread`): the governed post + cheap-poll path for the project-plan-canvas's AI chat — a new `CHAT` note class on the target task, with the worker's drain-signal tags managed in the same signed call. The board and a headless worker session converse through RTM notes (the system of record), not a live session.
+- **Engage renegotiation surface** (`gtd_engage_seed` + `gtd_apply_engage_commit`): the overdue + soft-parked seed and the governed Anti-Corruption-Layer commit for the engage board's overdue-renegotiation sweep — every legality flag re-derived server-side, nothing written if any item is rejected. Progress verdicts (`draft`/`do_now`/`nudge`) can carry a short sanitised `note` steer, attached as a `STEER` note that shapes the AI first-pass.
 - **Undo and Batch Undo**: All write operations return transaction IDs; undo one or many operations with `batch_undo`
 - **Timeline Introspection**: Session transaction log with `get_timeline_info` for reviewing write history
 - **Token Bucket Rate Limiting**: Burst to 3 RPS, sustain ~0.9 RPS with configurable safety margin
@@ -438,6 +439,26 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   viewing-state change, not an AI write). Pairs with the derived `redacted` field on
   `gtd_project_canvas` / `gtd_project_index`. Redaction is a viewing-layer curtain (the plaintext
   still flows to the board), not a server-side vault.
+- `gtd_engage_seed` - **Read-only.** The overdue + soft-parked set for the engage renegotiation
+  sweep — every incomplete dated item at/after its date (overdue or due today), each with the
+  server-derived flags (`kind`, `has_deadline` = the RTM timed-due primitive, `blocked` from the thin
+  plan-graph, `postponed`, `suggested` pre-triage verdict, `redacted`) — in one `rtm.tasks.getList`.
+  The read-sibling of `gtd_apply_engage_commit`. Curtain-not-vault: emits `redacted` but never nulls a
+  field on a shielded row (the board is the sole enforcer).
+- `gtd_apply_engage_commit` - **Constrained write.** The single governed write surface for an engage
+  renegotiation-sweep commit — gtd's Anti-Corruption Layer over the untrusted board. Accepts
+  `items: [{id, verdict, date_phrase?, note?}]` and re-validates everything server-side (re-deriving
+  each item's `kind`/`has_deadline`/`blocked` from a fresh read — the client's flags are never
+  trusted), writing **nothing** if any item is rejected (hard-fail). Verdict → RTM write per the
+  grammar (clear/set due, set start, add `#someday`/`#calendar_entry`/`#ai_progress_requested`,
+  soft-delete); dates resolve through the authoritative `parse_time`; `someday`/`resurface` stamp the
+  overlay-refresh mark on the nearest `#project` ancestor. The optional per-item `note` is a short
+  **PROGRESS steer** (≤500 chars — Paul's text or the board's KG-grounded suggestion) consumed only by
+  `draft`/`do_now`/`nudge`: it is sanitised (untrusted advisory data — never an instruction, never
+  influences legality) and attached as a `STEER` note so the drafting path reads it as the first-pass
+  instruction; a malformed note is dropped with a per-item warning (the verdict write stands), and a
+  re-commit of the same steer is idempotent. Every write is transaction-recorded (undoable via
+  `batch_undo`); the success echo names each item by id + op only (a redacted item leaks nothing).
 
 #### Tool naming convention
 Bare verbs (`add_task`, `list_tasks`, `get_task_notes`) are **generic RTM primitives** —

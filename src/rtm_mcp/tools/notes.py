@@ -1,17 +1,26 @@
 """Note management tools for RTM MCP."""
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import Context
+from pydantic import Field
 
 from ..client import RTMClient
 from ..lookup import find_task, resolve_task_ids
+from ..models import (
+    DELETE_NOTE_OUTPUT,
+    NOTE_WRITE_OUTPUT,
+    TASK_NOTES_OUTPUT,
+)
 from ..parsers import (
     ensure_list,
     extract_note_body,
     parse_tasks_response,
 )
 from ..response_builder import (
+    ADDITIVE_WRITE_ANNOTATIONS,
+    DESTRUCTIVE_WRITE_ANNOTATIONS,
+    READ_ONLY_ANNOTATIONS,
     build_response,
     record_and_build_response,
 )
@@ -20,15 +29,39 @@ from ..response_builder import (
 def register_note_tools(mcp: Any, get_client: Any) -> None:
     """Register all note-related tools."""
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=NOTE_WRITE_OUTPUT)
     async def add_note(
         ctx: Context,
-        note_text: str,
-        note_title: str = "",
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        note_text: Annotated[
+            str,
+            Field(description="The note body content."),
+        ],
+        note_title: Annotated[
+            str,
+            Field(description="Optional note title/heading."),
+        ] = "",
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Add a text note to a task. Tasks can have multiple notes. Use get_task_notes
         to see existing notes on a task.
@@ -82,16 +115,43 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
             tool_name="add_note",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=NOTE_WRITE_OUTPUT)
     async def edit_note(
         ctx: Context,
-        note_id: str,
-        note_text: str,
-        note_title: str = "",
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        note_id: Annotated[
+            str,
+            Field(description="ID of the note (from get_task_notes)."),
+        ],
+        note_text: Annotated[
+            str,
+            Field(description="New body content (replaces the existing body)."),
+        ],
+        note_title: Annotated[
+            str,
+            Field(description="New title; empty string clears it."),
+        ] = "",
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Edit an existing note's content and/or title. Get the note_id from
         get_task_notes. Requires all three task IDs or a task_name.
@@ -142,14 +202,35 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
             tool_name="edit_note",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=DELETE_NOTE_OUTPUT)
     async def delete_note(
         ctx: Context,
-        note_id: str,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        note_id: Annotated[
+            str,
+            Field(description="ID of the note (from get_task_notes)."),
+        ],
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Delete a note from a task. Get the note_id from get_task_notes. The
         deletion can be reversed with undo using the returned transaction_id.
@@ -185,13 +266,31 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
             tool_name="delete_note",
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TASK_NOTES_OUTPUT)
     async def get_task_notes(
         ctx: Context,
-        task_name: str | None = None,
-        task_id: str | None = None,
-        taskseries_id: str | None = None,
-        list_id: str | None = None,
+        task_name: Annotated[
+            str | None,
+            Field(
+                description="Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
+            ),
+        ] = None,
+        task_id: Annotated[
+            str | None,
+            Field(
+                description="Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
+            ),
+        ] = None,
+        taskseries_id: Annotated[
+            str | None,
+            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+        ] = None,
+        list_id: Annotated[
+            str | None,
+            Field(
+                description="List ID containing the task, from list_tasks; part of the exact-task id triple."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Retrieve all notes attached to a task. Use this to find note IDs needed
         by edit_note and delete_note. Use list_tasks with filter "hasNotes:true" to

@@ -66,3 +66,54 @@ JsonStrArrayRequired = Annotated[
     BeforeValidator(coerce_json),
     WithJsonSchema({"type": "array", "items": {"type": "string"}}),
 ]
+
+
+# --------------------------------------------------------------------------- #
+# Schema-dict builders for the tool-documentation standard (surface 2 + 4).
+#
+# The `Annotated` aliases above present a clean schema but carry NO per-parameter
+# `description` (and `WithJsonSchema` REPLACES the generated schema, so a sibling
+# `Field(description=...)` is silently dropped). These helpers return the schema
+# *dict* to hand to `WithJsonSchema` with the description (and, for structured
+# params, an item/value schema carrying enums) baked in — used inline as
+# `Annotated[T, BeforeValidator(coerce_json), WithJsonSchema(coerced_*_schema(...))]`
+# so the coercion machinery is preserved AND the description reaches the client.
+# They return `dict[str, Any]` (not an `Annotated` type) because a call expression
+# is not permitted inside a type annotation (pyright reportInvalidTypeForm).
+# --------------------------------------------------------------------------- #
+
+
+def coerced_str_array_schema(description: str, *, required: bool = False) -> dict[str, Any]:
+    """WithJsonSchema dict for a `list[str]` coercion param (clean single-typed array)."""
+    schema: dict[str, Any] = {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": description,
+    }
+    if not required:
+        schema["default"] = None
+    return schema
+
+
+def coerced_obj_array_schema(
+    description: str, *, item_schema: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """WithJsonSchema dict for a `list[dict]` coercion param. `item_schema` (optional) types the
+    element object — e.g. an object with a closed `verdict`/`type` enum — for a richer contract."""
+    return {
+        "type": "array",
+        "items": item_schema or {"type": "object"},
+        "default": None,
+        "description": description,
+    }
+
+
+def coerced_object_schema(
+    description: str, *, extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """WithJsonSchema dict for a `dict` coercion param. `extra` merges additional schema keys
+    (e.g. `additionalProperties` typing the value space with an enum)."""
+    schema: dict[str, Any] = {"type": "object", "default": None, "description": description}
+    if extra:
+        schema.update(extra)
+    return schema

@@ -227,14 +227,18 @@ This server provides full access to Remember The Milk's task management features
   localised current_date). Curtain-not-vault: emits `redacted` but never suppresses a field.
 - gtd_apply_engage_commit: Constrained write — the governed commit for an engage-sweep batch (gtd's
   Anti-Corruption Layer over the board's advisory askClaude). Accepts {items:[{id, verdict,
-  date_phrase?}]} and re-validates everything server-side (kind/has_deadline/blocked re-derived —
+  date_phrase?, note?}]} and re-validates everything server-side (kind/has_deadline/blocked re-derived —
   client flags never trusted); dates resolve through parse_time (Europe/London, authoritative). Maps
   each legal verdict to its RTM write (next_actions/resurface → clear due; today/bump → set due;
   defer_start → set start; nudge → re-tickle; someday → #someday; to_calendar → #calendar_entry;
   draft → #ai_progress_requested; keep/do_now → no-op; drop → soft-delete), #ai_conversation on every
   write, someday/resurface signal the progression engine (#ai_overlay_refresh_needed on the nearest
-  #project). HARD-FAIL: an off-enum / type-illegal / hallucinated-date / not-found item rejects the
-  whole batch with nothing written. One undoable batch. No new tag.
+  #project). An optional per-item `note` — a short PROGRESS steer (≤500 chars) — is consumed only by
+  draft/do_now/nudge: sanitised (untrusted advisory data, never influences legality) and attached as a
+  STEER note that shapes the AI first-pass; a malformed note is dropped with a per-item warning (the
+  verdict write stands), and a repeat of the same steer is idempotent. HARD-FAIL: an off-enum /
+  type-illegal / hallucinated-date / not-found item rejects the whole batch with nothing written. One
+  undoable batch. No new tag.
 
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
