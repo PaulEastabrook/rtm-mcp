@@ -1,4 +1,4 @@
-.PHONY: install dev lint format test test/coverage run clean help
+.PHONY: install dev lint format test test/coverage fingerprints run clean help
 
 help:
 	@echo "RTM MCP Server - Development Commands"
@@ -9,6 +9,7 @@ help:
 	@echo "  make format       Format code with ruff"
 	@echo "  make test         Run tests"
 	@echo "  make test/coverage Run tests with coverage"
+	@echo "  make fingerprints Regenerate tool-fingerprints.json (run when tool schemas change)"
 	@echo "  make run          Run the MCP server"
 	@echo "  make setup        Run auth setup script"
 	@echo "  make inspect      Run MCP Inspector"
@@ -34,6 +35,9 @@ test:
 
 test/coverage:
 	uv run pytest --cov=src/rtm_mcp --cov-report=term-missing --cov-report=html
+
+fingerprints:
+	uv run python scripts/dump-tool-fingerprints.py
 
 run:
 	uv run rtm-mcp

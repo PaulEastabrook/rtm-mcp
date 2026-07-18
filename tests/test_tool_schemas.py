@@ -9,6 +9,10 @@ the handler), structured params are exposed, and every tool advertises an `outpu
 (mcp-tool-documentation-standard.md § 4/§ 5).
 """
 
+import importlib.util
+import json
+from pathlib import Path
+
 from rtm_mcp.canvas_commit import COMMIT_REJECT_REASONS, VALID_EXECUTE_COMMIT, VALID_SCOPES
 from rtm_mcp.canvas_create import CREATE_REJECT_REASONS
 from rtm_mcp.engage_commit import ENGAGE_REJECT_REASONS, VERDICT_FAMILY
@@ -16,6 +20,19 @@ from rtm_mcp.gtd_chat import VALID_MODES, VALID_ROLES
 from rtm_mcp.parsers import PRIORITY_INPUT_CODES
 from rtm_mcp.server import mcp
 from rtm_mcp.tools.tasks import MOVE_DIRECTIONS
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_fingerprint_script():
+    """Load scripts/dump-tool-fingerprints.py by path (its name is not import-safe) so the freshness
+    test shares the EXACT fingerprint computation with the generator — one truth, no drift."""
+    path = _REPO_ROOT / "scripts" / "dump-tool-fingerprints.py"
+    spec = importlib.util.spec_from_file_location("_dump_tool_fingerprints", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 # Behaviour-class expectations (the source of truth for the annotation assertions).
 READ_ONLY_TOOLS = {
@@ -210,3 +227,30 @@ class TestOutputSchemas:
         assert reason_enum("gtd_apply_engage_commit", "EngageRejection") == sorted(
             ENGAGE_REJECT_REASONS
         )
+
+
+class TestToolFingerprints:
+    """The committed tool-fingerprints.json is kept fresh by the repo, not the consumer (family
+    standard § 5): a schema change without a regenerated file fails CI. The consumer is the
+    architect's weekly tool-detection scan (per-tool `schema-changed` events)."""
+
+    async def test_committed_fingerprints_match_the_live_server(self):
+        module = _load_fingerprint_script()
+        live = await module.compute_fingerprints()
+
+        path = _REPO_ROOT / "tool-fingerprints.json"
+        assert path.exists(), "tool-fingerprints.json missing — run: make fingerprints"
+        committed = json.loads(path.read_text())
+
+        assert committed["schema_version"] == module.SCHEMA_VERSION
+        assert committed["server"] == module.SERVER
+        assert committed["tools"] == live, (
+            "tool-fingerprints.json is stale — tool schemas changed but the file was not "
+            "regenerated. Run: make fingerprints"
+        )
+
+    async def test_fingerprints_are_qualified_sha256(self):
+        tools = await _tools()
+        live = await _load_fingerprint_script().compute_fingerprints()
+        assert set(live) == {f"mcp__rtm__{name}" for name in tools}
+        assert all(len(fp) == 64 and int(fp, 16) >= 0 for fp in live.values())
