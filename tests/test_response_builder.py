@@ -13,7 +13,37 @@ from rtm_mcp.response_builder import (
     build_response,
     get_transaction_info,
     record_and_build_response,
+    redact_secrets,
 )
+
+
+class TestRedactSecrets:
+    """Test credential redaction in reflected payloads."""
+
+    def test_masks_secret_keys_case_insensitively(self) -> None:
+        out = redact_secrets({"api_key": "k", "Auth_Token": "t", "API_SIG": "s", "stat": "ok"})
+        assert out == {
+            "api_key": "***redacted***",
+            "Auth_Token": "***redacted***",
+            "API_SIG": "***redacted***",
+            "stat": "ok",
+        }
+
+    def test_recurses_nested_containers(self) -> None:
+        out = redact_secrets({"rsp": {"auth_token": "t", "items": [{"api_sig": "s"}]}, "ok": True})
+        assert out["rsp"]["auth_token"] == "***redacted***"
+        assert out["rsp"]["items"][0]["api_sig"] == "***redacted***"
+        assert out["ok"] is True
+
+    def test_does_not_mutate_input(self) -> None:
+        src = {"api_key": "k", "stat": "ok"}
+        redact_secrets(src)
+        assert src["api_key"] == "k"
+
+    def test_passthrough_non_containers(self) -> None:
+        assert redact_secrets("hello") == "hello"
+        assert redact_secrets(42) == 42
+        assert redact_secrets(None) is None
 
 
 class TestBuildResponse:

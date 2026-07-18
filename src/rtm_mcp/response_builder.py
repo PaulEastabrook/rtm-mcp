@@ -41,6 +41,34 @@ DESTRUCTIVE_WRITE_ANNOTATIONS = ToolAnnotations(
 )
 
 
+# Request-parameter names that carry credentials/signatures. RTM's
+# ``rtm.test.echo`` reflects EVERY request parameter back verbatim, so an
+# unredacted echo places these into the calling model's conversation context
+# (and any transcript derived from it). Matched case-insensitively.
+SECRET_KEYS = frozenset(
+    {"api_key", "auth_token", "api_sig", "shared_secret", "secret", "token", "frob"}
+)
+_REDACTED = "***redacted***"
+
+
+def redact_secrets(value: Any) -> Any:
+    """Return a copy of ``value`` with any secret-bearing keys masked.
+
+    Recurses through nested dicts/lists so a reflected API payload can never
+    surface an ``api_key`` / ``auth_token`` / ``api_sig`` (or similar) in a
+    tool response. Non-container values are returned unchanged; the input is
+    not mutated.
+    """
+    if isinstance(value, dict):
+        return {
+            k: (_REDACTED if isinstance(k, str) and k.lower() in SECRET_KEYS else redact_secrets(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_secrets(item) for item in value]
+    return value
+
+
 def build_response(
     data: dict[str, Any] | list[Any],
     analysis: dict[str, Any] | None = None,
