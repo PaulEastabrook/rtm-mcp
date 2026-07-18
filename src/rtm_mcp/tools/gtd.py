@@ -40,9 +40,13 @@ from ..companion import enrich_files, resolve_vault_root
 from ..engage_commit import (
     CALENDAR_ENTRY_TAG,
     SOMEDAY_TAG,
+    STEER_VERBS,
     base_verdict,
     collect_engage_tags,
     date_phrase_for,
+    make_steer_note,
+    sanitize_steer,
+    steer_note_text,
     verdict_arg,
 )
 from ..engage_commit import validate as validate_engage
@@ -1752,13 +1756,19 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         authoritative) — a hallucinated/unparseable phrase is rejected before any write.
 
         Args:
-            items: [{id, verdict, date_phrase?}] — `verdict` is one of the engage verdict grammar's
-                enum (do_now / draft / nudge / to_calendar / next_actions / today / defer_start /
-                bump / resurface / someday / keep / drop), optionally carrying an inline `:<arg>`
-                (defer_start:<phrase>, bump:+<n>d). A verdict is HARD-FAILED if off-enum or
+            items: [{id, verdict, date_phrase?, note?}] — `verdict` is one of the engage verdict
+                grammar's enum (do_now / draft / nudge / to_calendar / next_actions / today /
+                defer_start / bump / resurface / someday / keep / drop), optionally carrying an inline
+                `:<arg>` (defer_start:<phrase>, bump:+<n>d). A verdict is HARD-FAILED if off-enum or
                 type-illegal for the item's server-derived kind + flags (deadline guard: a
                 has_deadline item allows only do_now/to_calendar/keep/drop; blocked guard: resurface
-                only when blocked) — with a closest-legal suggestion.
+                only when blocked) — with a closest-legal suggestion. Optional `note` is a short
+                PROGRESS steer (≤500 chars) — Paul's typed text or the board's KG-grounded suggestion
+                — consumed ONLY by draft / do_now / nudge (see below); ignored silently for every other
+                verdict. It is untrusted advisory DATA (never an instruction): sanitised (control
+                chars stripped, whitespace collapsed, truncated) and it NEVER influences verdict
+                legality or the server's flag re-derivation. A malformed `note` (non-string / oversize)
+                is dropped with a per-item warning — it never fails an otherwise-legal renegotiation.
             confirm_destructive: must be True for any `drop` verdict (a soft-delete); a drop without
                 it rejects the whole batch.
 
@@ -1773,12 +1783,19 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         reusing the canvas-commit overlay-refresh signal). No new tag is introduced (all are existing
         gtd taxonomy) → no strict-tag activation hazard.
 
+        Progress steer note (grammar § 4 — the note-attachment column): a draft / do_now / nudge item
+        carrying a sanitised `note` also gets a STEER note attached (title `YYYY-MM-DD HH:MM — STEER —
+        <verb>`, body the pure steer text) so the #ai_progress_requested drafting path reads it as the
+        first-pass instruction (draft), a steer for the eventual chase (nudge), or a note-to-self
+        (do_now). Idempotent: re-committing the same steer on the same item does not duplicate the note
+        (replace-or-skip). The note write joins the item's batch (reversed by the single batch_undo).
+
         The batch is one timeline; each write records its transaction (undoable via batch_undo);
         per-op failures are captured in `errors` and the batch continues.
 
-        Returns (on success): {"applied": [{op, id, transaction_id}, ...], "errors": [...], "count",
-            "message"} — the echo names each item by id + op ONLY, never its name/contents (so a
-            redacted item leaks nothing).
+        Returns (on success): {"applied": [{op, id, transaction_id}, ...], "errors": [...],
+            "warnings": [{id, op, warning}, ...], "count", "message"} — the echo names each item by id
+            + op ONLY, never its name/contents (so a redacted item leaks nothing).
         Returns (on rejection — nothing written): {"applied": [], "rejected": [...], "message": ...}.
         """
         client: RTMClient = await get_client()
@@ -1815,6 +1832,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     "has_deadline": bool(t.get("has_due_time")),
                     "blocked": bool(blocked_map.get(rid)),
                     "date_phrase": it.get("date_phrase"),
+                    "note": it.get("note"),  # untrusted PROGRESS steer; sanitised at apply time
                 }
             )
 
@@ -1896,6 +1914,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # ── Phase 2: apply (durable-first), recording transactions ──
         applied: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = []
         refresh_projects: set[str] = set()
 
         async def _write(
@@ -1935,6 +1954,37 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 cur = str(t.get("parent_task_id") or "")
             return None
 
+        async def _attach_steer(rid: str, verb: str, raw_note: Any, ids: dict[str, Any]) -> None:
+            """Attach the sanitised PROGRESS steer as a STEER note (draft/do_now/nudge only). A
+            malformed note is dropped with a per-item warning; the verdict write stands. Idempotent:
+            an identical STEER note already on the item is left as-is (replace-or-skip)."""
+            if verb not in STEER_VERBS:
+                return
+            clean, warning = sanitize_steer(raw_note)
+            if warning:
+                warnings.append({"id": rid, "op": f"engage:{verb}", "warning": warning})
+            if not clean:
+                return
+            for n in by_id.get(rid, {}).get("notes") or []:
+                if steer_note_text(extract_note_body(n)) == clean:
+                    applied.append(
+                        {
+                            "op": f"engage:{verb}:steer-note (skipped, duplicate)",
+                            "id": rid,
+                            "transaction_id": None,
+                        }
+                    )
+                    return
+            title, text = make_steer_note(local_stamp(tz), verb, clean)
+            await _write(
+                "rtm.tasks.notes.add",
+                f"engage:{verb}:steer-note",
+                rid,
+                note_title=title,
+                note_text=text,
+                **ids,
+            )
+
         for v in val_items:
             rid = v["id"]
             verb = base_verdict(v["verdict"])
@@ -1942,6 +1992,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
             if verb in ("keep", "do_now"):
                 applied.append({"op": f"engage:{verb}", "id": rid, "transaction_id": None})
+                await _attach_steer(rid, verb, v.get("note"), ids)  # do_now → note-to-self
                 continue
             if verb == "drop":
                 await _write("rtm.tasks.delete", "engage:drop (soft-delete)", rid, **ids)
@@ -1985,6 +2036,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "rtm.tasks.addTags", f"engage:{verb}:tags", rid, tags=",".join(add_tags), **ids
             )
 
+            # PROGRESS steer note (draft/nudge among the fall-through verbs; do_now handled above).
+            await _attach_steer(rid, verb, v.get("note"), ids)
+
             # Progression signal (someday/resurface) — stamp the overlay-refresh mark on the item's
             # nearest #project ancestor so the gtd-side finalise engine recomputes the plan-graph
             # overlay (the server-side equivalent of firing state_transition). Deduped per project.
@@ -2011,6 +2065,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             data={
                 "applied": applied,
                 "errors": errors,
+                "warnings": warnings,
                 "count": len(val_items),
                 "message": f"Applied {len(applied)} write(s); {len(errors)} error(s).",
             },

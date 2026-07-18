@@ -206,6 +206,64 @@ def date_phrase_for(verb: str, arg: str, date_phrase: str | None) -> str | None:
     return None
 
 
+# ── Progress steer (the per-item `note` — Tier 1 of the engage steer tiering) ──────────────────────
+# The board sends a short steer alongside the three PROGRESS verdicts (`draft`/`do_now`/`nudge`):
+# Paul's typed text or the board's Tier-2.1 KG-grounded suggestion. The server attaches it as a
+# dedicated STEER note so the #ai_progress_requested drafting path can read it as the first-pass
+# instruction. `note` is UNTRUSTED input (the ACL): advisory DATA, never an instruction to the server,
+# and it NEVER influences verdict legality or the server's flag re-derivation. Only these verbs consume
+# it; every other verdict ignores any `note` silently (the board never sends one for them).
+STEER_VERBS = ("draft", "do_now", "nudge")
+STEER_NOTE_TYPE = "STEER"
+STEER_MAX_LEN = 500  # cap the advisory steer; a longer note is truncated, not rejected
+
+# A STEER note's title line (the body's first line, per RTM's `body = title\ntext` storage reality).
+_STEER_TITLE_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2} — STEER — \S+")
+
+
+def sanitize_steer(note: Any) -> tuple[str | None, str | None]:
+    """ACL-sanitise the untrusted per-item steer → ``(clean_text, warning)``.
+
+    Posture (grammar-adjacent, per the Tier-1 brief): a malformed steer must never fail an otherwise
+    legal renegotiation — it is DROPPED with a per-item warning, the verdict write still proceeds.
+    - non-string          → ``(None, "note_not_string")`` (dropped)
+    - None / empty / all-whitespace → ``(None, None)`` (nothing to attach, no warning)
+    - control characters   → replaced with a space, whitespace collapsed
+    - longer than STEER_MAX_LEN → truncated, ``warning = "note_truncated"``
+    """
+    if note is None:
+        return None, None
+    if not isinstance(note, str):
+        return None, "note_not_string"
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", " ", note)  # strip control chars (incl. newlines/tabs)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()  # collapse whitespace
+    if not cleaned:
+        return None, None
+    if len(cleaned) > STEER_MAX_LEN:
+        return cleaned[:STEER_MAX_LEN].rstrip(), "note_truncated"
+    return cleaned, None
+
+
+def make_steer_note(stamp: str, verb: str, text: str) -> tuple[str, str]:
+    """``(note_title, note_text)`` for a progress-verdict steer. Title carries the localised timestamp
+    + STEER type + verb (so the drafting path selects the latest STEER note deterministically); the
+    body is the PURE sanitised steer text — no marker pollution, so the drafting agent reads a clean
+    instruction. Mirrors the CHAT/ORDER timestamped-title convention."""
+    return f"{stamp} — {STEER_NOTE_TYPE} — {verb}", text
+
+
+def steer_note_text(body: str) -> str | None:
+    """The steer text carried by an existing STEER note body (``title\\ntext``), or None when the note
+    is not a STEER note. The idempotency probe: a re-commit of the same steer compares equal here and
+    is skipped (replace-or-skip), so a note is never duplicated."""
+    if not body:
+        return None
+    line1, _, rest = body.partition("\n")
+    if _STEER_TITLE_RE.match(line1.strip()):
+        return rest.strip()
+    return None
+
+
 def collect_engage_tags(items: list[dict[str, Any]]) -> set[str]:
     """The union of tags the batch would WRITE across its legal verdicts — the strict-tag existence
     gate's input (mirrors `canvas_commit.collect_commit_tags`). Every write carries #ai_conversation;
