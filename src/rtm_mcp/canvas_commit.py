@@ -60,6 +60,23 @@ EXECUTE_CLEAR_TAGS = (AI_PROGRESS, AI_PROGRESS_DEFERRED, AI_DEFERRED)
 # note. Scope is a LABEL only — it does not change validation, gating, apply order, or batch_undo.
 VALID_SCOPES = frozenset({"instant", "item", "project", "plan"})
 
+# The complete `rejected[].reason` vocabulary gtd_apply_canvas_commit can emit — the canonical
+# source the output-schema model cites (so the advertised enum can never drift from the handler,
+# exactly as the input enums are pinned to VALID_SCOPES / VALID_EXECUTE_COMMIT). Five are produced
+# by `validate_commit` below; `invalid_scope` and `non_canonical_tag` are produced in the tool
+# wrapper (the up-front scope check and the strict-tag existence gate respectively).
+COMMIT_REJECT_REASONS = frozenset(
+    {
+        "cross_project",  # validate_commit: a referenced id is not a child of project_id
+        "destructive_unconfirmed",  # validate_commit: completes/removes without confirm_destructive
+        "unknown_add_type",  # validate_commit: an add type outside VALID_TYPES
+        "invalid_execute",  # validate_commit: an execute value outside VALID_EXECUTE_COMMIT
+        "smart_list_target",  # validate_commit: target 'Processed' missing or smart
+        "invalid_scope",  # tool: scope outside VALID_SCOPES
+        "non_canonical_tag",  # tool: strict-tag existence gate rejected a tag
+    }
+)
+
 
 def execute_progress_tags(mode: str) -> tuple[str, str]:
     """An execute mode → (progress_tag_to_write, stale_sibling_to_drop).

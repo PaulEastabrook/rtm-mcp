@@ -23,9 +23,20 @@ along in the schema truthfully. Deeply-nested, evolving, or versioned-external p
 `dict[str, Any]` on purpose — they evolve ahead of this server and are never vocabulary-filtered.
 """
 
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
+
+from .canvas_commit import COMMIT_REJECT_REASONS
+from .canvas_create import CREATE_REJECT_REASONS
+from .engage_commit import ENGAGE_REJECT_REASONS
+
+
+def _enum_extra(reasons: frozenset[str]) -> dict[str, Any]:
+    """A `json_schema_extra` payload advertising a closed string enum, sourced from a handler's
+    canonical reason constant so the advertised vocabulary tracks the handler by construction."""
+    return {"enum": sorted(reasons)}
+
 
 # --------------------------------------------------------------------------- #
 # Shared envelope pieces
@@ -454,14 +465,9 @@ class AppliedOp(BaseModel):
 
 class CommitRejection(BaseModel):
     model_config = ConfigDict(extra="allow")
-    reason: Literal[
-        "cross_project",
-        "destructive_unconfirmed",
-        "unknown_add_type",
-        "invalid_execute",
-        "smart_list_target",
-        "invalid_scope",
-    ]
+    # Enum sourced from the handler's canonical constant so the advertised vocabulary can never
+    # drift from what gtd_apply_canvas_commit actually emits (test_tool_schemas pins the equality).
+    reason: str = Field(json_schema_extra=_enum_extra(COMMIT_REJECT_REASONS))
 
 
 class CommitResult(BaseModel):
@@ -479,15 +485,7 @@ class CommitResult(BaseModel):
 
 class CreateRejection(BaseModel):
     model_config = ConfigDict(extra="allow")
-    reason: Literal[
-        "missing_name",
-        "invalid_life",
-        "duplicate_id",
-        "unknown_add_type",
-        "invalid_execute",
-        "unknown_dep",
-        "self_dep",
-    ]
+    reason: str = Field(json_schema_extra=_enum_extra(CREATE_REJECT_REASONS))
 
 
 class CreateProjectResult(BaseModel):
@@ -602,6 +600,11 @@ class EngageSeedResult(BaseModel):
     count: int
 
 
+class EngageRejection(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    reason: str = Field(json_schema_extra=_enum_extra(ENGAGE_REJECT_REASONS))
+
+
 class EngageCommitResult(BaseModel):
     """gtd_apply_engage_commit — success apply + the hard-fail rejection (nothing written)."""
 
@@ -609,7 +612,7 @@ class EngageCommitResult(BaseModel):
     applied: list[AppliedOp]
     errors: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
-    rejected: list[dict[str, Any]] | None = None
+    rejected: list[EngageRejection] | None = None
     count: int
     message: str
 

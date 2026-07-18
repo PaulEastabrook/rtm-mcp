@@ -54,6 +54,18 @@ VERDICT_FAMILY: dict[str, str] = {
     "drop": "guard",
 }
 
+# The `reason` values `validate` (the pure verdict-legality core) can attach to an illegal item.
+VERDICT_REJECT_REASONS = frozenset({"off-enum", "unknown-kind", "type-illegal"})
+# The complete `rejected[].reason` vocabulary gtd_apply_engage_commit can emit — the canonical
+# source the output-schema model cites (drift-proof, like COMMIT_REJECT_REASONS). It is
+# VERDICT_REJECT_REASONS (produced here by `validate`) plus the reasons produced in the tool
+# wrapper: `not_found` (id absent from the account), `confirm_destructive_required` (a `drop`
+# without confirm_destructive), `bad_date` (a date phrase parse_time could not resolve), and
+# `non_canonical_tag` (the strict-tag existence gate).
+ENGAGE_REJECT_REASONS = VERDICT_REJECT_REASONS | frozenset(
+    {"not_found", "confirm_destructive_required", "bad_date", "non_canonical_tag"}
+)
+
 # § 2 — per-kind base legality (L = legal). The two flag guards (§ 3) then override this per item.
 # Keyed [verdict][kind] → bool. Codified byte-for-byte from the grammar § 2 matrix.
 _L = True
@@ -145,7 +157,7 @@ def validate(items: list[dict[str, Any]]) -> dict[str, Any]:
     """items: [{id, verdict, kind, has_deadline?, blocked?}] with SERVER-DERIVED flags.
 
     Returns {ok, results, errors}. Each result: {id, verdict, base, kind, family, legal, reason,
-    suggestion}. `reason` ∈ {None, "off-enum", "unknown-kind", "type-illegal"}. HARD-FAIL: `ok` is
+    suggestion}. `reason` is None or one of VERDICT_REJECT_REASONS. HARD-FAIL: `ok` is
     True iff every item is legal (the tool writes nothing otherwise). Mirrors the chat-side
     validate-engage-verdict.py case-for-case.
     """

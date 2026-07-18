@@ -9,8 +9,9 @@ the handler), structured params are exposed, and every tool advertises an `outpu
 (mcp-tool-documentation-standard.md § 4/§ 5).
 """
 
-from rtm_mcp.canvas_commit import VALID_EXECUTE_COMMIT, VALID_SCOPES
-from rtm_mcp.engage_commit import VERDICT_FAMILY
+from rtm_mcp.canvas_commit import COMMIT_REJECT_REASONS, VALID_EXECUTE_COMMIT, VALID_SCOPES
+from rtm_mcp.canvas_create import CREATE_REJECT_REASONS
+from rtm_mcp.engage_commit import ENGAGE_REJECT_REASONS, VERDICT_FAMILY
 from rtm_mcp.gtd_chat import VALID_MODES, VALID_ROLES
 from rtm_mcp.parsers import PRIORITY_INPUT_CODES
 from rtm_mcp.server import mcp
@@ -191,3 +192,21 @@ class TestOutputSchemas:
         assert "invalid_scope" in reason["enum"]
         # a task write advertises the Task object a caller chains on.
         assert "id" in defs("add_task")["Task"]["properties"]
+
+    async def test_rejection_reason_enums_match_canonical_constants(self):
+        """Each commit tool's advertised `rejected[].reason` enum EQUALS the handler's canonical
+        constant — so the schema can never drift from what the handler emits (drift-proof, like the
+        input enums)."""
+        tools = await _tools()
+
+        def reason_enum(tool: str, model: str) -> list:
+            defs = tools[tool].to_mcp_tool().outputSchema.get("$defs", {})
+            return defs[model]["properties"]["reason"]["enum"]
+
+        assert reason_enum("gtd_apply_canvas_commit", "CommitRejection") == sorted(
+            COMMIT_REJECT_REASONS
+        )
+        assert reason_enum("gtd_create_project", "CreateRejection") == sorted(CREATE_REJECT_REASONS)
+        assert reason_enum("gtd_apply_engage_commit", "EngageRejection") == sorted(
+            ENGAGE_REJECT_REASONS
+        )

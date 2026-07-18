@@ -68,6 +68,34 @@ class TestTestConnection:
         assert "response_time_ms" in result["data"]
 
     @pytest.mark.asyncio
+    async def test_redacts_credentials_in_echo(self, util_tools):
+        # rtm.test.echo reflects every request param verbatim, including
+        # credentials. The tool must mask them before they reach the model.
+        tools, client = util_tools
+        client.test_echo = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "method": "rtm.test.echo",
+                "api_key": "SECRETKEY123",
+                "auth_token": "SECRETTOKEN456",
+                "api_sig": "SECRETSIG789",
+                "test": "hello",
+            }
+        )
+
+        result = await tools["test_connection"](FakeContext())
+        echo = result["data"]["api_response"]
+
+        # Secrets masked, no plaintext leak anywhere in the response.
+        for key in ("api_key", "auth_token", "api_sig"):
+            assert echo[key] == "***redacted***"
+        for secret in ("SECRETKEY123", "SECRETTOKEN456", "SECRETSIG789"):
+            assert secret not in repr(result)
+        # Non-secret diagnostic fields preserved.
+        assert echo["stat"] == "ok"
+        assert echo["test"] == "hello"
+
+    @pytest.mark.asyncio
     async def test_failure(self, util_tools):
         tools, client = util_tools
         client.test_echo = AsyncMock(side_effect=ConnectionError("timeout"))

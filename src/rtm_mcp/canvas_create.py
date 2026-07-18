@@ -31,6 +31,23 @@ LIFE_TAGS = frozenset({"work", "personal", "leanworking"})
 # provisioned in RTM, else every create is rejected up-front by the existence gate.
 FINALISE_MARK = "ai_project_needs_finalise"
 
+# The complete `rejected[].reason` vocabulary gtd_create_project can emit — the canonical source the
+# output-schema model cites (drift-proof, like COMMIT_REJECT_REASONS). Seven are produced by
+# `validate_create` below; `non_canonical_tag` is produced in the tool wrapper by the strict-tag
+# existence gate.
+CREATE_REJECT_REASONS = frozenset(
+    {
+        "missing_name",  # validate_create: no project title
+        "invalid_life",  # validate_create: life outside LIFE_TAGS
+        "duplicate_id",  # validate_create: two items resolve to the same in-draft id
+        "unknown_add_type",  # validate_create: an item type outside VALID_TYPES
+        "invalid_execute",  # validate_create: an item execute value outside VALID_EXECUTE
+        "unknown_dep",  # validate_create: a dep referencing an id absent from the payload
+        "self_dep",  # validate_create: an item depending on itself
+        "non_canonical_tag",  # tool: strict-tag existence gate rejected a tag
+    }
+)
+
 
 def item_id(item: dict[str, Any], index: int) -> str:
     """The in-draft id for an item: its explicit `id`, else its positional index (stringified).

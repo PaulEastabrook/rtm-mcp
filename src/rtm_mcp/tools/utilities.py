@@ -28,6 +28,7 @@ from ..response_builder import (
     ADDITIVE_WRITE_ANNOTATIONS,
     READ_ONLY_ANNOTATIONS,
     build_response,
+    redact_secrets,
 )
 from ..tool_params import coerce_json, coerced_str_array_schema
 from ..urls import build_list_url, resolve_task_url
@@ -42,7 +43,9 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         before attempting other operations. Returns response time in milliseconds.
 
         Returns:
-            {"status": "connected", "response_time_ms": N} on success, or
+            {"status": "connected", "response_time_ms": N, "api_response": {...}}
+            on success — the echoed API payload has its credential-bearing keys
+            (api_key/auth_token/api_sig) masked as "***redacted***" — or
             {"status": "error", "error": "..."} on failure.
         """
         import time
@@ -58,7 +61,10 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
                 data={
                     "status": "connected",
                     "response_time_ms": round(elapsed * 1000, 2),
-                    "api_response": result,
+                    # rtm.test.echo reflects the full request (incl. api_key,
+                    # auth_token, api_sig) — mask secrets before they enter the
+                    # model's context / any transcript.
+                    "api_response": redact_secrets(result),
                 },
             )
         except Exception as e:
