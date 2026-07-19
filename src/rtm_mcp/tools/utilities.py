@@ -50,7 +50,8 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             on success — the echoed API payload has its credential-bearing keys
             (api_key/auth_token/api_sig) masked as "***redacted***" — or
             {"status": "error", "error": {"code": ..., "message": ..., "rtm_code": ...}}
-            on failure — branch on `error.code`, never the prose.
+            on failure — branch on `error.code`, never the prose. Possible codes:
+            auth_failed, service_unavailable, network_error.
         """
         import time
 
@@ -282,7 +283,9 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"status": "success", "message": "Operation undone", "transaction_id": "..."}
             or {"status": "error", "error": {"code": "unknown_transaction" |
-            "transaction_already_undone" | ..., "message": ...}, "transaction_id": "..."}.
+            "transaction_already_undone" | "auth_failed" | "service_unavailable" |
+            "network_error", "message": ...}, "transaction_id": "..."} — branch on
+            `error.code`, never the prose.
 
         Examples:
             - undo(transaction_id="12345") → reverses that operation
@@ -372,7 +375,9 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"undone": ["tx3", "tx2"], "skipped": ["tx1"], "failed": null |
             {"transaction_id": "...", "error": "<str>"}, "timeline_id": "..."} —
-            note: a per-op batch failure is a FLAT string, not the structured envelope error.
+            note: a per-op batch failure is a FLAT string, not the structured envelope
+            error. An up-front rejection (ids absent from this session's log) IS the
+            structured envelope error, code unknown_transaction.
 
         Examples:
             - batch_undo(transaction_ids=["tx1", "tx2", "tx3"]) → undoes tx3, tx2,

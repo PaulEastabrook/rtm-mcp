@@ -1,6 +1,6 @@
 [project]
 name = "rtm-mcp"
-version = "2.1.0"
+version = "2.1.1"
 description = "Remember The Milk MCP Server - Full API coverage for Claude"
 authors = [{ name = "Paul Eastabrook" }, { name = "ljadach" }]
 readme = "README.md"

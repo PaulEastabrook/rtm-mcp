@@ -363,3 +363,108 @@ class TestToolFingerprints:
         live = await _load_fingerprint_script().compute_fingerprints()
         assert set(live) == {f"mcp__rtm__{name}" for name in tools}
         assert all(len(fp) == 64 and int(fp, 16) >= 0 for fp in live.values())
+
+
+# --------------------------------------------------------------------------- #
+# Surface 6 — the typed error contract must be ADVERTISED, not just returned
+# --------------------------------------------------------------------------- #
+
+# Error codes each shared helper can surface on behalf of its caller. A tool that calls
+# the helper can return these, so its description must name them.
+_HELPER_CODES: dict[str, set[str]] = {
+    "resolve_task_ids": {"task_not_found", "missing_parameter"},
+    "resolve_list_id": {"list_not_found"},
+    "enforce_strict_tags": {"strict_tag_rejected"},
+    # error_from_exception maps whatever RTM raised; these are the codes worth advertising.
+    "error_from_exception": {"auth_failed", "service_unavailable", "network_error"},
+}
+
+
+def _tool_sources() -> dict[str, str]:
+    """Tool name -> its `async def` source block, from src/rtm_mcp/tools/*.py.
+
+    Parsed with `ast` (never a brace/regex scan — tool bodies are full of f-strings whose
+    interpolation braces are indistinguishable from dict delimiters to a naive counter).
+    """
+    import ast
+
+    out: dict[str, str] = {}
+    for path in sorted((_REPO_ROOT / "src" / "rtm_mcp" / "tools").glob("*.py")):
+        src = path.read_text()
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            decorated = any(
+                isinstance(d.func if isinstance(d, ast.Call) else d, ast.Attribute)
+                and (d.func if isinstance(d, ast.Call) else d).attr == "tool"
+                for d in node.decorator_list
+            )
+            if decorated:
+                out[node.name] = ast.get_source_segment(src, node) or ""
+    return out
+
+
+def _reachable_codes(body: str) -> set[str]:
+    """Every ErrorCode a tool can actually surface — direct references plus what the shared
+    resolvers/gates it calls can raise on its behalf."""
+    import re
+
+    codes = {m.lower() for m in re.findall(r"ErrorCode\.([A-Z_]+)", body)}
+    for helper, implied in _HELPER_CODES.items():
+        if re.search(rf"\b{helper}\(", body):
+            codes |= implied
+    return codes
+
+
+class TestAdvertisedErrorContract:
+    """v2.1.0 guard. Every tool advertises `data` as a `success | error` union (asserted in
+    TestOutputSchemas), but the union alone tells a caller nothing about WHICH codes to branch
+    on — and only some tools can fail at all. This pins the human/model-readable half: a tool
+    that can return an envelope error must NAME the codes it can produce.
+
+    Why it exists: v2.0.0 shipped with 975 tests green while five tools still advertised the
+    pre-v2.0.0 prose shape and 34 more documented no error at all. The suite asserted the
+    RUNTIME dict and never the ADVERTISED description, so nothing caught it — a live tool call
+    did. This test closes that gap structurally."""
+
+    async def test_failable_tools_document_an_error_shape(self):
+        tools = await _tools()
+        sources = _tool_sources()
+        undocumented = []
+        for name, tool in tools.items():
+            if not _reachable_codes(sources.get(name, "")):
+                continue  # genuinely cannot return an envelope error
+            desc = tool.to_mcp_tool().description or ""
+            if '"error"' not in desc and "error.details" not in desc:
+                undocumented.append(name)
+        assert undocumented == [], (
+            "these tools can return an envelope error but advertise no error shape — add an "
+            f"`Errors:` clause to the docstring (CONTRIBUTING § 5): {sorted(undocumented)}"
+        )
+
+    async def test_every_reachable_code_is_named_in_the_description(self):
+        """The tight half: adding a new failure path to a tool fails this test until the
+        docstring names its code. Prevents silent drift back into an under-advertised surface."""
+        tools = await _tools()
+        sources = _tool_sources()
+        missing: dict[str, list[str]] = {}
+        for name, tool in tools.items():
+            codes = _reachable_codes(sources.get(name, ""))
+            if not codes:
+                continue
+            desc = tool.to_mcp_tool().description or ""
+            absent = sorted(c for c in codes if c not in desc)
+            if absent:
+                missing[name] = absent
+        assert missing == {}, (
+            "these tools can produce error codes their description never names — the advertised "
+            f"contract is incomplete: {missing}"
+        )
+
+    async def test_tools_that_cannot_fail_are_not_forced_to_document_errors(self):
+        """Guards the guard: the derivation must actually discriminate. If every tool were
+        treated as failable the tests above would pass vacuously-strictly and stop meaning
+        anything."""
+        sources = _tool_sources()
+        cannot_fail = [n for n in await _tools() if not _reachable_codes(sources.get(n, ""))]
+        assert cannot_fail, "derivation marks every tool as failable — it is not discriminating"
