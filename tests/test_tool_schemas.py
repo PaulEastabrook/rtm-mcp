@@ -12,6 +12,7 @@ the handler), structured params are exposed, and every tool advertises an `outpu
 import importlib.util
 import json
 from pathlib import Path
+from typing import ClassVar
 
 from rtm_mcp.canvas_commit import COMMIT_REJECT_REASONS, VALID_EXECUTE_COMMIT, VALID_SCOPES
 from rtm_mcp.canvas_create import CREATE_REJECT_REASONS
@@ -106,6 +107,96 @@ class TestToolDescriptions:
             "these tool parameters have no schema description — add "
             f"Annotated[T, Field(description=...)] (or a coerced_*_schema): {offenders}"
         )
+
+
+class TestSingleTypedParameters:
+    """Optional params must advertise a SINGLE-TYPED schema, never a `T | None` union.
+
+    A union serialises to `anyOf`, and MCP clients that simplify schemas before showing them to
+    the model simplify that shape worst: measured against a live Claude Code session
+    (2026-07-19), every `anyOf` param collapsed to a bare `{}` — losing its type, its description
+    AND its enum. Flat params keep `type` / `default` / `enum`. This server had 110 such params
+    across 32 tools.
+
+    The complex/coercion params were already immune (`tool_params`'s `JsonStrArray` /
+    `coerced_*_schema` exist for the same reason); this extends the same treatment to optional
+    scalars via `optional_string` / `_integer` / `_number` / `_boolean`. The trap is that the
+    *obvious* way to write an optional param — `Annotated[T | None, Field(...)]` — is the wrong
+    one, so this guard is what stops the fix eroding.
+    """
+
+    # The ONE legitimate remaining union, pinned so it stays a deliberate decision rather than an
+    # oversight. `set_task_priority.priority` is REQUIRED and genuinely accepts `str | int` —
+    # `parsers.priority_to_code` does `str(priority).lower()`, so `1` and `"1"` and `"high"` all
+    # work. That is a value-type union, not an optionality artefact, so no `optional_*` builder
+    # applies: flattening it to `type: string` would misdescribe what the handler accepts.
+    #
+    # KNOWN CONSEQUENCE (deliberately not "fixed" here): because the client flattens `anyOf`, this
+    # param currently reaches the model as `{}`. There is also a latent inconsistency predating
+    # this change — the advertised `enum` is string-only while the type admits `integer`, so a
+    # strictly-validating client would reject `priority=1`. Resolving that means either widening
+    # the enum to include the int forms or narrowing the annotation to `str` (a runtime-behaviour
+    # change on a central tool with downstream consumers). It needs a decision, not a guess.
+    KNOWN_VALUE_TYPE_UNIONS: ClassVar[set[str]] = {"set_task_priority.priority"}
+
+    async def test_no_optional_param_advertises_a_union(self):
+        tools = await _tools()
+        offenders = [
+            f"{name}.{param}"
+            for name, tool in tools.items()
+            for param, spec in (
+                (tool.to_mcp_tool().inputSchema or {}).get("properties") or {}
+            ).items()
+            if param != "ctx"
+            and ("anyOf" in spec or "oneOf" in spec)
+            and f"{name}.{param}" not in self.KNOWN_VALUE_TYPE_UNIONS
+        ]
+        assert not offenders, (
+            "these params advertise a union and will be flattened to `{}` by simplifying "
+            "clients — use a tool_params.optional_* builder instead of Field(...) on the "
+            f"`T | None` annotation: {offenders}"
+        )
+
+    async def test_the_known_union_is_still_the_only_one(self):
+        """If this fails because the exception is gone, delete it from the allowlist — the point
+        is that the set never grows silently."""
+        tools = await _tools()
+        actual = {
+            f"{name}.{param}"
+            for name, tool in tools.items()
+            for param, spec in (
+                (tool.to_mcp_tool().inputSchema or {}).get("properties") or {}
+            ).items()
+            if param != "ctx" and "anyOf" in spec
+        }
+        assert actual == self.KNOWN_VALUE_TYPE_UNIONS, (
+            f"the value-type-union allowlist is stale: advertised={sorted(actual)}, "
+            f"allowlisted={sorted(self.KNOWN_VALUE_TYPE_UNIONS)}"
+        )
+
+    async def test_every_other_param_declares_a_type(self):
+        """The payoff: a model can always see what to send."""
+        tools = await _tools()
+        offenders = [
+            f"{name}.{param}"
+            for name, tool in tools.items()
+            for param, spec in (
+                (tool.to_mcp_tool().inputSchema or {}).get("properties") or {}
+            ).items()
+            if param != "ctx"
+            and "type" not in spec
+            and f"{name}.{param}" not in self.KNOWN_VALUE_TYPE_UNIONS
+        ]
+        assert not offenders, f"params with no advertised type: {offenders}"
+
+    async def test_optional_params_are_still_optional(self):
+        """Single-typed does NOT mean required — optionality is carried by absence from
+        `required`, and the handlers still accept an explicit null at runtime."""
+        schema = await _schema("list_tasks")
+        required = set(schema.get("required") or [])
+        for optional in ("filter", "list_name", "parent_task_id"):
+            assert optional in (schema.get("properties") or {}), optional
+            assert optional not in required, optional
 
 
 class TestToolAnnotations:

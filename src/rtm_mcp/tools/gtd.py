@@ -110,6 +110,7 @@ from ..tool_params import (
     coerced_obj_array_schema,
     coerced_object_schema,
     coerced_str_array_schema,
+    optional_string,
 )
 from ..urls import build_task_url
 
@@ -151,17 +152,17 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     async def gtd_project_plan(
         ctx: Context,
         project_id: Annotated[
-            str | None, Field(description="The project (parent) task id. Preferred when known.")
+            str | None, optional_string("The project (parent) task id. Preferred when known.")
         ] = None,
         project_name: Annotated[
             str | None,
-            Field(
-                description="Project name; resolved to an incomplete #project task (ambiguous → candidates)."
+            optional_string(
+                "Project name; resolved to an incomplete #project task (ambiguous → candidates)."
             ),
         ] = None,
         list_id: Annotated[
             str | None,
-            Field(description="Optional — scope the fetch to one list (smaller/faster)."),
+            optional_string("Optional — scope the fetch to one list (smaller/faster)."),
         ] = None,
         include_completed: Annotated[
             bool, Field(description="Include completed children as history rows (default True).")
@@ -238,17 +239,17 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     async def gtd_project_canvas(
         ctx: Context,
         project_id: Annotated[
-            str | None, Field(description="The project (parent) task id. Preferred when known.")
+            str | None, optional_string("The project (parent) task id. Preferred when known.")
         ] = None,
         project_name: Annotated[
             str | None,
-            Field(
-                description="Project name; resolved to an incomplete #project task (ambiguous → candidates)."
+            optional_string(
+                "Project name; resolved to an incomplete #project task (ambiguous → candidates)."
             ),
         ] = None,
         list_id: Annotated[
             str | None,
-            Field(description="Optional — scope the fetch to one list (smaller/faster)."),
+            optional_string("Optional — scope the fetch to one list (smaller/faster)."),
         ] = None,
         include_completed: Annotated[
             bool,
@@ -1339,8 +1340,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ctx: Context,
         project_id: Annotated[
             str | None,
-            Field(
-                description="Repeating project's task id; omit to sweep every active repeating templated project."
+            optional_string(
+                "Repeating project's task id; omit to sweep every active repeating templated project."
             ),
         ] = None,
         dry_run: Annotated[
@@ -1551,15 +1552,15 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ] = "me",
         scope: Annotated[
             str | None,
-            Field(
-                description="Optional short display label for the title; defaults to the task name."
+            optional_string(
+                "Optional short display label for the title; defaults to the task name."
             ),
         ] = None,
         mode: Annotated[
             str | None,
-            Field(
-                description="Posture for a 'me' turn — 'discuss' | 'act' (ignored for 'ai' turns).",
-                json_schema_extra=_MODE_ENUM,
+            optional_string(
+                "Posture for a 'me' turn — 'discuss' | 'act' (ignored for 'ai' turns).",
+                **_MODE_ENUM,
             ),
         ] = None,
     ) -> dict[str, Any]:
@@ -1719,8 +1720,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ],
         since: Annotated[
             str | None,
-            Field(
-                description="Optional ISO-8601 timestamp — return only turns created strictly after it."
+            optional_string(
+                "Optional ISO-8601 timestamp — return only turns created strictly after it."
             ),
         ] = None,
     ) -> dict[str, Any]:

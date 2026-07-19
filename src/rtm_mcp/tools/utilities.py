@@ -30,7 +30,7 @@ from ..response_builder import (
     build_response,
     redact_secrets,
 )
-from ..tool_params import coerce_json, coerced_str_array_schema
+from ..tool_params import coerce_json, coerced_str_array_schema, optional_string
 from ..urls import build_list_url, resolve_task_url
 
 
@@ -213,9 +213,8 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         ],
         timezone: Annotated[
             str | None,
-            Field(
-                description="IANA timezone for interpretation (e.g. 'America/New_York'); "
-                "defaults to UTC."
+            optional_string(
+                "IANA timezone for interpretation (e.g. 'America/New_York'); defaults to UTC."
             ),
         ] = None,
     ) -> dict[str, Any]:
@@ -571,22 +570,22 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         ctx: Context,
         task_name: Annotated[
             str | None,
-            Field(
-                description="Task name for fuzzy match across tasks incl. completed "
+            optional_string(
+                "Task name for fuzzy match across tasks incl. completed "
                 "(may hit an unintended task; prefer the id triple)."
             ),
         ] = None,
         task_id: Annotated[
             str | None,
-            Field(description="Task ID from list_tasks."),
+            optional_string("Task ID from list_tasks."),
         ] = None,
         taskseries_id: Annotated[
             str | None,
-            Field(description="Task series ID from list_tasks."),
+            optional_string("Task series ID from list_tasks."),
         ] = None,
         list_id: Annotated[
             str | None,
-            Field(description="List ID from list_tasks."),
+            optional_string("List ID from list_tasks."),
         ] = None,
     ) -> dict[str, Any]:
         """Get the Remember The Milk web UI URL for a task, including its full
@@ -642,11 +641,11 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         ctx: Context,
         list_name: Annotated[
             str | None,
-            Field(description="List name (exact, from get_lists)."),
+            optional_string("List name (exact, from get_lists)."),
         ] = None,
         list_id: Annotated[
             str | None,
-            Field(description="List ID (from get_lists)."),
+            optional_string("List ID (from get_lists)."),
         ] = None,
     ) -> dict[str, Any]:
         """Get the Remember The Milk web UI URL for a list. Use this to give

@@ -117,3 +117,60 @@ def coerced_object_schema(
     if extra:
         schema.update(extra)
     return schema
+
+
+# --------------------------------------------------------------------------- #
+# Single-typed presentation for OPTIONAL SCALAR params.
+#
+# The builders above solved the union problem for *complex* params. The same
+# problem applies to a plain optional scalar: `Annotated[str | None, Field(...)]`
+# serialises to `{"anyOf": [{"type": "string"}, {"type": "null"}], …}`, and MCP
+# clients that simplify schemas before showing them to the model flatten that to a
+# bare `{}` — losing the type, the description AND any enum. Measured 2026-07-19
+# against a live Claude Code session: this server had 110 such params across 32
+# tools, including the closed vocabularies on `set_task_priority.priority` and
+# `gtd_chat_post.mode`.
+#
+# These builders present the same clean single-typed schema for scalars. The Python
+# annotation stays `T | None` with its `None` default, so runtime behaviour — an
+# omitted arg, an explicit null, a real value — is unchanged; optionality is carried
+# (correctly) by absence from `required`.
+#
+# `enum=` / `pattern=` / `format=` and friends pass through as keyword arguments, so
+# a vocabulary stays sourced from its canonical constant, e.g.
+#     Annotated[str | None, optional_string("…", enum=sorted(PRIORITY_INPUT_CODES))]
+#
+# NOTE the residual client-side loss this cannot fix: that same client strips
+# `description` / `minimum` / `maximum` / `pattern` from every non-required param
+# regardless of typing. They are kept regardless — a conformant client gets them, and
+# `tests/test_tool_schemas.py` requires them. (This server is on fastmcp 2.x, so its
+# full docstring — `Args:` prose included — already reaches the model and carries the
+# same information; the 3.x siblings needed a registration shim for that.)
+# --------------------------------------------------------------------------- #
+
+
+def _optional(json_type: str, description: str, **extra: Any) -> WithJsonSchema:
+    """Present an optional scalar as a single-typed schema instead of a `T | None` union."""
+    schema: dict[str, Any] = {"type": json_type, "description": description}
+    schema.update(extra)
+    return WithJsonSchema(schema)
+
+
+def optional_string(description: str, **extra: Any) -> WithJsonSchema:
+    """For `str | None`. Pass `enum=[...]` / `pattern=...` to advertise a constraint."""
+    return _optional("string", description, **extra)
+
+
+def optional_integer(description: str, **extra: Any) -> WithJsonSchema:
+    """For `int | None`."""
+    return _optional("integer", description, **extra)
+
+
+def optional_number(description: str, **extra: Any) -> WithJsonSchema:
+    """For `float | None`."""
+    return _optional("number", description, **extra)
+
+
+def optional_boolean(description: str, **extra: Any) -> WithJsonSchema:
+    """For `bool | None`."""
+    return _optional("boolean", description, **extra)

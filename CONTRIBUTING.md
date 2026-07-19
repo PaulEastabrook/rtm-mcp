@@ -103,6 +103,20 @@ they never change tool behaviour, returns, capability, or write safety. Enforced
    a sibling `Field(description=…)`, so bake the description (and any nested enum) into the schema
    via the `tool_params.coerced_*_schema(...)` builders — never revert to a plain `Field` there (see
    § 12 step 8).
+
+   **An optional SCALAR param must be single-typed too** — use a `tool_params.optional_*` builder,
+   not `Field(...)`: `Annotated[str | None, optional_string("…")] = None`. Pass `enum=` /
+   `pattern=` as keyword arguments so a vocabulary stays sourced from its canonical constant. The
+   annotation and the `= None` default stay exactly as they are; only the *advertised* schema
+   changes, and optionality is still carried by absence from `required`.
+
+   *Why it is a rule.* `Annotated[T | None, Field(...)]` serialises to `anyOf`, and MCP clients
+   that simplify schemas before showing them to the model flatten that to a bare `{}` — losing
+   type, description **and** enum. Measured 2026-07-19: this server had 110 such params across 32
+   tools. The complex-param builders above already existed for the same reason; this is the same
+   fix for scalars. `TestSingleTypedParameters` pins it, and carries an explicit allowlist for the
+   one legitimate *value-type* union (`set_task_priority.priority`, a required `str | int`) so the
+   exception can never grow silently.
 3. **Behaviour annotations** — `@mcp.tool(annotations=…)` via the three constants in
    `response_builder.py`: `READ_ONLY_ANNOTATIONS` (reads), `ADDITIVE_WRITE_ANNOTATIONS` (creates /
    additive field-tag updates / undo path), `DESTRUCTIVE_WRITE_ANNOTATIONS` (deletes and reachable
