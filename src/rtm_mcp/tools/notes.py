@@ -24,6 +24,7 @@ from ..response_builder import (
     build_response,
     record_and_build_response,
 )
+from ..tool_params import optional_string
 
 
 def register_note_tools(mcp: Any, get_client: Any) -> None:
@@ -42,24 +43,24 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         ] = "",
         task_name: Annotated[
             str | None,
-            Field(
-                description="Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
+            optional_string(
+                "Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
             ),
         ] = None,
         task_id: Annotated[
             str | None,
-            Field(
-                description="Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
+            optional_string(
+                "Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
             ),
         ] = None,
         taskseries_id: Annotated[
             str | None,
-            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+            optional_string("Task series ID from list_tasks; part of the exact-task id triple."),
         ] = None,
         list_id: Annotated[
             str | None,
-            Field(
-                description="List ID containing the task, from list_tasks; part of the exact-task id triple."
+            optional_string(
+                "List ID containing the task, from list_tasks; part of the exact-task id triple."
             ),
         ] = None,
     ) -> dict[str, Any]:
@@ -132,24 +133,24 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         ] = "",
         task_name: Annotated[
             str | None,
-            Field(
-                description="Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
+            optional_string(
+                "Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
             ),
         ] = None,
         task_id: Annotated[
             str | None,
-            Field(
-                description="Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
+            optional_string(
+                "Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
             ),
         ] = None,
         taskseries_id: Annotated[
             str | None,
-            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+            optional_string("Task series ID from list_tasks; part of the exact-task id triple."),
         ] = None,
         list_id: Annotated[
             str | None,
-            Field(
-                description="List ID containing the task, from list_tasks; part of the exact-task id triple."
+            optional_string(
+                "List ID containing the task, from list_tasks; part of the exact-task id triple."
             ),
         ] = None,
     ) -> dict[str, Any]:
@@ -211,24 +212,24 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         ],
         task_name: Annotated[
             str | None,
-            Field(
-                description="Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
+            optional_string(
+                "Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
             ),
         ] = None,
         task_id: Annotated[
             str | None,
-            Field(
-                description="Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
+            optional_string(
+                "Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
             ),
         ] = None,
         taskseries_id: Annotated[
             str | None,
-            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+            optional_string("Task series ID from list_tasks; part of the exact-task id triple."),
         ] = None,
         list_id: Annotated[
             str | None,
-            Field(
-                description="List ID containing the task, from list_tasks; part of the exact-task id triple."
+            optional_string(
+                "List ID containing the task, from list_tasks; part of the exact-task id triple."
             ),
         ] = None,
     ) -> dict[str, Any]:
@@ -271,24 +272,24 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         ctx: Context,
         task_name: Annotated[
             str | None,
-            Field(
-                description="Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
+            optional_string(
+                "Task name for fuzzy search across tasks (may match an unintended task for common names — prefer the id triple)."
             ),
         ] = None,
         task_id: Annotated[
             str | None,
-            Field(
-                description="Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
+            optional_string(
+                "Task ID from list_tasks; pass with taskseries_id + list_id to target an exact task."
             ),
         ] = None,
         taskseries_id: Annotated[
             str | None,
-            Field(description="Task series ID from list_tasks; part of the exact-task id triple."),
+            optional_string("Task series ID from list_tasks; part of the exact-task id triple."),
         ] = None,
         list_id: Annotated[
             str | None,
-            Field(
-                description="List ID containing the task, from list_tasks; part of the exact-task id triple."
+            optional_string(
+                "List ID containing the task, from list_tasks; part of the exact-task id triple."
             ),
         ] = None,
     ) -> dict[str, Any]:

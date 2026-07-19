@@ -20,6 +20,7 @@ from ..response_builder import (
     build_response,
     record_and_build_response,
 )
+from ..tool_params import optional_string
 
 
 def register_list_tools(mcp: Any, get_client: Any) -> None:
@@ -86,8 +87,8 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         name: Annotated[str, Field(description="Name for the new list.")],
         filter: Annotated[
             str | None,
-            Field(
-                description="Optional RTM filter string; supplying it creates a read-only smart list. Omit for a regular list."
+            optional_string(
+                "Optional RTM filter string; supplying it creates a read-only smart list. Omit for a regular list."
             ),
         ] = None,
     ) -> dict[str, Any]:
