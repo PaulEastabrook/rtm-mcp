@@ -13,7 +13,7 @@ relates_to:
   - Claude Code implementation brief — rtm-mcp typed error vocabulary (Option B)
   - designed-change candidate RTM 1217273391 (this IS that candidate landing)
   - write-boundary gates RTM 1217340684 (unblocked by this)
-status: needs-atomic-release  # BOTH halves committed + verified; unpushed pending Paul's coordinated release
+status: RELEASED  # both halves merged 2026-07-19; server restarted + live-verified. Follow-up v2.1.0 closes a docstring gap (see below).
 ---
 
 # Handback debrief — rtm-mcp typed error vocabulary (v2.0.0)
@@ -176,7 +176,36 @@ artifact renders `[object Object]` in loader chrome). Not corrupting, but visibl
 - Not attempted: unifying `data.errors[]` batch entries into the registry. A clean, separate change
   if it is ever wanted.
 
+## Post-release follow-up (v2.1.0) — the docstring gap
+
+Live verification after the server restart confirmed the runtime envelope end-to-end
+(`list_not_found`, `project_not_found`, `missing_parameter` all returning correct codes against the
+real API; success paths unaffected). It also **found a defect the whole test suite could not**.
+
+The tool *docstrings* still described the pre-v2.0.0 shape. FastMCP advertises the docstring as the
+tool description (surface 2 of the six-surface standard), so five tools were actively telling
+callers to expect a prose string. v2.0.0's documentation lockstep covered `CLAUDE.md` and
+`CONTRIBUTING.md` but under-covered docstrings, despite the brief listing them.
+
+Auditing all 56 advertised descriptions then exposed a larger, **pre-existing** gap: 34 tools could
+return an envelope error and documented none at all — every high-traffic tool and all three governed
+commit surfaces. Nothing *became* wrong at v2.0.0, but the typed vocabulary was invisible across most
+of the surface, which matters precisely because the write-boundary gates reject recoverably on these
+codes.
+
+v2.1.0 closes both. Each affected docstring now carries an `Errors:` clause naming the codes **that
+tool can actually produce**, derived from its body rather than hand-written. Re-audit: 0 tools remain
+that can error without documenting it (43 of 56 describe an error shape; the other 13 cannot fail).
+
 ## Durable lesson / gotcha
+
+**A passing suite does not mean a correct contract.** 975 tests passed while five tools advertised
+the wrong error shape, because the suite asserts the *runtime dict* and never the *advertised
+description*. One live tool call surfaced in seconds what full green could not. When a change alters
+a contract, verify the surface consumers actually read — for an MCP server that is the advertised
+schema and description, not just the return value. A structural guard (assert every tool that can
+error documents its codes) would make this permanent and is the obvious next hardening.
+
 
 **Do not brace-count Python source to find dict literals.** I twice wrote a scripted rewriter that
 walked `{`/`}` to locate `{"error": …}` blocks. It corrupted six files both times, because
