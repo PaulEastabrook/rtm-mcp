@@ -13,7 +13,7 @@ relates_to:
   - Claude Code implementation brief — rtm-mcp typed error vocabulary (Option B)
   - designed-change candidate RTM 1217273391 (this IS that candidate landing)
   - write-boundary gates RTM 1217340684 (unblocked by this)
-status: needs-atomic-release  # repo side DONE + committed; marketplace lockstep must land together
+status: needs-atomic-release  # BOTH halves committed + verified; unpushed pending Paul's coordinated release
 ---
 
 # Handback debrief — rtm-mcp typed error vocabulary (v2.0.0)
@@ -139,8 +139,15 @@ artifact renders `[object Object]` in loader chrome). Not corrupting, but visibl
 - **No behavioural eval tier.** Brief § 8 recommends the gtd project-plan suite (~3 sub-agents)
   *after* the consumer pass lands. Not run here; it belongs to the post-migration checkpoint and is
   more valuable there.
-- The marketplace lockstep was delegated and is reported separately — its test result is stated in
-  that report, not claimed here.
+**Marketplace lockstep — done, and independently re-verified (not taken on trust):**
+- `claude-plugins` branch `feat/rtm-mcp-v2-typed-errors`, commit `c3ef8b021`. gtd 0.177.0 → 0.178.0,
+  git-ops 0.12.2 → 0.12.3, ui-patterns 0.38.1 → 0.38.2; `marketplace.json` synced.
+- gtd's `validate-engage-verdict.py` suite: **16/16 green**, re-run by me.
+- **Twin conformance asserted directly across the two repos**: the values the gtd validator emits
+  are set-equal to rtm-mcp's `VERDICT_REJECT_REASONS` → `True`. This is the invariant the whole
+  lockstep exists to protect, so it is checked mechanically rather than by inspection.
+- Artifact loader re-read by hand: `m` is provably always a string (code check → `.message` →
+  `d.message` → literal), so no object can reach `esc()`.
 
 ## Conventions
 
@@ -154,8 +161,13 @@ artifact renders `[object Object]` in loader chrome). Not corrupting, but visibl
 
 ## Open items / handback
 
-- **Atomic release is the open action** (see Membrane). The repo branch is committed but
-  **deliberately not pushed** so it cannot land ahead of its consumers.
+- **Atomic release is the open action** (see Membrane). BOTH branches are committed and
+  **deliberately unpushed**, so neither half can land ahead of the other:
+  - rtm-mcp — `feat/typed-error-vocabulary` (`592ef74` + `bf28eb5`)
+  - claude-plugins — `feat/rtm-mcp-v2-typed-errors` (`c3ef8b021`)
+- **Latent pre-existing bug flagged, not fixed** (out of scope, predates this change): the artifact
+  does `res.rejected.join('; ')` at ~3007/3036/3070, but `rejected[]` entries are objects — so that
+  fallback already renders `[object Object]`. Raised as a separate task.
 - **`ci-activation-debrief.md`** was untracked before this work and was left untracked — unrelated.
 - **Stale memory corrected:** my note claimed PR #33 (reject-reason constants) was unmerged. It is
   merged, in `main` at `923d8f8`.
