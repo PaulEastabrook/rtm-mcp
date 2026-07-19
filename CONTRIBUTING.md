@@ -114,24 +114,32 @@ they never change tool behaviour, returns, capability, or write safety. Enforced
    that simplify schemas before showing them to the model flatten that to a bare `{}` — losing
    type, description **and** enum. Measured 2026-07-19: this server had 110 such params across 32
    tools. The complex-param builders above already existed for the same reason; this is the same
-   fix for scalars. `TestSingleTypedParameters` pins it, and carries an explicit allowlist for the
-   one legitimate *value-type* union (`set_task_priority.priority`, a required `str | int`) so the
-   exception can never grow silently.
-3. **Behaviour annotations** — `@mcp.tool(annotations=…)` via the three constants in
+   fix for scalars, and **zero union-advertising params now remain** — `TestSingleTypedParameters`
+   pins that unconditionally. The last holdout was `set_task_priority.priority`, a required
+   `str | int` (genuine: `priority_to_code` does `str(priority).lower()`). It now advertises the
+   STRING form via `tool_params.required_string` — narrower than what the handler accepts, never
+   wider, so schema-conformant calls all work and the integer aliases keep working. Narrowing the
+   *annotation* would have been breaking: pydantic rejects `int` under a bare `str`.
+3. **Register through the shim, never the raw `mcp`.** `server.py` wraps the FastMCP instance in
+   `_FullDocstringMCP`, which passes each tool's full `inspect.getdoc(fn)` as `description=`.
+   Without it, FastMCP 3.x keeps only the docstring's first text section and drops `Args:` /
+   `Returns:` / the caveat blocks — **42% of this server's tool documentation** (see `CLAUDE.md`
+   § "FastMCP 3.x"). A new tool group registered against `mcp` directly silently loses its prose.
+4. **Behaviour annotations** — `@mcp.tool(annotations=…)` via the three constants in
    `response_builder.py`: `READ_ONLY_ANNOTATIONS` (reads), `ADDITIVE_WRITE_ANNOTATIONS` (creates /
    additive field-tag updates / undo path), `DESTRUCTIVE_WRITE_ANNOTATIONS` (deletes and reachable
    removes — e.g. the canvas/engage commit tools, even though `undo` can reverse them; classify
    honestly and put the undo path in the docstring). `openWorldHint=True` everywhere (RTM is SaaS).
    Hints are signals, **not** enforcement — the strict-tag gate / `confirm_destructive` / actionable
    errors stay the sole safety authority.
-4. **Input constraint metadata** — for a closed-vocabulary / bounded / structured param, add
+5. **Input constraint metadata** — for a closed-vocabulary / bounded / structured param, add
    `json_schema_extra={"enum": …}` (a module-level `dict[str, Any]`, required by pyright) **sourced
    from the canonical constant** it validates against (`PRIORITY_INPUT_CODES`, `MOVE_DIRECTIONS`,
    `VALID_SCOPES`, `VALID_ROLES`, `VALID_MODES`, `VALID_EXECUTE_COMMIT`, `VERDICT_FAMILY`), so the
    advertised set can never drift from the handler. **Ownership rule:** only advertise vocabularies
    the *server* owns — **never** a tag enum (deliberately non-canonical server-side; gtd's
    `tag-taxonomy.md` owns it) or a list-name enum (account data).
-5. **Output schema** — `output_schema=` from `models.py` (schema-only Pydantic models; NOT used at
+6. **Output schema** — `output_schema=` from `models.py` (schema-only Pydantic models; NOT used at
    runtime). `data` is always advertised as the `success | ErrorData` union (`anyOf`). Match models
    to the actual returns; leave genuinely-open payloads (`raw`, evolving envelope rows) open.
 6. **Typed errors (recovery half)** — this server's error shape is the free-text

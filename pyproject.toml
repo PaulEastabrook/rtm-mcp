@@ -1,6 +1,6 @@
 [project]
 name = "rtm-mcp"
-version = "1.34.0"
+version = "1.35.0"
 description = "Remember The Milk MCP Server - Full API coverage for Claude"
 authors = [{ name = "Paul Eastabrook" }, { name = "ljadach" }]
 readme = "README.md"
@@ -17,7 +17,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "fastmcp>=2.0.0,<3.0.0",
+    "fastmcp>=3.4.4,<4.0.0",
     "httpx>=0.27.0,<1.0.0",
     "pydantic>=2.0.0,<3.0.0",
     "pydantic-settings>=2.0.0,<3.0.0",

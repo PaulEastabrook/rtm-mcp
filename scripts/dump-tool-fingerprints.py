@@ -8,7 +8,7 @@ fingerprints" (`plugin-marketplace-git-ops/.../mcp-tool-documentation-standard.m
 
 A fingerprint is the `sha256` of the canonical JSON (`sort_keys=True`, compact separators) of a
 tool's `{"description", "inputSchema", "annotations", "outputSchema"}` (null for an absent member),
-taken from the REAL server via the same `mcp.get_tools()` → `to_mcp_tool()` introspection as
+taken from the REAL server via the same `list_tools()` → `to_mcp_tool()` introspection as
 `tests/test_tool_schemas.py`. Tool names are fully qualified (`mcp__rtm__<tool>`) to remove any
 composing ambiguity for the consumer.
 
@@ -56,7 +56,10 @@ def _fingerprint(mcp_tool) -> str:
 
 async def compute_fingerprints() -> dict[str, str]:
     """Map each fully-qualified tool name (`mcp__rtm__<tool>`) to its schema fingerprint."""
-    tools = await mcp.get_tools()
+    if hasattr(mcp, "list_tools"):  # FastMCP 3.x
+        tools = {t.name: t for t in await mcp.list_tools()}
+    else:  # pragma: no cover — FastMCP 2.x fallback
+        tools = await mcp.get_tools()
     return {
         f"mcp__{SERVER}__{name}": _fingerprint(tool.to_mcp_tool())
         for name, tool in sorted(tools.items())
