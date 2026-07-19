@@ -10,6 +10,8 @@ from typing import Any
 
 from mcp.types import ToolAnnotations
 
+from .error_codes import ErrorCode, code_for_rtm
+
 # --------------------------------------------------------------------------- #
 # Tool behaviour annotations — the MCP-standard hints a client/agent uses to
 # reason about a tool BEFORE calling it (safe to call speculatively? does it
@@ -67,6 +69,56 @@ def redact_secrets(value: Any) -> Any:
     if isinstance(value, list):
         return [redact_secrets(item) for item in value]
     return value
+
+
+def build_error(
+    code: ErrorCode,
+    message: str,
+    *,
+    rtm_code: int | None = None,
+    **details: Any,
+) -> dict[str, Any]:
+    """Build the structured `data` payload for a failure (v2.0.0 envelope).
+
+    The single constructor for every envelope error, so the shape can never drift
+    site-to-site::
+
+        {"error": {"code": ..., "message": ..., "rtm_code": ..., "details": {...}}}
+
+    Args:
+        code: the stable machine-branchable code from the canonical registry.
+        message: human-facing actionable prose. Carried verbatim — this is the same
+            string that was `data.error` before v2.0.0; only its location moved.
+        rtm_code: the RTM API numeric where the failure came from RTM, else None.
+        **details: optional typed detail keys (`candidates`, `how_to_proceed`,
+            `rejected`, `strict_tag_mode`, `query`, …). Omitted entirely when empty,
+            so a simple failure stays a simple object.
+
+    Returns:
+        The `data` dict — pass straight to `build_response(data=...)`.
+    """
+    error: dict[str, Any] = {
+        "code": code.value,
+        "message": message,
+        "rtm_code": rtm_code,
+    }
+    if details:
+        error["details"] = details
+    return {"error": error}
+
+
+def error_from_exception(exc: Exception, **details: Any) -> dict[str, Any]:
+    """Build a structured error from a caught exception, mapping its RTM numeric.
+
+    `RTMError` subclasses carry the originating RTM `code`; `code_for_rtm` maps it to the
+    semantic registry code and the numeric is preserved as `error.rtm_code`. A non-RTM
+    exception (no `code`) falls back to INVALID_INPUT with `rtm_code: null`. The message
+    is `str(exc)`, which already carries the recovery guidance `raise_for_error` appended.
+    """
+    rtm_code = getattr(exc, "code", None)
+    if not isinstance(rtm_code, int):
+        rtm_code = None
+    return build_error(code_for_rtm(rtm_code), str(exc), rtm_code=rtm_code, **details)
 
 
 def build_response(

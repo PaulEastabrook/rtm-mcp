@@ -6,6 +6,7 @@ from fastmcp import Context
 from pydantic import BeforeValidator, Field, WithJsonSchema
 
 from ..client import RTMClient
+from ..error_codes import ErrorCode
 from ..lookup import resolve_list_id, resolve_task_ids
 from ..models import (
     BATCH_UNDO_OUTPUT,
@@ -27,7 +28,9 @@ from ..parsers import ensure_list, parse_tags_response
 from ..response_builder import (
     ADDITIVE_WRITE_ANNOTATIONS,
     READ_ONLY_ANNOTATIONS,
+    build_error,
     build_response,
+    error_from_exception,
     redact_secrets,
 )
 from ..tool_params import coerce_json, coerced_str_array_schema, optional_string
@@ -72,7 +75,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             return build_response(
                 data={
                     "status": "error",
-                    "error": str(e),
+                    **error_from_exception(e),
                     "response_time_ms": round(elapsed * 1000, 2),
                 },
             )
@@ -108,7 +111,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             return build_response(
                 data={
                     "status": "not_authenticated",
-                    "error": str(e),
+                    **error_from_exception(e),
                 },
             )
 
@@ -287,8 +290,11 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             return build_response(
                 data={
                     "status": "error",
-                    "error": f"Unknown transaction ID (not in current session): {transaction_id}. "
-                    "Use get_timeline_info to see valid transaction IDs.",
+                    **build_error(
+                        ErrorCode.UNKNOWN_TRANSACTION,
+                        f"Unknown transaction ID (not in current session): {transaction_id}. "
+                        "Use get_timeline_info to see valid transaction IDs.",
+                    ),
                     "transaction_id": transaction_id,
                 },
             )
@@ -296,7 +302,10 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             return build_response(
                 data={
                     "status": "error",
-                    "error": f"Transaction {transaction_id} was already undone.",
+                    **build_error(
+                        ErrorCode.TRANSACTION_ALREADY_UNDONE,
+                        f"Transaction {transaction_id} was already undone.",
+                    ),
                     "transaction_id": transaction_id,
                 },
             )
@@ -321,7 +330,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             return build_response(
                 data={
                     "status": "error",
-                    "error": str(e),
+                    **error_from_exception(e),
                     "transaction_id": transaction_id,
                 },
             )
@@ -372,9 +381,10 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         unknown = [tid for tid in transaction_ids if client.get_transaction(tid) is None]
         if unknown:
             return build_response(
-                data={
-                    "error": f"Unknown transaction IDs (not in current session): {unknown}. Use get_timeline_info to see valid transaction IDs.",
-                },
+                data=build_error(
+                    ErrorCode.UNKNOWN_TRANSACTION,
+                    f"Unknown transaction IDs (not in current session): {unknown}. Use get_timeline_info to see valid transaction IDs.",
+                ),
             )
 
         # Sort by log order descending (most recent first)
@@ -689,10 +699,11 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
         if not resolved_id:
             return build_response(
-                data={
-                    "error": "Provide either list_name or list_id. "
-                    "Use get_lists to see available list names."
-                }
+                data=build_error(
+                    ErrorCode.MISSING_PARAMETER,
+                    "Provide either list_name or list_id. "
+                    "Use get_lists to see available list names.",
+                )
             )
 
         url = build_list_url(resolved_id)

@@ -6,6 +6,7 @@ from fastmcp import Context
 from pydantic import Field
 
 from ..client import RTMClient
+from ..error_codes import ErrorCode
 from ..lookup import find_task, resolve_list_id, resolve_task_ids
 from ..models import (
     DELETE_TASK_OUTPUT,
@@ -24,6 +25,7 @@ from ..response_builder import (
     ADDITIVE_WRITE_ANNOTATIONS,
     DESTRUCTIVE_WRITE_ANNOTATIONS,
     READ_ONLY_ANNOTATIONS,
+    build_error,
     build_response,
     record_and_build_response,
 )
@@ -188,10 +190,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
                 # Erroring beats silently returning every task in the account
                 # as if the list filter had been applied.
                 return build_response(
-                    data={
-                        "error": f"List '{list_name}' not found. "
-                        "Use get_lists to see available list names."
-                    }
+                    data=build_error(
+                        ErrorCode.LIST_NOT_FOUND,
+                        f"List '{list_name}' not found. Use get_lists to see available list names.",
+                    )
                 )
 
         params: dict[str, Any] = {}
@@ -399,9 +401,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             task = await find_task(client, task_name)
             if not task:
                 return build_response(
-                    data={
-                        "error": f"Task not found: '{task_name}'. Use list_tasks to search by filter or check spelling."
-                    },
+                    data=build_error(
+                        ErrorCode.TASK_NOT_FOUND,
+                        f"Task not found: '{task_name}'. Use list_tasks to search by filter or check spelling.",
+                    ),
                 )
             task_id = task["id"]
             taskseries_id = task["taskseries_id"]
@@ -409,9 +412,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         if not all([task_id, taskseries_id, list_id]):
             return build_response(
-                data={
-                    "error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."
-                },
+                data=build_error(
+                    ErrorCode.MISSING_PARAMETER,
+                    "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks.",
+                ),
             )
 
         result = await client.call(
@@ -483,15 +487,17 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             task = await find_task(client, task_name, include_completed=True)
             if not task:
                 return build_response(
-                    data={
-                        "error": f"No completed task found matching '{task_name}'. Use list_tasks(include_completed=True) to find it."
-                    },
+                    data=build_error(
+                        ErrorCode.TASK_NOT_FOUND,
+                        f"No completed task found matching '{task_name}'. Use list_tasks(include_completed=True) to find it.",
+                    ),
                 )
             if not task.get("completed"):
                 return build_response(
-                    data={
-                        "error": f"'{task_name}' is not completed — use complete_task first, or check task status with list_tasks."
-                    },
+                    data=build_error(
+                        ErrorCode.TASK_NOT_COMPLETED,
+                        f"'{task_name}' is not completed — use complete_task first, or check task status with list_tasks.",
+                    ),
                 )
             task_id = task["id"]
             taskseries_id = task["taskseries_id"]
@@ -499,9 +505,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         if not all([task_id, taskseries_id, list_id]):
             return build_response(
-                data={
-                    "error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."
-                },
+                data=build_error(
+                    ErrorCode.MISSING_PARAMETER,
+                    "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks.",
+                ),
             )
 
         result = await client.call(
@@ -573,9 +580,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             task = await find_task(client, task_name)
             if not task:
                 return build_response(
-                    data={
-                        "error": f"Task not found: '{task_name}'. Use list_tasks to search by filter or check spelling."
-                    },
+                    data=build_error(
+                        ErrorCode.TASK_NOT_FOUND,
+                        f"Task not found: '{task_name}'. Use list_tasks to search by filter or check spelling.",
+                    ),
                 )
             task_id = task["id"]
             taskseries_id = task["taskseries_id"]
@@ -586,9 +594,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         if not all([task_id, taskseries_id, list_id]):
             return build_response(
-                data={
-                    "error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."
-                },
+                data=build_error(
+                    ErrorCode.MISSING_PARAMETER,
+                    "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks.",
+                ),
             )
 
         result = await client.call(
@@ -848,9 +857,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         """
         if direction not in MOVE_DIRECTIONS:
             return build_response(
-                data={
-                    "error": "direction must be 'up' (higher priority) or 'down' (lower priority)."
-                },
+                data=build_error(
+                    ErrorCode.INVALID_INPUT,
+                    "direction must be 'up' (higher priority) or 'down' (lower priority).",
+                ),
             )
 
         client: RTMClient = await get_client()

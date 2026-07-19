@@ -12,6 +12,8 @@ where the segments after ``list_id`` represent the task hierarchy
 from typing import Any
 
 from .config import RTM_WEB_BASE_URL
+from .error_codes import ErrorCode
+from .response_builder import build_error
 
 # Which parsed-task field to use for URL path segments.
 # RTM's parent_task_id stores a task_id ("id"), so the hierarchy chain
@@ -138,7 +140,10 @@ async def resolve_task_url(
             break
 
     if target is None:
-        return {"error": f"Task {task_id} not found in list {list_id}."}
+        return build_error(
+            ErrorCode.TASK_NOT_FOUND,
+            f"Task {task_id} not found in list {list_id}.",
+        )
 
     # Walk parent chain
     chain, warning = walk_parent_chain(target, all_tasks)

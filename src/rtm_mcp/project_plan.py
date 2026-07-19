@@ -24,7 +24,9 @@ import re
 from typing import Any
 
 from .config import RTM_WEB_BASE_URL
+from .error_codes import ErrorCode
 from .parsers import _convert_rtm_date, extract_note_body
+from .response_builder import build_error
 from .urls import build_task_url
 
 SCHEMA = "project-plan-seed/3.1"
@@ -202,10 +204,11 @@ def resolve_project(parsed: list[dict[str, Any]], project_name: str) -> dict[str
     matches = exact or [t for t in projects if name_lower in (t.get("name") or "").lower()]
 
     if not matches:
-        return {
-            "error": f"No incomplete project named '{project_name}' found. "
-            "Pass project_id, or check the name with list_tasks(filter='tag:project')."
-        }
+        return build_error(
+            ErrorCode.PROJECT_NOT_FOUND,
+            f"No incomplete project named '{project_name}' found. "
+            "Pass project_id, or check the name with list_tasks(filter='tag:project').",
+        )
     if len(matches) > 1:
         return {
             "candidates": [
@@ -233,9 +236,10 @@ def resolve_focus(parsed: list[dict[str, Any]], focus: str) -> dict[str, Any]:
     by_id = {t["id"]: t for t in parsed}
     focus = (focus or "").strip()
     if not focus:
-        return {
-            "error": "Provide frame.focus — the Area of Focus name or id to nest the project under."
-        }
+        return build_error(
+            ErrorCode.MISSING_PARAMETER,
+            "Provide frame.focus — the Area of Focus name or id to nest the project under.",
+        )
 
     if focus in by_id:
         return {"focus": by_id[focus]}
@@ -255,10 +259,11 @@ def resolve_focus(parsed: list[dict[str, Any]], focus: str) -> dict[str, Any]:
     matches = exact or [t for t in areas if name_lower in (t.get("name") or "").lower()]
 
     if not matches:
-        return {
-            "error": f"No Area of Focus matching '{focus}'. Pass frame.focus as an area task id, "
-            "or check the name with list_tasks(filter='tag:project') to see existing areas."
-        }
+        return build_error(
+            ErrorCode.FOCUS_NOT_FOUND,
+            f"No Area of Focus matching '{focus}'. Pass frame.focus as an area task id, "
+            "or check the name with list_tasks(filter='tag:project') to see existing areas.",
+        )
     if len(matches) > 1:
         return {
             "candidates": [

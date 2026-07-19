@@ -2,6 +2,7 @@
 
 import pytest
 
+from rtm_mcp.error_codes import ErrorCode
 from rtm_mcp.strict_tags import (
     enforce_strict_tags,
     extract_smartadd_tags,
@@ -83,8 +84,9 @@ class TestEnforce:
         client = _FakeClient(strict_tags=True, tag_batches=[{"work"}, {"work"}])
         err = await enforce_strict_tags(client, ["nope"], tool="add_task_tags")
         assert err is not None
-        assert err["rejected_tags"] == ["nope"]
-        assert err["strict_tag_mode"] is True
+        assert err["error"]["details"]["rejected_tags"] == ["nope"]
+        assert err["error"]["details"]["strict_tag_mode"] is True
+        assert err["error"]["code"] == ErrorCode.STRICT_TAG_REJECTED
         # Cache-miss safety: it re-fetched once before failing.
         assert client.calls == 2
 

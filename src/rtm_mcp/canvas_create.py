@@ -22,6 +22,7 @@ from .canvas_commit import (
     VALID_TYPES,
     classifiers_to_tags,
 )
+from .error_codes import ErrorCode
 
 # The new project's own workflow tag, the canonical life-context tags, and the finalise mark.
 PROJECT_TAG = "project"
@@ -37,14 +38,14 @@ FINALISE_MARK = "ai_project_needs_finalise"
 # existence gate.
 CREATE_REJECT_REASONS = frozenset(
     {
-        "missing_name",  # validate_create: no project title
-        "invalid_life",  # validate_create: life outside LIFE_TAGS
-        "duplicate_id",  # validate_create: two items resolve to the same in-draft id
-        "unknown_add_type",  # validate_create: an item type outside VALID_TYPES
-        "invalid_execute",  # validate_create: an item execute value outside VALID_EXECUTE
-        "unknown_dep",  # validate_create: a dep referencing an id absent from the payload
-        "self_dep",  # validate_create: an item depending on itself
-        "non_canonical_tag",  # tool: strict-tag existence gate rejected a tag
+        ErrorCode.MISSING_NAME,  # validate_create: no project title
+        ErrorCode.INVALID_LIFE,  # validate_create: life outside LIFE_TAGS
+        ErrorCode.DUPLICATE_ID,  # validate_create: two items resolve to the same in-draft id
+        ErrorCode.UNKNOWN_ADD_TYPE,  # validate_create: an item type outside VALID_TYPES
+        ErrorCode.INVALID_EXECUTE,  # validate_create: an item execute outside VALID_EXECUTE
+        ErrorCode.UNKNOWN_DEP,  # validate_create: a dep id absent from the payload
+        ErrorCode.SELF_DEP,  # validate_create: an item depending on itself
+        ErrorCode.STRICT_TAG_REJECTED,  # tool: strict-tag existence gate rejected a tag
     }
 )
 
@@ -114,14 +115,17 @@ def validate_create(frame: dict[str, Any], items: list[dict[str, Any]]) -> dict[
 
     if not (frame.get("name") or "").strip():
         rejections.append(
-            {"reason": "missing_name", "detail": "frame.name is required (the project title)."}
+            {
+                "reason": ErrorCode.MISSING_NAME.value,
+                "detail": "frame.name is required (the project title).",
+            }
         )
 
     life = frame.get("life")
     if life is not None and life not in LIFE_TAGS:
         rejections.append(
             {
-                "reason": "invalid_life",
+                "reason": ErrorCode.INVALID_LIFE.value,
                 "value": life,
                 "detail": f"life {life!r} not in {sorted(LIFE_TAGS)}",
             }
@@ -137,7 +141,7 @@ def validate_create(frame: dict[str, Any], items: list[dict[str, Any]]) -> dict[
         if rid in seen_ids:
             rejections.append(
                 {
-                    "reason": "duplicate_id",
+                    "reason": ErrorCode.DUPLICATE_ID.value,
                     "index": i,
                     "id": rid,
                     "detail": f"in-draft id {rid!r} resolves to more than one item "
@@ -153,7 +157,7 @@ def validate_create(frame: dict[str, Any], items: list[dict[str, Any]]) -> dict[
         if t not in VALID_TYPES:
             rejections.append(
                 {
-                    "reason": "unknown_add_type",
+                    "reason": ErrorCode.UNKNOWN_ADD_TYPE.value,
                     "index": i,
                     "type": t,
                     "detail": f"item type {t!r} not in {sorted(VALID_TYPES)}",
@@ -163,7 +167,7 @@ def validate_create(frame: dict[str, Any], items: list[dict[str, Any]]) -> dict[
         if ex is not None and ex not in VALID_EXECUTE:
             rejections.append(
                 {
-                    "reason": "invalid_execute",
+                    "reason": ErrorCode.INVALID_EXECUTE.value,
                     "index": i,
                     "value": ex,
                     "detail": f"execute {ex!r} not in {sorted(VALID_EXECUTE)}",
@@ -173,7 +177,7 @@ def validate_create(frame: dict[str, Any], items: list[dict[str, Any]]) -> dict[
             if str(dep) not in item_ids:
                 rejections.append(
                     {
-                        "reason": "unknown_dep",
+                        "reason": ErrorCode.UNKNOWN_DEP.value,
                         "index": i,
                         "dep": dep,
                         "detail": f"dep {dep!r} does not reference any item id in this create",
@@ -184,7 +188,7 @@ def validate_create(frame: dict[str, Any], items: list[dict[str, Any]]) -> dict[
                 # junk self-referencing DEPENDS-ON note in RTM.
                 rejections.append(
                     {
-                        "reason": "self_dep",
+                        "reason": ErrorCode.SELF_DEP.value,
                         "index": i,
                         "dep": dep,
                         "detail": f"item {item_id(item, i)!r} depends on itself",

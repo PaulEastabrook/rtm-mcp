@@ -6,6 +6,7 @@ from fastmcp import Context
 from pydantic import Field
 
 from ..client import RTMClient
+from ..error_codes import ErrorCode
 from ..lookup import find_task, resolve_task_ids
 from ..models import (
     DELETE_NOTE_OUTPUT,
@@ -21,6 +22,7 @@ from ..response_builder import (
     ADDITIVE_WRITE_ANNOTATIONS,
     DESTRUCTIVE_WRITE_ANNOTATIONS,
     READ_ONLY_ANNOTATIONS,
+    build_error,
     build_response,
     record_and_build_response,
 )
@@ -315,16 +317,18 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
             task = await find_task(client, task_name, include_completed=True)
             if not task:
                 return build_response(
-                    data={
-                        "error": f"Task '{task_name}' not found. Use list_tasks to find the correct name or IDs."
-                    }
+                    data=build_error(
+                        ErrorCode.TASK_NOT_FOUND,
+                        f"Task '{task_name}' not found. Use list_tasks to find the correct name or IDs.",
+                    )
                 )
         else:
             if not all([task_id, taskseries_id, list_id]):
                 return build_response(
-                    data={
-                        "error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."
-                    },
+                    data=build_error(
+                        ErrorCode.MISSING_PARAMETER,
+                        "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks.",
+                    ),
                 )
             # Fetch the specific task
             result = await client.call("rtm.tasks.getList", list_id=list_id)
@@ -337,9 +341,10 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
 
             if not task:
                 return build_response(
-                    data={
-                        "error": "Task not found with provided IDs. Use list_tasks to verify task_id, taskseries_id, and list_id."
-                    }
+                    data=build_error(
+                        ErrorCode.TASK_NOT_FOUND,
+                        "Task not found with provided IDs. Use list_tasks to verify task_id, taskseries_id, and list_id.",
+                    )
                 )
 
         notes = ensure_list(task.get("notes", []))

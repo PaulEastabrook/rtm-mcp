@@ -6,6 +6,7 @@ from fastmcp import Context
 from pydantic import Field
 
 from ..client import RTMClient
+from ..error_codes import ErrorCode
 from ..lookup import resolve_list_id
 from ..models import (
     GET_LISTS_OUTPUT,
@@ -17,6 +18,7 @@ from ..response_builder import (
     ADDITIVE_WRITE_ANNOTATIONS,
     DESTRUCTIVE_WRITE_ANNOTATIONS,
     READ_ONLY_ANNOTATIONS,
+    build_error,
     build_response,
     record_and_build_response,
 )
@@ -191,9 +193,10 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
 
         if resolved["list"]["locked"]:
             return build_response(
-                data={
-                    "error": f"Cannot delete '{list_name}' — it is a locked system list (e.g. Inbox, Sent)."
-                },
+                data=build_error(
+                    ErrorCode.LOCKED_SYSTEM_LIST,
+                    f"Cannot delete '{list_name}' — it is a locked system list (e.g. Inbox, Sent).",
+                ),
             )
 
         result = await client.call(

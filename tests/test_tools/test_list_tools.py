@@ -287,7 +287,7 @@ class TestDeleteList:
         )
 
         result = await tools["delete_list"](FakeContext(), list_name="Inbox")
-        assert "locked" in result["data"]["error"].lower()
+        assert "locked" in result["data"]["error"]["message"].lower()
 
     @pytest.mark.asyncio
     async def test_not_found(self, list_tools):

@@ -2,6 +2,9 @@
 
 from typing import Any
 
+from .error_codes import ErrorCode
+from .response_builder import build_error
+
 
 async def find_task(
     client: Any,
@@ -83,10 +86,12 @@ async def resolve_task_ids(
     if task_name and not task_id:
         task = await find_task(client, task_name, include_completed=include_completed)
         if not task:
-            return {
-                "error": f"Task not found: '{task_name}'. "
-                "Use list_tasks to search by filter or check spelling."
-            }
+            return build_error(
+                ErrorCode.TASK_NOT_FOUND,
+                f"Task not found: '{task_name}'. "
+                "Use list_tasks to search by filter or check spelling.",
+                query=task_name,
+            )
         return {
             "task_id": task["id"],
             "taskseries_id": task["taskseries_id"],
@@ -94,10 +99,11 @@ async def resolve_task_ids(
         }
 
     if not all([task_id, taskseries_id, list_id]):
-        return {
-            "error": "Provide either task_name (for search) or all three: "
-            "task_id, taskseries_id, and list_id. Get these from list_tasks."
-        }
+        return build_error(
+            ErrorCode.MISSING_PARAMETER,
+            "Provide either task_name (for search) or all three: "
+            "task_id, taskseries_id, and list_id. Get these from list_tasks.",
+        )
 
     return {
         "task_id": task_id,
@@ -129,4 +135,8 @@ async def resolve_list_id(
         if lst["name"].lower() == name_lower:
             return {"list_id": lst["id"], "list": lst}
 
-    return {"error": f"List '{list_name}' not found. Use get_lists to see available list names."}
+    return build_error(
+        ErrorCode.LIST_NOT_FOUND,
+        f"List '{list_name}' not found. Use get_lists to see available list names.",
+        query=list_name,
+    )
