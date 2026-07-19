@@ -8,8 +8,9 @@ WORKDIR /app
 # Install uv
 RUN pip install uv
 
-# Copy project files
-COPY pyproject.toml uv.lock* ./
+# Copy project files. README.md is required: pyproject.toml declares
+# `readme = "README.md"`, so hatchling fails metadata validation without it.
+COPY pyproject.toml uv.lock* README.md ./
 COPY src/ src/
 
 # Build wheel
