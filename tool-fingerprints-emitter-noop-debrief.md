@@ -69,12 +69,18 @@ Re-verified independently on `main` this session — not taken on trust from the
   predecessor debrief records it; re-mutating a live docstring on `main` to re-prove it was not worth
   the risk); (b) the architect's scan was **not** exercised against this file from here — consumer
   side, out of scope; (c) no lint/pyright re-run — no code changed, so the merged result stands.
-- **Standing caveat, unchanged and not fixed by this session:** **this repo's CI is dormant.**
-  `.github/workflows/ci.yml` exists and Actions is nominally enabled, but zero workflow runs are
-  recorded and PR #34 reported no checks (same finding as the v1.32.2 credential-redaction debrief).
-  So the freshness guard's "fails CI on drift" property describes the *mechanism*; the **live
-  enforcement today is a local `make test`**. Do not treat the guard as a merge gate until CI is
-  revived.
+- **CI was dormant — now RESOLVED (same session, see PR #35).** The standing caveat carried by every
+  debrief since v1.32.2 was that this repo's CI never ran. The cause was **not** a broken config:
+  `.github/workflows/ci.yml` has been present and correct since the initial release (`f778b09`), but
+  the workflow was **`disabled_manually`** on GitHub, so it recorded zero runs and PRs (incl. #34)
+  reported no checks. Re-enabled via `gh workflow enable`, plus a `workflow_dispatch` trigger for
+  on-demand runs. **Verified green end-to-end on PR #35** — lint, test (3.11), test (3.12), build all
+  pass; `docker` correctly skips on a PR (gated to `push` on `main`).
+
+  **Consequence for this change:** the `tool-fingerprints.json` freshness guard's "fails CI on drift"
+  property is now true *in reality*, not just as a mechanism — a schema change without a regenerated
+  file will block a PR. Earlier debriefs stating the local-`make test`-only caveat are superseded
+  from 2026-07-19.
 
 ## Conventions
 
