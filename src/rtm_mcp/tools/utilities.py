@@ -89,6 +89,10 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"status": "authenticated", "user": {id, username, fullname},
             "permissions": "delete"} on success, or {"status": "not_authenticated"}.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: auth_failed, network_error, service_unavailable.
         """
         client: RTMClient = await get_client()
 
@@ -628,6 +632,10 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Examples:
             - get_task_url(task_name="Buy groceries") → URL with hierarchy
             - get_task_url(task_id="123", taskseries_id="456", list_id="789")
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(
@@ -677,6 +685,10 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
         Examples:
             - get_list_url(list_name="Inbox") → URL for Inbox list
             - get_list_url(list_id="49657585") → URL for that list
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: list_not_found, missing_parameter.
         """
         client: RTMClient = await get_client()
 

@@ -142,6 +142,10 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"list": {...}, "message": "Renamed '...' to '...'"} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: list_not_found.
         """
         client: RTMClient = await get_client()
 
@@ -184,6 +188,10 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"message": "Deleted list: ..."} with transaction_id for undo.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: list_not_found, locked_system_list.
         """
         client: RTMClient = await get_client()
 
@@ -227,6 +235,10 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"list": {...}, "message": "Archived list: ..."} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: list_not_found.
         """
         client: RTMClient = await get_client()
 
@@ -267,6 +279,10 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"list": {...}, "message": "Unarchived list: ..."} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: list_not_found.
         """
         client: RTMClient = await get_client()
 
@@ -308,6 +324,10 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"message": "Default list set to: ..."} with transaction_id for undo
             when RTM reports one.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: list_not_found.
         """
         client: RTMClient = await get_client()
 

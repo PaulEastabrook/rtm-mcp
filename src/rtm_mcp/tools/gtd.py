@@ -616,6 +616,14 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             "order saved" chip on exactly this value); false when the commit carried no order
             (or the note write failed — see errors).
         Returns (on rejection — nothing written): {"applied": [], "rejected": [...], "message": ...}.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: invalid_scope, list_not_found, project_not_found, strict_tag_rejected.
+            A strict_tag_rejected carries rejected_tags / how_to_proceed
+            under `error.details`.
+            Per-item rejections are the FLAT `rejected[]` entries
+            ({reason, detail}), not this nested envelope error.
         """
         client: RTMClient = await get_client()
 
@@ -1062,6 +1070,14 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         Returns (on ambiguity): {"candidates": [{id, name, list_id}, ...]} — re-call with frame.focus
             set to one id.
         Returns (on rejection — nothing written): {"created": [], "rejected": [...], "message": ...}.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: strict_tag_rejected.
+            A strict_tag_rejected carries rejected_tags / how_to_proceed
+            under `error.details`.
+            Per-item rejections are the FLAT `rejected[]` entries
+            ({reason, detail}), not this nested envelope error.
         """
         client: RTMClient = await get_client()
 
@@ -2075,6 +2091,14 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             "warnings": [{id, op, warning}, ...], "count", "message"} — the echo names each item by id
             + op ONLY, never its name/contents (so a redacted item leaks nothing).
         Returns (on rejection — nothing written): {"applied": [], "rejected": [...], "message": ...}.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: bad_date, destructive_unconfirmed, strict_tag_rejected, task_not_found.
+            A strict_tag_rejected carries rejected_tags / how_to_proceed
+            under `error.details`.
+            Per-item rejections are the FLAT `rejected[]` entries
+            ({reason, detail}), not this nested envelope error.
         """
         client: RTMClient = await get_client()
         items = coerce_json(items) or []

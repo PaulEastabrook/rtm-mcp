@@ -82,6 +82,10 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"note": {id, title, body, created}, "message": "Note added"} with
             transaction_id for undo.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -173,6 +177,10 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"note": {id, title, body, modified}, "message": "Note updated"} with
             transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -249,6 +257,10 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"message": "Note deleted"} with transaction_id for undo.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -308,6 +320,10 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         Returns:
             {"task_name": "...", "notes": [{id, title, body, created, modified}],
             "count": N}.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
 
