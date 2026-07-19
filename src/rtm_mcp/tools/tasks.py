@@ -28,7 +28,7 @@ from ..response_builder import (
     record_and_build_response,
 )
 from ..strict_tags import enforce_strict_tags, extract_smartadd_tags, split_tags
-from ..tool_params import optional_string
+from ..tool_params import optional_string, required_string
 
 # Advisory input-constraint metadata (surface 4). Sourced from the canonical constants so the
 # advertised enum can never drift from what the handler validates. json_schema_extra is a typed
@@ -735,9 +735,11 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         ctx: Context,
         priority: Annotated[
             str | int,
-            Field(
-                description="Priority: 1/high, 2/medium, 3/low, or 0/none to clear.",
-                json_schema_extra=_PRIORITY_ENUM,
+            required_string(
+                "Priority: 1/high, 2/medium, 3/low, or 0/none to clear. "
+                "Pass the string form; the bare integers 0-3 are also accepted "
+                "as aliases for backward compatibility.",
+                **_PRIORITY_ENUM,
             ),
         ],
         task_name: Annotated[

@@ -12,7 +12,6 @@ the handler), structured params are exposed, and every tool advertises an `outpu
 import importlib.util
 import json
 from pathlib import Path
-from typing import ClassVar
 
 from rtm_mcp.canvas_commit import COMMIT_REJECT_REASONS, VALID_EXECUTE_COMMIT, VALID_SCOPES
 from rtm_mcp.canvas_create import CREATE_REJECT_REASONS
@@ -125,19 +124,13 @@ class TestSingleTypedParameters:
     one, so this guard is what stops the fix eroding.
     """
 
-    # The ONE legitimate remaining union, pinned so it stays a deliberate decision rather than an
-    # oversight. `set_task_priority.priority` is REQUIRED and genuinely accepts `str | int` —
-    # `parsers.priority_to_code` does `str(priority).lower()`, so `1` and `"1"` and `"high"` all
-    # work. That is a value-type union, not an optionality artefact, so no `optional_*` builder
-    # applies: flattening it to `type: string` would misdescribe what the handler accepts.
-    #
-    # KNOWN CONSEQUENCE (deliberately not "fixed" here): because the client flattens `anyOf`, this
-    # param currently reaches the model as `{}`. There is also a latent inconsistency predating
-    # this change — the advertised `enum` is string-only while the type admits `integer`, so a
-    # strictly-validating client would reject `priority=1`. Resolving that means either widening
-    # the enum to include the int forms or narrowing the annotation to `str` (a runtime-behaviour
-    # change on a central tool with downstream consumers). It needs a decision, not a guess.
-    KNOWN_VALUE_TYPE_UNIONS: ClassVar[set[str]] = {"set_task_priority.priority"}
+    # There are now ZERO union-advertising params. `set_task_priority.priority` was the last
+    # one: annotated `str | int` (genuine — `parsers.priority_to_code` does
+    # `str(priority).lower()`, so 1 and "1" and "high" all work), it advertised
+    # `anyOf: [string, integer]` and so flattened to `{}` in simplifying clients, taking its
+    # enum with it. Since v1.34.0 it advertises the STRING form via `tool_params.required_string`
+    # — narrower than what the handler accepts, never wider, so every schema-conformant call
+    # still works and the integer aliases keep working for existing callers.
 
     async def test_no_optional_param_advertises_a_union(self):
         tools = await _tools()
@@ -147,9 +140,7 @@ class TestSingleTypedParameters:
             for param, spec in (
                 (tool.to_mcp_tool().inputSchema or {}).get("properties") or {}
             ).items()
-            if param != "ctx"
-            and ("anyOf" in spec or "oneOf" in spec)
-            and f"{name}.{param}" not in self.KNOWN_VALUE_TYPE_UNIONS
+            if param != "ctx" and ("anyOf" in spec or "oneOf" in spec)
         ]
         assert not offenders, (
             "these params advertise a union and will be flattened to `{}` by simplifying "
@@ -157,24 +148,14 @@ class TestSingleTypedParameters:
             f"`T | None` annotation: {offenders}"
         )
 
-    async def test_the_known_union_is_still_the_only_one(self):
-        """If this fails because the exception is gone, delete it from the allowlist — the point
-        is that the set never grows silently."""
-        tools = await _tools()
-        actual = {
-            f"{name}.{param}"
-            for name, tool in tools.items()
-            for param, spec in (
-                (tool.to_mcp_tool().inputSchema or {}).get("properties") or {}
-            ).items()
-            if param != "ctx" and "anyOf" in spec
-        }
-        assert actual == self.KNOWN_VALUE_TYPE_UNIONS, (
-            f"the value-type-union allowlist is stale: advertised={sorted(actual)}, "
-            f"allowlisted={sorted(self.KNOWN_VALUE_TYPE_UNIONS)}"
-        )
+    async def test_the_priority_param_advertises_its_enum(self):
+        """The concrete payoff of retiring the last union: `set_task_priority`'s only required
+        param used to reach the model as `{}`. It must now carry type + enum."""
+        spec = (await _props("set_task_priority"))["priority"]
+        assert spec["type"] == "string"
+        assert spec["enum"] == sorted(PRIORITY_INPUT_CODES)
 
-    async def test_every_other_param_declares_a_type(self):
+    async def test_every_param_declares_a_type(self):
         """The payoff: a model can always see what to send."""
         tools = await _tools()
         offenders = [
@@ -183,9 +164,7 @@ class TestSingleTypedParameters:
             for param, spec in (
                 (tool.to_mcp_tool().inputSchema or {}).get("properties") or {}
             ).items()
-            if param != "ctx"
-            and "type" not in spec
-            and f"{name}.{param}" not in self.KNOWN_VALUE_TYPE_UNIONS
+            if param != "ctx" and "type" not in spec
         ]
         assert not offenders, f"params with no advertised type: {offenders}"
 
