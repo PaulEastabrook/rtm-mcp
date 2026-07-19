@@ -240,6 +240,12 @@ A new or changed tool is documented in **four** places, updated together:
 
 A tool is not "done" until all four are in sync.
 
+**Schema fingerprints.** Any change to a tool's schema (docstring, params, annotations, or output
+schema) changes its fingerprint, so regenerate the committed `tool-fingerprints.json` with
+`make fingerprints` — the freshness test in `tests/test_tool_schemas.py` fails CI until you do (it
+recomputes the map from the live server and asserts equality). The file feeds the architect's weekly
+tool-detection scan (family standard § 5); the repo keeps it fresh, the consumer only reads it.
+
 ## 10. Versioning & release
 
 - **SemVer** in `pyproject.toml`: new tools/features → minor bump; fixes → patch; breaking
