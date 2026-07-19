@@ -1,7 +1,7 @@
 """Tool-schema contract: the model-facing MCP surface (the six-surface standard).
 
 Introspects the REAL server (`rtm_mcp.server.mcp` — every tool registered at import) via
-`mcp.get_tools()` → `to_mcp_tool()`, so these assertions pin what an MCP client actually sees:
+`list_tools()` → `to_mcp_tool()`, so these assertions pin what an MCP client actually sees:
 every tool + parameter is described, behaviour annotations are correct per class, closed-vocabulary
 params expose their enums (asserted EQUAL to the canonical constants, so they can never drift from
 the handler), structured params are exposed, and every tool advertises an `outputSchema` whose
@@ -68,7 +68,11 @@ DESTRUCTIVE_TOOLS = {
 
 
 async def _tools() -> dict:
-    return await mcp.get_tools()
+    """Name -> FunctionTool. Tolerates both FastMCP majors: 3.x exposes `list_tools()`
+    returning a list; 2.x exposed `get_tools()` returning a name-keyed dict."""
+    if hasattr(mcp, "list_tools"):
+        return {t.name: t for t in await mcp.list_tools()}
+    return await mcp.get_tools()  # pragma: no cover — FastMCP 2.x fallback
 
 
 async def _schema(name: str) -> dict:
@@ -82,6 +86,40 @@ async def _props(name: str) -> dict:
 async def _annotations(name: str) -> dict:
     ann = (await _tools())[name].to_mcp_tool().annotations
     return {} if ann is None else {k: v for k, v in ann.model_dump().items() if v is not None}
+
+
+def _find_model(schema: dict, title: str) -> dict:
+    """Locate a named model's `properties` anywhere in an outputSchema.
+
+    FastMCP 2.x left pydantic's `$defs` intact, so a nested model was one dict lookup away.
+    3.x DEREFERENCES them — the model is inlined wherever it is used (inside a union variant,
+    an array's `items`, a nested property). Content is identical; placement moved. This walks
+    the tree for an object carrying the model's `title`, so the assertions below track the
+    CONTRACT rather than the serialisation, and work on either major.
+    """
+    defs = schema.get("$defs") or {}
+    if title in defs:  # FastMCP 2.x shape
+        return defs[title]["properties"]
+
+    found: dict | None = None
+
+    def walk(node):
+        nonlocal found
+        if found is not None:
+            return
+        if isinstance(node, dict):
+            if node.get("title") == title and isinstance(node.get("properties"), dict):
+                found = node["properties"]
+                return
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(schema)
+    assert found is not None, f"no `{title}` model found in the advertised outputSchema"
+    return found
 
 
 class TestToolDescriptions:
@@ -269,16 +307,17 @@ class TestOutputSchemas:
     async def test_spot_check_success_shapes(self):
         tools = await _tools()
 
-        def defs(name):
-            return tools[name].to_mcp_tool().outputSchema.get("$defs", {})
+        def model(name: str, title: str) -> dict:
+            return _find_model(tools[name].to_mcp_tool().outputSchema or {}, title)
 
         # gtd_project_plan advertises the project-plan-seed header a caller reads.
-        assert "project" in defs("gtd_project_plan")["PlanHeader"]["properties"]
+        assert "project" in model("gtd_project_plan", "PlanHeader")
         # the commit tool advertises its rejection-reason vocabulary as an enum.
-        reason = defs("gtd_apply_canvas_commit")["CommitRejection"]["properties"]["reason"]
-        assert "invalid_scope" in reason["enum"]
+        assert (
+            "invalid_scope" in model("gtd_apply_canvas_commit", "CommitRejection")["reason"]["enum"]
+        )
         # a task write advertises the Task object a caller chains on.
-        assert "id" in defs("add_task")["Task"]["properties"]
+        assert "id" in model("add_task", "Task")
 
     async def test_rejection_reason_enums_match_canonical_constants(self):
         """Each commit tool's advertised `rejected[].reason` enum EQUALS the handler's canonical
@@ -287,8 +326,8 @@ class TestOutputSchemas:
         tools = await _tools()
 
         def reason_enum(tool: str, model: str) -> list:
-            defs = tools[tool].to_mcp_tool().outputSchema.get("$defs", {})
-            return defs[model]["properties"]["reason"]["enum"]
+            schema = tools[tool].to_mcp_tool().outputSchema or {}
+            return _find_model(schema, model)["reason"]["enum"]
 
         assert reason_enum("gtd_apply_canvas_commit", "CommitRejection") == sorted(
             COMMIT_REJECT_REASONS

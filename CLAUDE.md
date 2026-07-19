@@ -73,6 +73,34 @@ src/rtm_mcp/
 | `rate_limiter.py` | Token bucket pacing + rolling-window diagnostics |
 | `tools/*.py` | Register MCP tools — thin glue between `client`, `parsers`, and `response_builder` |
 
+### FastMCP 3.x — the docstring shim and the `$defs` change
+
+This server ran on fastmcp **2.x** until v1.35.0 and now pins `>=3.4.4,<4.0.0`. Two 3.x
+behaviours matter, both found by measuring during the migration:
+
+**1. Docstring truncation — why registration goes through a shim.** FastMCP 3.x parses a
+Google-style docstring with `griffe` and keeps only the **first text section** as the tool
+description; everything from `Args:` on is parsed into other section kinds and discarded.
+Measured here: **60,081 authored docstring characters became 34,854 — 42% lost.** The dropped
+material is the part a model most needs: `list_tasks`' RTM search-operator table *and* its
+"API order is NOT user-visible display order" caveat, `add_task`'s Smart Add syntax, and every
+`gtd_*` tool's governance contract.
+
+`server._FullDocstringMCP` wraps the FastMCP instance at the single registration point and
+injects the full `inspect.getdoc(fn)` as `description=` — which overrides the truncation **while
+FastMCP still lifts `Args:` into per-parameter descriptions**. The five `register_*_tools(...)`
+calls take `_registrar`, never `mcp`. On 2.x the whole docstring was advertised natively and no
+shim was needed, so this is a 3.x workaround rather than a design choice.
+
+**2. `$defs` are dereferenced.** 2.x left pydantic's `$defs` intact; 3.x **inlines** them, so a
+nested model (`PlanHeader`, `CommitRejection`, `Task`, …) appears wherever it is used rather than
+in a `$defs` table. Content identical, placement moved. Two output-schema tests reached into
+`$defs` and failed honestly; `tests/test_tool_schemas.py::_find_model` now locates a model by
+`title` anywhere in the tree, so the assertions track the contract rather than the serialisation.
+
+This is why **all 56 fingerprints changed** on the migration: the `outputSchema` serialisation
+genuinely differs, even though the advertised content does not.
+
 ## Key Patterns
 
 ### Tool Registration
