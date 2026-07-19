@@ -344,3 +344,165 @@ class TestGetTaskNotesCompletedByName:
         lookup_call = client.call.call_args_list[0]
         assert lookup_call.args[0] == "rtm.tasks.getList"
         assert "filter" not in lookup_call.kwargs
+
+
+# ---------------------------------------------------------------------------
+# Tests: the note-shape write-boundary gate (RTM_STRICT_NOTES)
+# ---------------------------------------------------------------------------
+
+
+class TestNoteShapeGate:
+    """Three paths per the write-gate contract: accept, reject, flag-off inert.
+
+    The gate rejects BEFORE the task lookup, so a rejection costs zero API calls —
+    asserted explicitly (a gate that still hits RTM is not a write boundary).
+    """
+
+    @staticmethod
+    def _shape_mode(client, mode="shape"):
+        client.config = MagicMock(strict_notes=mode)
+
+    @pytest.fixture
+    def add_resp(self):
+        return {
+            "stat": "ok",
+            "transaction": {"id": "tx1", "undoable": "1"},
+            "note": {"id": "n1", "title": "t", "$t": "body", "created": "2026-01-01"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_well_formed_title_is_accepted(self, note_tools, add_resp):
+        tools, client = note_tools
+        self._shape_mode(client)
+        client.call = AsyncMock(return_value=add_resp)
+
+        result = await tools["add_note"](
+            FakeContext(),
+            note_text="body",
+            note_title="2026-07-19 — OUTPUT — brief drafted",
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
+        )
+        assert "error" not in result["data"]
+        assert client.call.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_malformed_title_is_rejected_without_writing(self, note_tools):
+        tools, client = note_tools
+        self._shape_mode(client)
+        client.call = AsyncMock()
+
+        result = await tools["add_note"](
+            FakeContext(),
+            note_text="body",
+            note_title="just a heading",
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
+        )
+        error = result["data"]["error"]
+        assert error["code"] == "note_shape_rejected"
+        assert error["details"]["rejected_title"] == "just a heading"
+        client.call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_gate_off_allows_a_malformed_title(self, note_tools, add_resp):
+        """Flags-off must reproduce pre-gate behaviour exactly — the reversibility
+        guarantee that makes the bake-in stage safe."""
+        tools, client = note_tools
+        self._shape_mode(client, "off")
+        client.call = AsyncMock(return_value=add_resp)
+
+        result = await tools["add_note"](
+            FakeContext(),
+            note_text="body",
+            note_title="just a heading",
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
+        )
+        assert "error" not in result["data"]
+        assert client.call.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_warn_mode_logs_but_writes(self, note_tools, add_resp, caplog):
+        tools, client = note_tools
+        self._shape_mode(client, "warn")
+        client.call = AsyncMock(return_value=add_resp)
+
+        with caplog.at_level("INFO"):
+            result = await tools["add_note"](
+                FakeContext(),
+                note_text="body",
+                note_title="just a heading",
+                task_id="100",
+                taskseries_id="10",
+                list_id="1",
+            )
+        assert "error" not in result["data"]
+        assert client.call.await_count == 1
+        assert "strict_notes(warn)" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_title_in_body_is_gated_when_no_title_given(self, note_tools):
+        """RTM stores the body as `title\\ntext`, so an inline-grammar author is
+        still judged — otherwise the gate would be trivially bypassable."""
+        tools, client = note_tools
+        self._shape_mode(client)
+        client.call = AsyncMock()
+
+        result = await tools["add_note"](
+            FakeContext(),
+            note_text="not a title line\nthen the body",
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
+        )
+        assert result["data"]["error"]["code"] == "note_shape_rejected"
+        client.call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_edit_note_gates_a_title_change(self, note_tools):
+        tools, client = note_tools
+        self._shape_mode(client)
+        client.call = AsyncMock()
+
+        result = await tools["edit_note"](
+            FakeContext(),
+            note_id="n1",
+            note_text="new body",
+            note_title="rewritten heading",
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
+        )
+        assert result["data"]["error"]["code"] == "note_shape_rejected"
+        client.call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_legacy_body_only_edit_is_never_blocked(self, note_tools):
+        """THE legacy-safety invariant (hand-off brief § 4). A note whose title
+        predates the grammar must stay editable: an edit that supplies no
+        note_title is a body-only edit and is not judged, even in shape mode.
+        Without this, the gate would strand every pre-grammar note."""
+        tools, client = note_tools
+        self._shape_mode(client)
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "transaction": {"id": "tx1", "undoable": "1"},
+                "note": {"id": "n1", "title": "", "$t": "corrected", "modified": "2026-07-19"},
+            }
+        )
+
+        result = await tools["edit_note"](
+            FakeContext(),
+            note_id="n1",
+            note_text="Some ancient untitled note\ncorrected body text",
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
+        )
+        assert "error" not in result["data"]
+        assert client.call.await_count == 1
