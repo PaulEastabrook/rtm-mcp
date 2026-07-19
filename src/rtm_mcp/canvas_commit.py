@@ -13,6 +13,8 @@ plugin's taxonomy.
 
 from typing import Any
 
+from .error_codes import ErrorCode
+
 # Workflow-state tag per add `type` (canvas grammar → RTM workflow tag).
 TYPE_TAG = {"action": "action", "waiting_for": "waiting_for", "calendar": "calendar_entry"}
 CONTEXT_TAGS = frozenset({"using_device", "location_office", "location_home", "location_errand"})
@@ -67,13 +69,13 @@ VALID_SCOPES = frozenset({"instant", "item", "project", "plan"})
 # wrapper (the up-front scope check and the strict-tag existence gate respectively).
 COMMIT_REJECT_REASONS = frozenset(
     {
-        "cross_project",  # validate_commit: a referenced id is not a child of project_id
-        "destructive_unconfirmed",  # validate_commit: completes/removes without confirm_destructive
-        "unknown_add_type",  # validate_commit: an add type outside VALID_TYPES
-        "invalid_execute",  # validate_commit: an execute value outside VALID_EXECUTE_COMMIT
-        "smart_list_target",  # validate_commit: target 'Processed' missing or smart
-        "invalid_scope",  # tool: scope outside VALID_SCOPES
-        "non_canonical_tag",  # tool: strict-tag existence gate rejected a tag
+        ErrorCode.CROSS_PROJECT,  # validate_commit: a referenced id is not a child of project_id
+        ErrorCode.DESTRUCTIVE_UNCONFIRMED,  # validate_commit: completes/removes unconfirmed
+        ErrorCode.UNKNOWN_ADD_TYPE,  # validate_commit: an add type outside VALID_TYPES
+        ErrorCode.INVALID_EXECUTE,  # validate_commit: execute outside VALID_EXECUTE_COMMIT
+        ErrorCode.SMART_LIST_TARGET,  # validate_commit: target 'Processed' missing or smart
+        ErrorCode.INVALID_SCOPE,  # tool: scope outside VALID_SCOPES
+        ErrorCode.STRICT_TAG_REJECTED,  # tool: strict-tag existence gate rejected a tag
     }
 )
 
@@ -194,7 +196,7 @@ def validate_commit(
             if rid not in plan_ids:
                 rejections.append(
                     {
-                        "reason": "cross_project",
+                        "reason": ErrorCode.CROSS_PROJECT.value,
                         "op": op_label,
                         "id": rid,
                         "detail": f"id {rid} is not a child of project {project_id}",
@@ -213,7 +215,7 @@ def validate_commit(
     if (completes or removes) and not confirm_destructive:
         rejections.append(
             {
-                "reason": "destructive_unconfirmed",
+                "reason": ErrorCode.DESTRUCTIVE_UNCONFIRMED.value,
                 "detail": "completes/removes require confirm_destructive=true",
                 "completes": list(completes),
                 "removes": list(removes),
@@ -225,7 +227,7 @@ def validate_commit(
         if t not in VALID_TYPES:
             rejections.append(
                 {
-                    "reason": "unknown_add_type",
+                    "reason": ErrorCode.UNKNOWN_ADD_TYPE.value,
                     "index": i,
                     "type": t,
                     "detail": f"add type {t!r} not in {sorted(VALID_TYPES)}",
@@ -236,7 +238,7 @@ def validate_commit(
         if val not in VALID_EXECUTE_COMMIT:
             rejections.append(
                 {
-                    "reason": "invalid_execute",
+                    "reason": ErrorCode.INVALID_EXECUTE.value,
                     "id": rid,
                     "value": val,
                     "detail": f"execute {val!r} not in {sorted(VALID_EXECUTE_COMMIT)}",
@@ -247,7 +249,7 @@ def validate_commit(
     if (ops.get("adds")) and not processed_list_ok:
         rejections.append(
             {
-                "reason": "smart_list_target",
+                "reason": ErrorCode.SMART_LIST_TARGET.value,
                 "detail": "target list 'Processed' is missing or is a smart list",
             }
         )

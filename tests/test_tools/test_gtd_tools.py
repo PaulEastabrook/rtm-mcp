@@ -719,7 +719,7 @@ class TestGtdApplyCanvasCommit:
             adds=[{"type": "action", "text": "x", "classifiers": {"context": "using_device"}}],
         )
         reasons = {r["reason"] for r in result["data"]["rejected"]}
-        assert "non_canonical_tag" in reasons
+        assert "strict_tag_rejected" in reasons
         assert result["data"]["applied"] == []
         methods = {c.args[0] for c in client.call.call_args_list if c.args}
         assert not (methods & WRITE_METHODS)
@@ -891,7 +891,7 @@ class TestGtdApplyCanvasCommit:
             FakeContext(), project_id=PROJECT_ID, execute={"c1": "later"}
         )
         rejected = result["data"]["rejected"]
-        assert {r["reason"] for r in rejected} == {"non_canonical_tag"}
+        assert {r["reason"] for r in rejected} == {"strict_tag_rejected"}
         assert any("ai_progress_deferred" in r.get("rejected_tags", []) for r in rejected)
         assert result["data"]["applied"] == []
         methods = {c.args[0] for c in client.call.call_args_list if c.args}
@@ -1603,7 +1603,7 @@ class TestGtdCreateProject:
         )
         data = result["data"]
         assert data["created"] == []
-        assert "non_canonical_tag" in {r.get("reason") for r in data["rejected"]}
+        assert "strict_tag_rejected" in {r.get("reason") for r in data["rejected"]}
         methods = {c.args[0] for c in client.call.call_args_list if c.args}
         assert not (methods & WRITE_METHODS)
 
@@ -1946,7 +1946,7 @@ class TestGtdSetRedaction:
         result = await tools["gtd_set_redaction"](FakeContext(), task_id="nope", redacted=True)
 
         assert "error" in result["data"]
-        assert "not found" in result["data"]["error"]
+        assert "not found" in result["data"]["error"]["message"]
         methods = [c.args[0] for c in client.call.call_args_list if c.args]
         assert methods == ["rtm.tasks.getList"]  # one read, nothing written
 
@@ -1959,8 +1959,8 @@ class TestGtdSetRedaction:
 
         result = await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=True)
 
-        assert result["data"]["strict_tag_mode"] is True
-        assert "redacted" in result["data"]["rejected_tags"]
+        assert result["data"]["error"]["details"]["strict_tag_mode"] is True
+        assert "redacted" in result["data"]["error"]["details"]["rejected_tags"]
         methods = {c.args[0] for c in client.call.call_args_list if c.args}
         assert "rtm.tasks.addTags" not in methods  # nothing written
 
@@ -2161,7 +2161,7 @@ class TestGtdChatPost:
 
         result = await tools["gtd_chat_post"](FakeContext(), task_id="nope", text="x", role="me")
         assert "error" in result["data"]
-        assert "not found among active tasks" in result["data"]["error"]
+        assert "not found among active tasks" in result["data"]["error"]["message"]
         methods = [c.args[0] for c in client.call.call_args_list if c.args]
         # incomplete miss → a second read against completed to distinguish; nothing written.
         assert methods == ["rtm.tasks.getList", "rtm.tasks.getList"]
@@ -2194,8 +2194,8 @@ class TestGtdChatPost:
         client.call = AsyncMock(side_effect=_call)
 
         result = await tools["gtd_chat_post"](FakeContext(), task_id="cdone", text="x", role="me")
-        assert "completed" in result["data"]["error"]
-        assert "read-only" in result["data"]["error"]
+        assert "completed" in result["data"]["error"]["message"]
+        assert "read-only" in result["data"]["error"]["message"]
         methods = [c.args[0] for c in client.call.call_args_list if c.args]
         assert methods == ["rtm.tasks.getList", "rtm.tasks.getList"]  # two reads, no write
 
@@ -2208,8 +2208,8 @@ class TestGtdChatPost:
 
         result = await tools["gtd_chat_post"](FakeContext(), task_id="c1", text="x", role="me")
 
-        assert result["data"]["strict_tag_mode"] is True
-        assert "ai_chat_requested" in result["data"]["rejected_tags"]
+        assert result["data"]["error"]["details"]["strict_tag_mode"] is True
+        assert "ai_chat_requested" in result["data"]["error"]["details"]["rejected_tags"]
         methods = {c.args[0] for c in client.call.call_args_list if c.args}
         assert "rtm.tasks.notes.add" not in methods  # nothing written
         assert "rtm.tasks.addTags" not in methods
@@ -3108,7 +3108,7 @@ class TestGtdApplyEngageCommit:
             FakeContext(), items=[{"id": "a1", "verdict": "drop"}]
         )
         assert res["data"]["applied"] == []
-        assert any(r["reason"] == "confirm_destructive_required" for r in res["data"]["rejected"])
+        assert any(r["reason"] == "destructive_unconfirmed" for r in res["data"]["rejected"])
         assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
 
     @pytest.mark.asyncio
@@ -3122,7 +3122,7 @@ class TestGtdApplyEngageCommit:
         )
         assert res["data"]["applied"] == []
         rej = res["data"]["rejected"][0]
-        assert rej["reason"] == "type-illegal" and rej["suggestion"] == "keep"
+        assert rej["reason"] == "type_illegal" and rej["suggestion"] == "keep"
         assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
 
     @pytest.mark.asyncio
@@ -3134,7 +3134,7 @@ class TestGtdApplyEngageCommit:
             FakeContext(), items=[{"id": "a1", "verdict": "obliterate"}]
         )
         assert res["data"]["applied"] == []
-        assert res["data"]["rejected"][0]["reason"] == "off-enum"
+        assert res["data"]["rejected"][0]["reason"] == "off_enum"
         assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
 
     @pytest.mark.asyncio
@@ -3161,7 +3161,9 @@ class TestGtdApplyEngageCommit:
             items=[{"id": "a1", "verdict": "next_actions"}, {"id": "ghost", "verdict": "keep"}],
         )
         assert res["data"]["applied"] == []
-        assert any(r["reason"] == "not_found" for r in res["data"]["rejected"])
+        # v2.0.0: the bare `not_found` reason was reconciled onto the registry's
+        # resolution code — one spelling for "this id is not a task in the account".
+        assert any(r["reason"] == "task_not_found" for r in res["data"]["rejected"])
         assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
 
     @pytest.mark.asyncio
@@ -3186,7 +3188,7 @@ class TestGtdApplyEngageCommit:
             FakeContext(), items=[{"id": "a1", "verdict": "someday"}]
         )
         assert res["data"]["applied"] == []
-        assert any(r["reason"] == "non_canonical_tag" for r in res["data"]["rejected"])
+        assert any(r["reason"] == "strict_tag_rejected" for r in res["data"]["rejected"])
         assert not any(c.args[0] in WRITE_METHODS for c in client.call.call_args_list if c.args)
 
     # ── PROGRESS steer note (the per-item `note` — Tier 1) ──────────────────────────────────────

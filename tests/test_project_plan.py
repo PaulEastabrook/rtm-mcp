@@ -395,7 +395,7 @@ class TestResolveFocus:
     def test_no_match_is_actionable_error(self):
         res = resolve_focus(self._parsed(), "Ghost")
         assert "error" in res
-        assert "list_tasks" in res["error"]
+        assert "list_tasks" in res["error"]["message"]
 
     def test_empty_focus_error(self):
         assert "error" in resolve_focus(self._parsed(), "")

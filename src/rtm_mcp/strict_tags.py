@@ -14,6 +14,9 @@ import logging
 import re
 from typing import Any
 
+from .error_codes import ErrorCode
+from .response_builder import build_error
+
 logger = logging.getLogger(__name__)
 
 # Match a SmartAdd tag token: a '#' at the start or after whitespace, then the
@@ -57,15 +60,21 @@ def extract_smartadd_tags(name: str) -> list[str]:
 
 
 def guided_error(rejected: list[str]) -> dict[str, Any]:
-    """Build the self-documenting rejection response (teaches recovery)."""
-    return {
-        "error": "strict_tag_mode: write rejected — tag does not exist in the account",
-        "rejected_tags": rejected,
-        "reason": (
+    """Build the self-documenting rejection response (teaches recovery).
+
+    v2.0.0: the recovery material that were siblings of `data.error` through v1.35.0
+    (`rejected_tags` / `reason` / `how_to_proceed` / `strict_tag_mode`) now ride under
+    `error.details`. Content is unchanged — a consumer reads them one level deeper, and
+    branches on `error.code == "strict_tag_rejected"` instead of matching the prose."""
+    return build_error(
+        ErrorCode.STRICT_TAG_REJECTED,
+        "strict_tag_mode: write rejected — tag does not exist in the account",
+        rejected_tags=rejected,
+        reason=(
             "Strict mode blocks creating new tags via this server. Only tags that "
             "already exist in your RTM account may be applied."
         ),
-        "how_to_proceed": (
+        how_to_proceed=(
             "Use an existing tag (call get_tags to see the available set). If you "
             "genuinely need a NEW tag, it must be created deliberately and "
             "out-of-band: (1) codify it in the gtd tag taxonomy "
@@ -74,7 +83,27 @@ def guided_error(rejected: list[str]) -> dict[str, Any]:
             "(3) retry — once it exists, this server will accept it. The server never "
             "mints tags implicitly."
         ),
-        "strict_tag_mode": True,
+        strict_tag_mode=True,
+    )
+
+
+def as_rejection(gate: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a `guided_error` envelope into a commit `rejected[]` entry.
+
+    The commit engines report per-item failures as `{"reason": ..., "detail": ...}` plus
+    any extra keys — a flat shape, NOT a nested envelope error. Before v2.0.0 the gate's
+    flat dict could simply be spread (`{**gate, "reason": ...}`); now that it nests under
+    `error`, this lifts the message to `detail` and the recovery material to the top level
+    so a rejection entry keeps one consistent shape across all three commit tools."""
+    body = gate.get("error", {})
+    return {
+        # Details are spread FIRST so the canonical `reason` below always wins: the
+        # guided error carries its own `reason` detail key (explanatory prose), and
+        # spreading it last would clobber the machine-branchable code. This preserves
+        # the pre-v2.0.0 behaviour, where `{**gate, "reason": <code>}` overrode it.
+        **(body.get("details") or {}),
+        "reason": ErrorCode.STRICT_TAG_REJECTED.value,
+        "detail": body.get("message", ""),
     }
 
 

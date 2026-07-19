@@ -589,7 +589,7 @@ class TestCompleteTask:
         _setup_calls(client, [find_resp])
 
         result = await tools["uncomplete_task"](FakeContext(), task_name="Open Task")
-        assert "not completed" in result["data"]["error"]
+        assert "not completed" in result["data"]["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -870,8 +870,8 @@ class TestStrictTagMode:
             taskseries_id="2",
             list_id="3",
         )
-        assert result["data"]["strict_tag_mode"] is True
-        assert result["data"]["rejected_tags"] == ["waitingfor"]
+        assert result["data"]["error"]["details"]["strict_tag_mode"] is True
+        assert result["data"]["error"]["details"]["rejected_tags"] == ["waitingfor"]
         # The write was not performed.
         assert "rtm.tasks.addTags" not in _called_methods(client)
 
@@ -903,7 +903,7 @@ class TestStrictTagMode:
             taskseries_id="2",
             list_id="3",
         )
-        assert result["data"]["rejected_tags"] == ["unknowntag"]
+        assert result["data"]["error"]["details"]["rejected_tags"] == ["unknowntag"]
         assert "rtm.tasks.setTags" not in _called_methods(client)
 
     @pytest.mark.asyncio
@@ -949,7 +949,7 @@ class TestStrictTagMode:
             name="Do thing #brandnewword",
             parse=True,
         )
-        assert result["data"]["rejected_tags"] == ["brandnewword"]
+        assert result["data"]["error"]["details"]["rejected_tags"] == ["brandnewword"]
         assert "rtm.tasks.add" not in _called_methods(client)
 
     @pytest.mark.asyncio
@@ -1048,7 +1048,7 @@ class TestMoveTaskPriority:
             task_name="Task",
         )
         assert "error" in result["data"]
-        assert "direction" in result["data"]["error"]
+        assert "direction" in result["data"]["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -1562,7 +1562,7 @@ class TestAddTaskUnknownListName:
 
         result = await tools["add_task"](FakeContext(), name="Pay invoice", list_name="Wrok")
         assert "error" in result["data"]
-        assert "Wrok" in result["data"]["error"]
+        assert "Wrok" in result["data"]["error"]["message"]
         methods = [c.args[0] for c in client.call.call_args_list if c.args]
         assert "rtm.tasks.add" not in methods
 
@@ -1591,7 +1591,7 @@ class TestListTasksUnknownListName:
 
         result = await tools["list_tasks"](FakeContext(), list_name="Archived Stuff")
         assert "error" in result["data"]
-        assert "Archived Stuff" in result["data"]["error"]
+        assert "Archived Stuff" in result["data"]["error"]["message"]
         methods = [c.args[0] for c in client.call.call_args_list if c.args]
         assert "rtm.tasks.getList" not in methods
 

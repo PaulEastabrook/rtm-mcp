@@ -13,12 +13,13 @@ Contract shared by all tools (CONTRIBUTING § 3):
     {"data": <SUCCESS_PAYLOAD> | <ErrorData>, "metadata": {...}, "analysis"?: {...}}
 
 `data` is ALWAYS advertised as a `success | error` union (`anyOf`), so a caller must branch on
-the error discriminator before assuming a success shape. This server's error shape is the
-free-text `{"error": "<actionable prose>"}` string (NOT a typed code vocabulary — see
-CONTRIBUTING § 5 and the tool-documentation debrief's improvement candidate), modelled as
-`ErrorData` with `extra="allow"` so the structured error siblings that specific paths add
-(`strict_tag_mode` + `how_to_proceed` from the strict-tag gate; `candidates`; `rejected`) ride
-along in the schema truthfully. Deeply-nested, evolving, or versioned-external payloads
+the error discriminator before assuming a success shape. Since **v2.0.0** that discriminator is a
+structured object, not prose: `{"error": {"code", "message", "rtm_code", "details"}}`, modelled as
+`ErrorData` → `ErrorBody`. `code` is a stable member of the canonical `error_codes.ErrorCode`
+registry and is the thing to branch on; `message` is the same actionable prose that used to BE
+`data.error` (carried verbatim — only its location moved) and must never be parsed; the recovery
+material specific paths attach (`strict_tag_mode` + `how_to_proceed` from the strict-tag gate;
+`candidates`; `query`) now rides under `details`. Deeply-nested, evolving, or versioned-external payloads
 (project-plan-seed rows, canvas seed rows, RTM `raw` passthroughs) keep `extra="allow"` /
 `dict[str, Any]` on purpose — they evolve ahead of this server and are never vocabulary-filtered.
 """
@@ -30,12 +31,16 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from .canvas_commit import COMMIT_REJECT_REASONS
 from .canvas_create import CREATE_REJECT_REASONS
 from .engage_commit import ENGAGE_REJECT_REASONS
+from .error_codes import ErrorCode
 
 
-def _enum_extra(reasons: frozenset[str]) -> dict[str, Any]:
+def _enum_extra(reasons: frozenset[ErrorCode]) -> dict[str, Any]:
     """A `json_schema_extra` payload advertising a closed string enum, sourced from a handler's
-    canonical reason constant so the advertised vocabulary tracks the handler by construction."""
-    return {"enum": sorted(reasons)}
+    canonical reason constant so the advertised vocabulary tracks the handler by construction.
+
+    Members are `ErrorCode` (str-mixin) since v2.0.0 — `.value` is taken so the advertised
+    schema carries plain wire strings, not `ErrorCode.X` reprs."""
+    return {"enum": sorted(r.value for r in reasons)}
 
 
 # --------------------------------------------------------------------------- #
@@ -43,13 +48,41 @@ def _enum_extra(reasons: frozenset[str]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
+class ErrorBody(BaseModel):
+    """The structured error object (v2.0.0). `code` is the machine-branchable
+    discriminator; `message` is human-facing prose and MUST NOT be parsed.
+
+    `extra="forbid"`: every optional key lives under `details`, so the top level is a
+    closed four-field contract. Detail keys stay open (`dict[str, Any]`) because they
+    are per-family and evolving — `candidates`, `how_to_proceed`, `strict_tag_mode`,
+    `rejected`, `query`, …"""
+
+    model_config = ConfigDict(extra="forbid")
+    code: ErrorCode = Field(description="Stable code from the canonical registry — branch on this.")
+    message: str = Field(
+        description="Actionable human-facing prose. Never parse it; branch on code."
+    )
+    rtm_code: int | None = Field(
+        default=None, description="Originating RTM API numeric, when the failure came from RTM."
+    )
+    details: dict[str, Any] | None = Field(
+        default=None, description="Optional per-family detail keys. Absent when there are none."
+    )
+
+
 class ErrorData(BaseModel):
-    """The `data` payload on any failure: `{"error": "<actionable prose>"}`. `extra="allow"`
-    captures the structured siblings specific paths attach — `strict_tag_mode`/`how_to_proceed`
-    (strict-tag gate), `candidates`, `rejected`, `status`, etc."""
+    """The `data` payload on any failure: `{"error": {"code": ..., "message": ...}}`.
+
+    BREAKING in v2.0.0 — `error` was a free-text string through v1.35.0; it is now an
+    object. The prose survives verbatim as `error.message`; only its location moved.
+
+    `extra="allow"` is retained for the genuine siblings a few paths set alongside
+    `error` (notably `status` on `test_connection` / `check_auth`, and `transaction_id`
+    on the undo paths) — NOT for error detail keys, which now belong under
+    `error.details`."""
 
     model_config = ConfigDict(extra="allow")
-    error: str
+    error: ErrorBody
 
 
 class Candidate(BaseModel):

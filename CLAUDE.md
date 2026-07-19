@@ -13,7 +13,8 @@ src/rtm_mcp/
 ├── client.py           # Async RTM API client with signing, retry, settings caching (timezone + default list)
 ├── config.py           # Pydantic settings (env + file + rate limits + connection retry)
 ├── parsers.py          # RTM response parsing, formatting, normalization, analysis
-├── response_builder.py # MCP response envelope + transaction recording + tool behaviour-annotation constants
+├── error_codes.py      # Canonical ErrorCode registry (typed error vocabulary) + RTM numeric→code map; ADDITIVE-ONLY leaf module
+├── response_builder.py # MCP response envelope + structured error constructors + transaction recording + tool behaviour-annotation constants
 ├── models.py           # Schema-only Pydantic output-schema models (per-tool @mcp.tool(output_schema=...)); not used at runtime
 ├── lookup.py           # Shared name-to-ID resolution for tasks and lists
 ├── strict_tags.py      # Strict-tag mode: existence gate for tag writes (on by default)
@@ -50,8 +51,9 @@ src/rtm_mcp/
 |--------|----------------------|
 | `client.py` | HTTP transport: signing, connection pooling, rate limiting, retry, settings caching (timezone + default list) |
 | `parsers.py` | Translate RTM's quirky API responses into clean Python dicts |
-| `response_builder.py` | Wrap tool output in the standard MCP response envelope; hold the three tool behaviour-annotation constants (`READ_ONLY_`/`ADDITIVE_WRITE_`/`DESTRUCTIVE_WRITE_ANNOTATIONS`) |
-| `models.py` | Schema-only Pydantic models generating each tool's MCP `outputSchema` (attached via `@mcp.tool(output_schema=...)`); **not used at runtime** — tools still return the `response_builder` dict, FastMCP advertises the schema without validating. `data` is always a `success \| ErrorData` union; the six-surface tool-documentation standard (CONTRIBUTING § 3) |
+| `error_codes.py` | The **canonical typed-error registry** (v2.0.0) — `ErrorCode` (every machine-branchable failure, grouped transport/resolution/validation/state/governance/commit/write), `RTM_CODE_MAP` (RTM numeric → semantic code) and `code_for_rtm`. **ADDITIVE-ONLY**: a shipped code is never renamed or removed. A leaf module (imports nothing from the package), so the three commit-engine `rejected[].reason` vocabularies source their members from it without an import cycle — one vocabulary, three scoped views |
+| `response_builder.py` | Wrap tool output in the standard MCP response envelope; build every structured error (`build_error` / `error_from_exception`); hold the three tool behaviour-annotation constants (`READ_ONLY_`/`ADDITIVE_WRITE_`/`DESTRUCTIVE_WRITE_ANNOTATIONS`) |
+| `models.py` | Schema-only Pydantic models generating each tool's MCP `outputSchema` (attached via `@mcp.tool(output_schema=...)`); **not used at runtime** — tools still return the `response_builder` dict, FastMCP advertises the schema without validating. `data` is always a `success \| ErrorData` union — since v2.0.0 `ErrorData.error` is the nested `ErrorBody` (`{code, message, rtm_code, details}`, `extra="forbid"`), not a prose string; the six-surface tool-documentation standard (CONTRIBUTING § 3) |
 | `lookup.py` | Resolve human-readable names (task name, list name) to RTM IDs |
 | `strict_tags.py` | Strict-tag mode policy: normalize/split tags, extract SmartAdd `#tokens`, and gate tag writes against the account's existing tag set |
 | `project_plan.py` | Pure (no IO) reconstruction of the `project-plan-seed/3.1` envelope from parsed tasks — byte-compatible with the gtd plugin's `rtm_fetch.py` reference. Also the home of the `REDACTED_TAG` constant and emits the additive `header.project.redacted` flag + the additive per-note `id` (every envelope note object carries the RTM note id — the ORDER-note resolver tie-breaks on it) + the additive `3.1` repeating-templated-project signals `is_repeating`/`taskseries_id` on every row and `header.project` (True when the task's own parent taskseries recurs — an `rrule`; the gtd `series_guard` detection gate reads them; repeating-templated-project Wave B) + the additive `3.1` resolve-references token surfacing `template_child_id` on every row (from a child's `tmpl-child/1` TMPL-CHILD note; `""` for a one-off) and token-space `deps` (a DEPENDS-ON note's `Template-child-id:` line makes the dep the upstream token, else the raw task_id) — both feed `plan_graph`'s `token_map`/`_resolve_ref` so token-authored deps/pins resolve across recurrence; repeating-templated-project Wave B slice 2) |
@@ -68,7 +70,7 @@ src/rtm_mcp/
 | `engage_commit.py` | Pure (no IO) server-side **engage verdict grammar** backing `gtd_apply_engage_commit` — the codified twin of the gtd plugin's `scripts/validate-engage-verdict.py`. Both conform to the SAME source of truth (`plugins/gtd/skills/gtd/references/engage-verdict-grammar.md` §§ 1-4) but this repo is standalone (cannot read the marketplace markdown), so the enum (`VERDICT_FAMILY`), per-kind base legality (`BASE_LEGALITY`), and the two flag guards (deadline § 3.1 → `DEADLINE_LEGAL`; blocked § 3.2 → resurface-only-when-blocked) are codified as Python constants — exactly as `canvas_commit.py` holds the tag taxonomy (codification before validation; a verdict is a governed extension, never a local invention). Posture HARD-FAIL: `validate` returns `{ok, results, errors}` with a closest-legal `suggestion`; the tool writes nothing if any item is rejected. Plus `base_verdict`/`verdict_arg` (strip a `:<arg>` suffix), `suggest_verdict` (the seed's pre-triage — deadline→keep, blocked→resurface, waiting-for→nudge, soft action→next_actions), `date_phrase_for` (the parse_time phrase for the date verdicts — today/bump→"in N days"/defer_start), and `collect_engage_tags` (the strict-tag existence-gate input — all existing gtd tags, no new tag). Also the PROGRESS-steer grammar (the per-item `note`, Tier 1): `STEER_VERBS`=`(draft, do_now, nudge)`, `sanitize_steer` (ACL: non-string→drop+warn, control chars/whitespace collapsed, `STEER_MAX_LEN`=500 truncate+warn — a malformed steer never fails a legal renegotiation), `make_steer_note` (title `YYYY-MM-DD HH:MM — STEER — <verb>`, PURE body — the drafting-path instruction, no marker pollution), `steer_note_text` (the idempotency probe: an identical STEER note already on the item is skipped). The legality core of the Anti-Corruption Layer |
 | `companion.py` | The vault file-IO seam: locate the read-only AI Memory vault root (cross-platform; `AI_MEMORY_DIR`/host default + `memory/_index.md` marker), resolve each filed artefact's companion (`.md`/`.yaml`) frontmatter, and enrich `gtd_project_canvas` file objects with a `meta` block. Mirrors file-store's `query_outputs.py` by contract (stdlib-only). Graceful: every IO failure → no `meta`, never raises |
 | `tool_params.py` | Shared coercion for complex (array/object) MCP params: a `coerce_json` `BeforeValidator` + `Annotated` types presenting a clean single-typed JSON schema (no `anyOf`/null) so clients that stringify union-typed params still interoperate. Also the `coerced_*_schema(...)` builders (str-array / obj-array / object) that return the `WithJsonSchema` dict with a per-param **description** (and optional nested enum) baked in — used inline so a coercion param carries surface-2 documentation (a sibling `Field(description=…)` is dropped by `WithJsonSchema`) |
-| `exceptions.py` | Map RTM error codes to typed exceptions with recovery hints |
+| `exceptions.py` | Map RTM error codes to typed exceptions with recovery hints. Its `ERROR_CODE_MAP` keys are pinned equal to `error_codes.RTM_CODE_MAP`'s by a test, so the exception hierarchy and the semantic registry cannot drift apart |
 | `urls.py` | Build RTM web UI deep-link URLs; walk parent_task_id chain for hierarchy |
 | `rate_limiter.py` | Token bucket pacing + rolling-window diagnostics |
 | `tools/*.py` | Register MCP tools — thin glue between `client`, `parsers`, and `response_builder` |
@@ -217,13 +219,37 @@ def raise_for_error(code: int, message: str) -> None:
     raise error_class(full_message, code)
 ```
 
-**Application-level errors** — `resolve_task_ids` and `resolve_list_id` (in `lookup.py`) and tool functions return actionable error messages via `build_response(data={"error": ...})` that guide agents to the correct next step:
+**Application-level errors** — `resolve_task_ids` and `resolve_list_id` (in `lookup.py`) and tool
+functions return a **structured error** via `build_response(data=build_error(...))` carrying both a
+machine-branchable `code` and the actionable prose that guides an agent to the next step:
 
 ```python
-{"error": "Task not found: 'Buy milk'. Use list_tasks to search by filter or check spelling."}
-{"error": "Provide either task_name (for search) or all three: task_id, taskseries_id, and list_id. Get these from list_tasks."}
-{"error": "List 'Projects' not found. Use get_lists to see available list names."}
+build_error(ErrorCode.TASK_NOT_FOUND,
+            "Task not found: 'Buy milk'. Use list_tasks to search by filter or check spelling.",
+            query="Buy milk")
+# → {"error": {"code": "task_not_found",
+#              "message": "Task not found: 'Buy milk'. Use list_tasks to search by …",
+#              "rtm_code": None,
+#              "details": {"query": "Buy milk"}}}
 ```
+
+**BREAKING in v2.0.0.** Through v1.35.0 `data.error` was the prose **string** itself. It is now the
+object above: the prose survives **verbatim** as `error.message` (only its location moved), and
+consumers branch on `error.code` instead of pattern-matching English. The recovery material that
+used to sit as *siblings* of `data.error` (the strict-tag gate's `strict_tag_mode` /
+`how_to_proceed` / `rejected_tags`; a resolver's `candidates`) now rides under `error.details`.
+See CONTRIBUTING § 5 for the construction rules and the additive-only registry discipline.
+
+Two distinct error shapes exist and only the first changed:
+
+| Shape | Where | Contract |
+|---|---|---|
+| **Envelope error** | `data.error` | The `success \| error` union discriminator — the structured `ErrorBody` above |
+| **Per-op batch failure** | `data.errors[]` inside a **successful** envelope | `{"op", "id", "error": str(exc)}` — flat, reports partial failure in a batch that otherwise applied. Deliberately **unchanged**; unifying it is a separate change |
+
+The commit engines' per-item `rejected[].reason` is a third, *flat* surface — its vocabulary is
+drawn from the same `ErrorCode` registry, but a rejection entry is `{reason, detail, …}`, never a
+nested envelope error.
 
 ### Task and List Identification
 
@@ -266,7 +292,12 @@ knowledge of any canonical taxonomy and needs no sync** — "is this an *allowed
 **Components:**
 - `strict_tags.py` — pure policy: `normalize_tag` (trim + lower), `split_tags`
   (comma-split → normalized, de-duped), `extract_smartadd_tags` (regex `#tokens` from a
-  SmartAdd name), `guided_error` (the self-documenting rejection), and
+  SmartAdd name), `guided_error` (the self-documenting rejection — since v2.0.0 a structured
+  `strict_tag_rejected` error whose recovery material (`rejected_tags` / `reason` /
+  `how_to_proceed` / `strict_tag_mode`) rides under `error.details` rather than as siblings of
+  `data.error`), `as_rejection` (flattens that envelope into the commit engines' `{reason, detail,
+  …}` entry shape — details are spread FIRST so the canonical `reason` always wins over the
+  guided error's own explanatory `reason` detail key), and
   `enforce_strict_tags(client, requested, *, tool)` → returns a guided-error dict to
   reject or `None` to allow.
 - `client.get_account_tags()` — the TTL-cached, normalized allow-list (see HTTP Transport).
@@ -878,6 +909,11 @@ apply, batch, per-write transaction recording for `batch_undo`, `#ai_conversatio
   guard: `resurface` only when `blocked`) with a closest-legal suggestion. Any rejection → **nothing
   written** (no partial apply). `drop` needs `confirm_destructive`; a strict-tag gate runs over
   `collect_engage_tags` (all existing gtd tags — no new tag).
+  **v2.0.0 LOCKSTEP:** the three emitted `reason` values were normalised from hyphens to underscores
+  (`off-enum`→`off_enum`, `unknown-kind`→`unknown_kind`, `type-illegal`→`type_illegal`) when the
+  reject vocabularies were unified into the `error_codes.ErrorCode` registry. These are
+  **grammar-bound** — gtd's `validate-engage-verdict.py`, its tests, and `engage-verdict-grammar.md`
+  were changed in the same release. Never re-spell them on one side alone.
 - *Dates through `parse_time` (Europe/London, authoritative).* Resolved via `rtm.time.parse` in phase 1
   (before any write) — a hallucinated/unparseable `date_phrase` (e.g. on a `defer_start`) is a `bad_date`
   rejection that fails the batch, so a client-hallucinated final date is never written.
@@ -1016,10 +1052,11 @@ call-surface assertion, strict-tag rejection setup) are canonical in
 
 This inventory is the canonical per-file test count (keep it in sync — CONTRIBUTING.md § 9).
 
-Test files (946 tests total):
+Test files (975 tests total):
 - `tests/test_tool_schemas.py` — the six-surface tool-documentation contract, introspecting the REAL server (`rtm_mcp.server.mcp` → `get_tools()` → `to_mcp_tool()`): every tool + param described; behaviour annotations correct per class (read-only / additive / destructive; openWorldHint everywhere); closed-vocabulary enums asserted EQUAL to the canonical constants (priority/direction/scope/role/mode/execute/verdict — drift-proof); complex params expose a clean single-typed schema; every `outputSchema.properties.data` is a `success|error` union; success-shape spot-checks; the committed `tool-fingerprints.json` freshness guard (recomputes per-tool sha256 from the live server, asserts equality with the file, and asserts qualified-`mcp__rtm__` sha256 shape — family standard § 5) (20 tests)
 - `tests/test_client.py` — client signing, API calls, settings + account-tag caching (incl. failure-not-cached + concurrent-timeline lock), transaction log, 503 retry, connection retry incl. connect-phase-timeout-on-write retry + mid-flight ReadError wrap + non-JSON response, POST/GET split (46 tests)
 - `tests/test_config.py` — config load/save, file fallback (corrupt/wrong-type/unreadable JSON), RTM_AUTH_TOKEN env + token/auth_token kwargs, safety-margin bounds, 0600 save permissions, strict-tag toggle (22 tests)
+- `tests/test_error_codes.py` — the typed-error registry + v2.0.0 envelope: registry integrity (unique values, lower_snake_case spelling guard, str-mixin wire equality), RTM numeric mapping (key-set parity with `exceptions.ERROR_CODE_MAP`, known numerics, unmapped/None → `invalid_input`), `build_error` (minimal shape, `details` omitted-not-null, rtm_code preserved, prose carried verbatim, code serialised as a plain string), `error_from_exception` (RTM code mapped + numeric preserved; non-RTM fallback), the unified reject vocabularies (every reason is a registry member; shared reasons have one spelling; `destructive_unconfirmed` reconciliation; the three lockstep verdict reasons), and `ErrorBody` (`extra="forbid"`; canonical shape) (25 tests)
 - `tests/test_strict_tags.py` — strict-tag guard: normalize/split/SmartAdd-extract + enforce_strict_tags (off / reject / live-refetch / input normalization) (13 tests)
 - `tests/test_project_plan.py` — project-plan-seed/3 envelope builder: header/row mapping, priority word-form, id-based permalink (absent ancestor), deps/files extraction, project-level `header.project.files`, None→"" coercion, tz date-localisation (BST off-by-one fix, GMT-unaffected, no-tz fallback, completed/note dates), resolve_project disambiguation, resolve_focus (by id/name/substring, area-from-project-parents, ambiguity, miss, project-less area), header.project.redacted flag, envelope note objects carry the RTM note id, seed-3.1 repeating signals (is_repeating/taskseries_id default-false on rows + header.project; surface True from the parsed rrule flag), seed-3.1 resolve-references token surfacing (template_child_id default-"" on rows; a TMPL-CHILD `tmpl-child/1` note surfaces the row token; a DEPENDS-ON `Template-child-id:` line authors the dep in token-space) (34 tests)
 - `tests/test_project_index.py` — portfolio builders: `build_index` (selection (incomplete/#project/not-#test; #hold always excluded; #someday default-out/opt-in; completed-project excluded; empty), field-set shape, life-from-tag, focus/focus_id from parent (+ top-level → `(unfiled)` not dropped), priority mapping (1/2/3 and N→""), `updated` tz-localisation (BST), open_count = all incomplete children, blocked_count from a DEPENDS-ON edge, next_tickle earliest incl. overdue (+ empty), life→focus→project sort); AI-progressible counts (ai_quick unblocked #quick_win actions, excludes blocked + waiting-for; ai_now #ai_progress_requested excl. blocked; ai_later #ai_progress_deferred incl. blocked; zero-not-absent; canvas-seed parity); conversation counts (chat_count incomplete #ai_chat + chat_review_count #ai_output_review_needed; completed excluded; review subset-not-additive; project-scoped counts the project; zero-not-absent); engage counts (waiting_count incomplete #waiting_for, canvas-kind parity, completed excluded, zero-not-absent); `build_foci` (all #focus areas incl. project-less; field-set; life-from-tag; #test/#hold excluded; #someday gated; untagged area not a focus; life→focus sort); `build_actions` (incomplete children of active project; field-set + attribution incl. type/due/priority/blocked; #test child excluded; excluded-project child not emitted (+#someday opt-in); top-level → `(unfiled)`; deterministic grouped sort); action kind + urgency fields (type matches canvas r.k incl. default; due carried + localised + empty; priority encoding; blocked matches plan-graph (+ false on absent/cross-project upstream); waiting-for/calendar due); action engage fields (estimate normalised to minutes incl. ISO + null; contexts pass-through in canonical order + empty; energy high/low/both-null/neither-null; exec quick/now/later/abstain + now-directive-beats-quick + blocked-now-abstains + tallies-match-project ai_* counts); redaction (project-row + focus-row `redacted` from own `#redacted`; action-row own tag + CASCADE from redacted project + CASCADE from redacted focus; shielded action still carries full engage fields via own tag AND via cascade — surface-not-enforce invariant); completed-row guards (counts/next_tickle/actions exclude completed children when fed a broader parsed set) (73 tests)

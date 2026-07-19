@@ -253,7 +253,7 @@ class TestResolveTaskIds:
         mock_client.call.return_value = _make_getlist_response([])
         result = await resolve_task_ids(mock_client, "Nonexistent task", None, None, None)
         assert "error" in result
-        assert "Nonexistent task" in result["error"]
+        assert "Nonexistent task" in result["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_include_completed_passed_through(self, mock_client):

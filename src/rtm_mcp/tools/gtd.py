@@ -56,6 +56,7 @@ from ..engage_commit import validate as validate_engage
 from ..engage_seed import _blocked_map as engage_blocked_map
 from ..engage_seed import _kind as engage_kind
 from ..engage_seed import build_engage_seed
+from ..error_codes import ErrorCode
 from ..gtd_chat import (
     AI_CHAT,
     AI_CHAT_REQUESTED,
@@ -100,10 +101,11 @@ from ..response_builder import (
     ADDITIVE_WRITE_ANNOTATIONS,
     DESTRUCTIVE_WRITE_ANNOTATIONS,
     READ_ONLY_ANNOTATIONS,
+    build_error,
     build_response,
     get_transaction_info,
 )
-from ..strict_tags import enforce_strict_tags, normalize_tag
+from ..strict_tags import as_rejection, enforce_strict_tags, normalize_tag
 from ..tmpl_child import make_tmpl_child_note, new_slug, plan_backfill
 from ..tool_params import (
     coerce_json,
@@ -201,7 +203,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         if bool(project_id) == bool(project_name):
             return build_response(
-                data={"error": "Provide exactly one of project_id or project_name."}
+                data=build_error(
+                    ErrorCode.MISSING_PARAMETER,
+                    "Provide exactly one of project_id or project_name.",
+                )
             )
 
         filter_str = (
@@ -223,11 +228,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             pid = str(project_id)
             if pid not in {t["id"] for t in parsed}:
                 return build_response(
-                    data={
-                        "error": f"Project {pid} not found in the fetched tasks. Check the id, or "
+                    data=build_error(
+                        ErrorCode.PROJECT_NOT_FOUND,
+                        f"Project {pid} not found in the fetched tasks. Check the id, or "
                         "pass list_id and/or include_completed=true if it lives in a specific list "
-                        "or is completed."
-                    }
+                        "or is completed.",
+                    )
                 )
 
         # Localise dates to the account timezone (cached settings read) so BST/DST dues don't
@@ -309,7 +315,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         if bool(project_id) == bool(project_name):
             return build_response(
-                data={"error": "Provide exactly one of project_id or project_name."}
+                data=build_error(
+                    ErrorCode.MISSING_PARAMETER,
+                    "Provide exactly one of project_id or project_name.",
+                )
             )
 
         filter_str = (
@@ -331,11 +340,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             pid = str(project_id)
             if pid not in {t["id"] for t in parsed}:
                 return build_response(
-                    data={
-                        "error": f"Project {pid} not found in the fetched tasks. Check the id, or "
+                    data=build_error(
+                        ErrorCode.PROJECT_NOT_FOUND,
+                        f"Project {pid} not found in the fetched tasks. Check the id, or "
                         "pass list_id and/or include_completed=true if it lives in a specific list "
-                        "or is completed."
-                    }
+                        "or is completed.",
+                    )
                 )
 
         # Localise dates to the account timezone (cached settings read) so BST/DST dues don't
@@ -613,7 +623,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     "applied": [],
                     "rejected": [
                         {
-                            "reason": "invalid_scope",
+                            "reason": ErrorCode.INVALID_SCOPE.value,
                             "scope": scope,
                             "detail": f"scope {scope!r} not in {sorted(VALID_SCOPES)}",
                         }
@@ -642,9 +652,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         pid = str(project_id)
         if pid not in by_id:
             return build_response(
-                data={
-                    "error": f"Project {pid} not found. Check the id (pass the project's task id)."
-                }
+                data=build_error(
+                    ErrorCode.PROJECT_NOT_FOUND,
+                    f"Project {pid} not found. Check the id (pass the project's task id).",
+                )
             )
 
         envelope = build_envelope(parsed, pid)
@@ -692,7 +703,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             client, sorted(collect_commit_tags(ops)), tool="gtd_apply_canvas_commit"
         )
         if gate:
-            rejections.append({**gate, "reason": "non_canonical_tag"})
+            rejections.append(as_rejection(gate))
 
         if rejections:
             return build_response(
@@ -1077,7 +1088,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             client, sorted(collect_create_tags(frame_d, items_l)), tool="gtd_create_project"
         )
         if gate:
-            rejections.append({**gate, "reason": "non_canonical_tag"})
+            rejections.append(as_rejection(gate))
         if rejections:
             return build_response(
                 data={
@@ -1392,10 +1403,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             proj = by_id.get(pid)
             if proj is None:
                 return build_response(
-                    data={
-                        "error": f"Project {pid} not found among active tasks. Pass the task id of "
-                        "an incomplete #project (from gtd_project_index)."
-                    }
+                    data=build_error(
+                        ErrorCode.PROJECT_NOT_FOUND,
+                        f"Project {pid} not found among active tasks. Pass the task id of "
+                        "an incomplete #project (from gtd_project_index).",
+                    )
                 )
             targets = [proj]
         else:
@@ -1597,13 +1609,17 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         if role not in VALID_ROLES:
             return build_response(
-                data={"error": f"role must be one of {sorted(VALID_ROLES)}; got {role!r}."}
+                data=build_error(
+                    ErrorCode.INVALID_INPUT,
+                    f"role must be one of {sorted(VALID_ROLES)}; got {role!r}.",
+                )
             )
         if mode is not None and mode not in VALID_MODES:
             return build_response(
-                data={
-                    "error": f"mode must be one of {sorted(VALID_MODES)} or omitted; got {mode!r}."
-                }
+                data=build_error(
+                    ErrorCode.INVALID_INPUT,
+                    f"mode must be one of {sorted(VALID_MODES)} or omitted; got {mode!r}.",
+                )
             )
         eff_mode = mode if role == "me" else None
 
@@ -1621,16 +1637,18 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
             if any(t["id"] == str(task_id) for t in done):
                 return build_response(
-                    data={
-                        "error": f"Task {task_id} is completed — its conversation is read-only "
-                        "(view it with gtd_chat_thread). Reopen the task to continue the thread."
-                    }
+                    data=build_error(
+                        ErrorCode.CONVERSATION_READ_ONLY,
+                        f"Task {task_id} is completed — its conversation is read-only "
+                        "(view it with gtd_chat_thread). Reopen the task to continue the thread.",
+                    )
                 )
             return build_response(
-                data={
-                    "error": f"Task {task_id} not found among active tasks. Pass the task id of an "
-                    "incomplete project or item (from gtd_project_index or list_tasks)."
-                }
+                data=build_error(
+                    ErrorCode.TASK_NOT_FOUND,
+                    f"Task {task_id} not found among active tasks. Pass the task id of an "
+                    "incomplete project or item (from gtd_project_index or list_tasks).",
+                )
             )
         ids = {
             "task_id": task["id"],
@@ -1676,8 +1694,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             # answered). Surface the failure instead of half-applying.
             return build_response(
                 data={
-                    "error": "Chat note write failed — no signal tags were changed. "
-                    "See errors for the underlying failure; retry the post.",
+                    **build_error(
+                        ErrorCode.WRITE_FAILED,
+                        "Chat note write failed — no signal tags were changed. "
+                        "See errors for the underlying failure; retry the post.",
+                    ),
                     "task_id": ids["task_id"],
                     "role": role,
                     "errors": errors,
@@ -1773,10 +1794,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         task = next((t for t in parsed if t["id"] == str(task_id)), None)
         if task is None:
             return build_response(
-                data={
-                    "error": f"Task {task_id} not found. Pass the task id of a project or item "
-                    "(incomplete or completed) — from gtd_project_index or list_tasks."
-                }
+                data=build_error(
+                    ErrorCode.TASK_NOT_FOUND,
+                    f"Task {task_id} not found. Pass the task id of a project or item "
+                    "(incomplete or completed) — from gtd_project_index or list_tasks.",
+                )
             )
 
         tags = {normalize_tag(t) for t in (task.get("tags") or [])}
@@ -1861,10 +1883,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         task = next((t for t in parsed if t["id"] == str(task_id)), None)
         if task is None:
             return build_response(
-                data={
-                    "error": f"Task {task_id} not found. Pass the task id of a project or item "
-                    "(from gtd_project_index or gtd_project_canvas)."
-                }
+                data=build_error(
+                    ErrorCode.TASK_NOT_FOUND,
+                    f"Task {task_id} not found. Pass the task id of a project or item "
+                    "(from gtd_project_index or gtd_project_canvas).",
+                )
             )
         ids = {
             "task_id": task["id"],
@@ -2065,7 +2088,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             verdict = it.get("verdict") or ""
             t = by_id.get(rid)
             if t is None:
-                rejections.append({"id": rid, "verdict": verdict, "reason": "not_found"})
+                rejections.append(
+                    {"id": rid, "verdict": verdict, "reason": ErrorCode.TASK_NOT_FOUND.value}
+                )
                 continue
             tags = t.get("tags") or []
             val_items.append(
@@ -2099,7 +2124,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                         {
                             "id": v["id"],
                             "verdict": v["verdict"],
-                            "reason": "confirm_destructive_required",
+                            "reason": ErrorCode.DESTRUCTIVE_UNCONFIRMED.value,
                         }
                     )
 
@@ -2108,7 +2133,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             client, sorted(collect_engage_tags(val_items)), tool="gtd_apply_engage_commit"
         )
         if gate:
-            rejections.append({**gate, "reason": "non_canonical_tag"})
+            rejections.append(as_rejection(gate))
 
         if rejections:
             return build_response(
@@ -2140,7 +2165,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 iso = None
             if not iso:
                 rejections.append(
-                    {"id": v["id"], "verdict": v["verdict"], "reason": "bad_date", "phrase": phrase}
+                    {
+                        "id": v["id"],
+                        "verdict": v["verdict"],
+                        "reason": ErrorCode.BAD_DATE.value,
+                        "phrase": phrase,
+                    }
                 )
             else:
                 resolved_dates[v["id"]] = iso

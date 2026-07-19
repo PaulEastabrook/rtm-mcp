@@ -102,7 +102,7 @@ class TestTestConnection:
 
         result = await tools["test_connection"](FakeContext())
         assert result["data"]["status"] == "error"
-        assert "timeout" in result["data"]["error"]
+        assert "timeout" in result["data"]["error"]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +397,7 @@ class TestUndo:
 
         result = await tools["undo"](FakeContext(), transaction_id="tx456")
         assert result["data"]["status"] == "error"
-        assert "Cannot undo" in result["data"]["error"]
+        assert "Cannot undo" in result["data"]["error"]["message"]
         client.mark_undone.assert_not_called()
 
     @pytest.mark.asyncio
@@ -410,7 +410,7 @@ class TestUndo:
 
         result = await tools["undo"](FakeContext(), transaction_id="nope")
         assert result["data"]["status"] == "error"
-        assert "Unknown transaction ID" in result["data"]["error"]
+        assert "Unknown transaction ID" in result["data"]["error"]["message"]
         client.call.assert_not_awaited()
         client.mark_undone.assert_not_called()
 
@@ -424,7 +424,7 @@ class TestUndo:
 
         result = await tools["undo"](FakeContext(), transaction_id="tx1")
         assert result["data"]["status"] == "error"
-        assert "already undone" in result["data"]["error"]
+        assert "already undone" in result["data"]["error"]["message"]
         client.call.assert_not_awaited()
         client.mark_undone.assert_not_called()
 
@@ -586,7 +586,7 @@ class TestBatchUndo:
 
         result = await tools["batch_undo"](FakeContext(), transaction_ids=["unknown1"])
         assert "error" in result["data"]
-        assert "unknown1" in result["data"]["error"]
+        assert "unknown1" in result["data"]["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_skip_already_undone(self, util_tools):

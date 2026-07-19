@@ -29,6 +29,7 @@ from .canvas_commit import (
     AI_PROGRESS,
     OVERLAY_REFRESH,
 )
+from .error_codes import ErrorCode
 
 # `#someday` / `#calendar_entry` are existing gtd taxonomy tags (reused, not minted here) — the
 # `someday` and `to_calendar` verdict writes. Defined locally to keep the grammar self-contained.
@@ -55,15 +56,29 @@ VERDICT_FAMILY: dict[str, str] = {
 }
 
 # The `reason` values `validate` (the pure verdict-legality core) can attach to an illegal item.
-VERDICT_REJECT_REASONS = frozenset({"off-enum", "unknown-kind", "type-illegal"})
+# LOCKSTEP (v2.0.0): these three mirror gtd's `validate-engage-verdict.py` under the ratified
+# `engage-verdict-grammar.md`. They were hyphenated (`off-enum`/`unknown-kind`/`type-illegal`)
+# through v1.35.0 and were normalised to underscores when the reject vocabularies were unified
+# into the ErrorCode registry — the gtd validator, its tests, and the grammar document were
+# changed in the same release. Never re-spell them on one side alone.
+VERDICT_REJECT_REASONS = frozenset(
+    {ErrorCode.OFF_ENUM, ErrorCode.UNKNOWN_KIND, ErrorCode.TYPE_ILLEGAL}
+)
 # The complete `rejected[].reason` vocabulary gtd_apply_engage_commit can emit — the canonical
 # source the output-schema model cites (drift-proof, like COMMIT_REJECT_REASONS). It is
 # VERDICT_REJECT_REASONS (produced here by `validate`) plus the reasons produced in the tool
-# wrapper: `not_found` (id absent from the account), `confirm_destructive_required` (a `drop`
-# without confirm_destructive), `bad_date` (a date phrase parse_time could not resolve), and
-# `non_canonical_tag` (the strict-tag existence gate).
+# wrapper: `task_not_found` (id absent from the account — v2.0.0 reconciled the former bare
+# `not_found` onto the registry's resolution code), `destructive_unconfirmed` (a `drop` without
+# confirm_destructive — formerly `confirm_destructive_required`, one concept that had two names),
+# `bad_date` (a date phrase parse_time could not resolve), and `strict_tag_rejected` (the
+# strict-tag existence gate — formerly `non_canonical_tag`).
 ENGAGE_REJECT_REASONS = VERDICT_REJECT_REASONS | frozenset(
-    {"not_found", "confirm_destructive_required", "bad_date", "non_canonical_tag"}
+    {
+        ErrorCode.TASK_NOT_FOUND,
+        ErrorCode.DESTRUCTIVE_UNCONFIRMED,
+        ErrorCode.BAD_DATE,
+        ErrorCode.STRICT_TAG_REJECTED,
+    }
 )
 
 # § 2 — per-kind base legality (L = legal). The two flag guards (§ 3) then override this per item.
@@ -180,13 +195,13 @@ def validate(items: list[dict[str, Any]]) -> dict[str, Any]:
             "suggestion": None,
         }
         if verb not in VERDICT_FAMILY:
-            res["reason"] = "off-enum"
+            res["reason"] = ErrorCode.OFF_ENUM.value
             close = difflib.get_close_matches(verb, list(VERDICT_FAMILY), n=1, cutoff=0.4)
             res["suggestion"] = close[0] if close else None
         elif kind not in KINDS:
-            res["reason"] = "unknown-kind"
+            res["reason"] = ErrorCode.UNKNOWN_KIND.value
         elif not is_legal(verb, kind, has_deadline, blocked):
-            res["reason"] = "type-illegal"
+            res["reason"] = ErrorCode.TYPE_ILLEGAL.value
             res["suggestion"] = _suggest(kind, has_deadline, blocked)
         else:
             res["legal"] = True

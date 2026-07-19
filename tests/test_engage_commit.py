@@ -145,7 +145,7 @@ class TestValidateBatch:
     def test_off_enum_rejected_with_suggestion(self):
         r = validate([{"id": "1", "verdict": "nope", "kind": "action"}])
         assert r["ok"] is False
-        assert r["errors"][0]["reason"] == "off-enum"
+        assert r["errors"][0]["reason"] == "off_enum"
 
     def test_type_illegal_rejected_with_closest_legal(self):
         # deferring a hard deadline is type-illegal → suggest keep
@@ -153,13 +153,13 @@ class TestValidateBatch:
             [{"id": "1", "verdict": "next_actions", "kind": "action", "has_deadline": True}]
         )
         assert r["ok"] is False
-        assert r["errors"][0]["reason"] == "type-illegal"
+        assert r["errors"][0]["reason"] == "type_illegal"
         assert r["errors"][0]["suggestion"] == "keep"
 
     def test_unknown_kind_rejected(self):
         r = validate([{"id": "1", "verdict": "today", "kind": "widget"}])
         assert r["ok"] is False
-        assert r["errors"][0]["reason"] == "unknown-kind"
+        assert r["errors"][0]["reason"] == "unknown_kind"
 
     def test_arg_verdict_validated_on_bare_verb(self):
         r = validate([{"id": "1", "verdict": "defer_start:next friday", "kind": "action"}])

@@ -142,12 +142,13 @@ they never change tool behaviour, returns, capability, or write safety. Enforced
 6. **Output schema** — `output_schema=` from `models.py` (schema-only Pydantic models; NOT used at
    runtime). `data` is always advertised as the `success | ErrorData` union (`anyOf`). Match models
    to the actual returns; leave genuinely-open payloads (`raw`, evolving envelope rows) open.
-6. **Typed errors (recovery half)** — this server's error shape is the free-text
-   `{"error": "<actionable prose>"}` string (§ 5), modelled as `ErrorData` (`extra="allow"`) so the
-   structured siblings ride along (`strict_tag_mode`/`how_to_proceed`; `candidates`; the commit
-   engines' `rejected[].reason` enums). **Document what exists; do not invent codes** in an additive
-   pass — a full typed-code vocabulary is a return-value change (SemVer), captured as an improvement
-   candidate.
+6. **Typed errors (recovery half)** — every failure carries a stable `code` from the canonical
+   `error_codes.ErrorCode` registry (§ 5), modelled as `ErrorData` → `ErrorBody`
+   (`{code, message, rtm_code, details}`, `extra="forbid"`). Recovery material rides under
+   `details` (`strict_tag_mode`/`how_to_proceed`; `candidates`), and the commit engines'
+   `rejected[].reason` enums are drawn from the same registry. **Reuse an existing code wherever
+   one fits; add a new member only for a genuinely new failure** — and never rename a shipped one
+   (additive-only).
 
 ## 4. Response envelope
 
@@ -155,7 +156,7 @@ Every tool returns the standard envelope via `response_builder.py`:
 
 ```python
 {
-    "data": {...},                      # main payload (or {"error": ...})
+    "data": {...},                      # main payload (or {"error": {code, message, …}} — § 5)
     "analysis": {"insights": [...]},    # optional
     "metadata": {
         "fetched_at": "<ISO>",
@@ -171,21 +172,64 @@ Every tool returns the standard envelope via `response_builder.py`:
   extracts the transaction, records it on the client (for `undo`/`batch_undo`/`get_timeline_info`),
   and wraps the envelope in one call. Never hand-roll the transaction fields.
 
-## 5. Error handling
+## 5. Error handling — the typed vocabulary
 
-Two layers (background in `CLAUDE.md` § "Error Handling"):
+Since **v2.0.0** every envelope error is a **structured object** carrying a stable,
+machine-branchable `code` from the canonical registry in **`error_codes.py`**:
 
-- **Transport** — `raise_for_error()` in `exceptions.py` maps RTM error codes to typed
-  exceptions (`RTMAuthError`, `RTMValidationError`, `RTMNotFoundError`, …) via `ERROR_CODE_MAP`
-  and appends recovery hints from `ERROR_GUIDANCE`.
-- **Application** — resolver and tool functions return **actionable** error dicts that name the
-  next tool to call, surfaced through `build_response(data={"error": ...})`:
+```python
+{"error": {"code": "task_not_found",
+           "message": "Task not found: 'Buy milk'. Use list_tasks to search by filter…",
+           "rtm_code": None,
+           "details": {"query": "Buy milk"}}}      # details omitted entirely when empty
+```
 
-  ```python
-  {"error": "Task not found: 'Buy milk'. Use list_tasks to search by filter or check spelling."}
-  ```
+**Never construct this by hand** — use the single constructor so the shape cannot drift:
 
-  Never return a bare `{"error": "not found"}` — say what to do next.
+```python
+from ..error_codes import ErrorCode
+from ..response_builder import build_error, error_from_exception
+
+return build_response(data=build_error(
+    ErrorCode.TASK_NOT_FOUND,
+    f"Task not found: '{name}'. Use list_tasks to search by filter or check spelling.",
+    query=name,                       # **details — any optional per-family keys
+))
+# in an `except` block, to map the RTM numeric automatically:
+return build_response(data=error_from_exception(exc))
+```
+
+Rules:
+
+- **`code` is the contract.** Consumers branch on it. It is a member of `ErrorCode`, never a
+  string literal at the call site.
+- **`message` is for humans and must never be parsed.** Keep it **actionable** — name the next
+  tool to call. Never a bare "not found"; say what to do next. (Prose is free to be reworded in a
+  patch release precisely *because* nothing branches on it.)
+- **`rtm_code`** carries the originating RTM numeric where there is one, so the transport fact
+  survives without leaking into the semantic code name.
+- **Optional keys go under `details`** (`candidates`, `how_to_proceed`, `strict_tag_mode`,
+  `query`, …). `ErrorBody` is `extra="forbid"` — the top level is a closed four-field contract.
+- **The registry is ADDITIVE-ONLY.** A new failure gets a new member; a shipped code is never
+  renamed or removed. (The v2.0.0 envelope restructure was a one-time break, not a licence to
+  mutate the registry.)
+- **Two error shapes, one governed here.** This section covers the *envelope* error and the
+  commit engines' `rejected[].reason`. It does **not** cover the per-op `data.errors[]` list that
+  batch tools attach to an otherwise-*successful* envelope (`{"op", "id", "error": str(exc)}`) —
+  a different contract reporting partial failure. Leave it flat.
+
+The transport layer is unchanged underneath: `raise_for_error()` in `exceptions.py` maps RTM
+numerics to typed exceptions (`RTMAuthError`, `RTMValidationError`, …) via `ERROR_CODE_MAP` and
+appends recovery hints from `ERROR_GUIDANCE`. `error_codes.RTM_CODE_MAP` maps the same numerics to
+semantic codes; a test asserts the two key sets stay equal, so neither can fall behind the other.
+
+**One vocabulary, three scoped views.** The commit engines each advertise a closed
+`rejected[].reason` enum (`COMMIT_REJECT_REASONS`, `CREATE_REJECT_REASONS`,
+`ENGAGE_REJECT_REASONS`). These are frozensets **of `ErrorCode` members**, declared next to their
+handlers so per-tool scoping stays honest while any given reason is spelled exactly once. Three of
+them (`off_enum`, `unknown_kind`, `type_illegal`) are **grammar-bound** — they mirror gtd's
+`validate-engage-verdict.py` under the ratified `engage-verdict-grammar.md`, so re-spelling them is
+a lockstep change to both repos. Never edit one side alone.
 
 ## 6. Tag-write discipline
 
