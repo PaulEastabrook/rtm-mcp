@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual trigger, so CI can be exercised on demand without a dummy commit.
+  workflow_dispatch:
 
 jobs:
   lint:
