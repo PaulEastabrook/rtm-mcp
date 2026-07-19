@@ -171,33 +171,34 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ] = True,
     ) -> dict[str, Any]:
         """GTD — return a whole project plan (the project + all its descendant items + every
-        note, with full bodies) as the `project-plan-seed` envelope consumed by the GTD canvas.
+            note, with full bodies) as the `project-plan-seed` envelope consumed by the GTD canvas.
 
-        Read-only. Collapses the canvas read path from ~1+N calls to ONE signed
-        rtm.tasks.getList (plus a session-cached rtm.settings.getList for the account timezone):
-        it fetches the tasks once, reconstructs the project→children tree via parent_task_id, and
-        emits the comprehensive envelope — the RTM token never leaves the server. Dates are
-        localised to the account timezone (RTM returns UTC). The tool issues no write and creates
-        no timeline.
+            Read-only. Collapses the canvas read path from ~1+N calls to ONE signed
+            rtm.tasks.getList (plus a session-cached rtm.settings.getList for the account timezone):
+            it fetches the tasks once, reconstructs the project→children tree via parent_task_id, and
+            emits the comprehensive envelope — the RTM token never leaves the server. Dates are
+            localised to the account timezone (RTM returns UTC). The tool issues no write and creates
+            no timeline.
 
-        Identify the project by EXACTLY ONE of:
-            project_id: the project (parent) task id. Preferred when known.
-            project_name: resolved server-side to an incomplete, `project`-tagged, non-`test`
-                task. If the name matches more than one, a candidate list is returned (the tool
-                does not guess).
+            Identify the project by EXACTLY ONE of:
+                project_id: the project (parent) task id. Preferred when known.
+                project_name: resolved server-side to an incomplete, `project`-tagged, non-`test`
+                    task. If the name matches more than one, a candidate list is returned (the tool
+                    does not guess).
 
-        Args:
-            list_id: optional — scope the fetch to one list (smaller/faster). When omitted, the
-                whole account is read so the project can be found anywhere.
-            include_completed: include completed children (default True — the canvas needs the
-                history rows). Set False for only-active items.
+            Args:
+                list_id: optional — scope the fetch to one list (smaller/faster). When omitted, the
+                    whole account is read so the project can be found anywhere.
+                include_completed: include completed children (default True — the canvas needs the
+                    history rows). Set False for only-active items.
 
-        Returns (on success): {"header": {...}, "rows": [...]} — the `project-plan-seed/3`
-            envelope (project metadata + own notes in the header; one row per descendant with
-            priority, dates, tags, permalink, deps, filed-artefact paths, and full note bodies).
-        Returns (on ambiguity): {"candidates": [{id, name, list_id}, ...]} — call again with a
-            project_id from the list.
-        Returns (on miss / bad input): {"error": "..."}.
+            Returns (on success): {"header": {...}, "rows": [...]} — the `project-plan-seed/3`
+                envelope (project metadata + own notes in the header; one row per descendant with
+                priority, dates, tags, permalink, deps, filed-artefact paths, and full note bodies).
+            Returns (on ambiguity): {"candidates": [{id, name, list_id}, ...]} — call again with a
+                project_id from the list.
+            Returns (on miss / bad input): {"error": {"code": "project_not_found" | "missing_parameter",
+        "message": "<actionable prose>", "rtm_code": null}} — branch on `code`, never the prose.
         """
         client: RTMClient = await get_client()
 
@@ -272,44 +273,45 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ] = 3,
     ) -> dict[str, Any]:
         """GTD — return a project plan as the canvas-ready seed the project-plan-canvas artifact
-        renders directly. The read-sibling of gtd_project_plan: same single read, but with the
-        deterministic plan-graph overlay already applied, so the page never re-implements GTD
-        ordering/blocking.
+            renders directly. The read-sibling of gtd_project_plan: same single read, but with the
+            deterministic plan-graph overlay already applied, so the page never re-implements GTD
+            ordering/blocking.
 
-        Read-only. One signed rtm.tasks.getList (plus a session-cached rtm.settings.getList for
-        the account timezone); no write, no timeline. Dates are localised to the account timezone
-        (RTM returns UTC, so BST/DST dues would otherwise render a day early). It reconstructs the
-        project→children tree, builds the `{mode, frame, seed}` seed (priority/context/comms,
-        completion→history, note gists, files), then merges the plan-graph overlay: `quick` (from
-        the #quick_win tag), sibling `deps`, and a dependency-respecting timeline order (the array
-        order of `seed`). `blocked` is NOT a field — the template derives it from `deps[]`. Each row
-        also carries `prog` ("now" from #ai_progress_requested / "later" from #ai_progress_deferred;
-        absent when neither) so the execute pill reflects committed state on reload, and `redacted`
-        (bool, from the item's #redacted tag) so the board can lock the row. `frame.redacted` is the
-        project's own #redacted state (an open-but-redacted project renders its locked screen without
-        a second lookup). Set/clear #redacted via gtd_set_redaction.
+            Read-only. One signed rtm.tasks.getList (plus a session-cached rtm.settings.getList for
+            the account timezone); no write, no timeline. Dates are localised to the account timezone
+            (RTM returns UTC, so BST/DST dues would otherwise render a day early). It reconstructs the
+            project→children tree, builds the `{mode, frame, seed}` seed (priority/context/comms,
+            completion→history, note gists, files), then merges the plan-graph overlay: `quick` (from
+            the #quick_win tag), sibling `deps`, and a dependency-respecting timeline order (the array
+            order of `seed`). `blocked` is NOT a field — the template derives it from `deps[]`. Each row
+            also carries `prog` ("now" from #ai_progress_requested / "later" from #ai_progress_deferred;
+            absent when neither) so the execute pill reflects committed state on reload, and `redacted`
+            (bool, from the item's #redacted tag) so the board can lock the row. `frame.redacted` is the
+            project's own #redacted state (an open-but-redacted project renders its locked screen without
+            a second lookup). Set/clear #redacted via gtd_set_redaction.
 
-        File objects (per-action `files[]` and project-level `frame.files`) carry `{n, ext, kind,
-        path}`; each also gains a `meta` block (the companion `.md`/`.yaml` frontmatter — title,
-        type, status, dates, authors, tags, …) when the read-only AI Memory vault is configured
-        (RTM_VAULT_ROOT / AI_MEMORY_DIR, or the host default) and a companion exists. Absent vault
-        or companion → no `meta`, no error.
+            File objects (per-action `files[]` and project-level `frame.files`) carry `{n, ext, kind,
+            path}`; each also gains a `meta` block (the companion `.md`/`.yaml` frontmatter — title,
+            type, status, dates, authors, tags, …) when the read-only AI Memory vault is configured
+            (RTM_VAULT_ROOT / AI_MEMORY_DIR, or the host default) and a companion exists. Absent vault
+            or companion → no `meta`, no error.
 
-        Identify the project by EXACTLY ONE of:
-            project_id: the project (parent) task id. Preferred when known.
-            project_name: resolved server-side to an incomplete, `project`-tagged, non-`test`
-                task. Ambiguous names return a candidate list (the tool does not guess).
+            Identify the project by EXACTLY ONE of:
+                project_id: the project (parent) task id. Preferred when known.
+                project_name: resolved server-side to an incomplete, `project`-tagged, non-`test`
+                    task. Ambiguous names return a candidate list (the tool does not guess).
 
-        Args:
-            list_id: optional — scope the fetch to one list (smaller/faster).
-            include_completed: include completed children as inert history rows (default True).
-            lean: emit the inline-widget profile — drop note bodies, cap notes per item, set an
-                honest `nc` (default True; byte-compatible with build_canvas --emit html-lean).
-            note_cap: max notes kept per item when lean (default 3).
+            Args:
+                list_id: optional — scope the fetch to one list (smaller/faster).
+                include_completed: include completed children as inert history rows (default True).
+                lean: emit the inline-widget profile — drop note bodies, cap notes per item, set an
+                    honest `nc` (default True; byte-compatible with build_canvas --emit html-lean).
+                note_cap: max notes kept per item when lean (default 3).
 
-        Returns (on success): {"mode": "existing", "frame": {...}, "seed": [...]} — the canvas seed.
-        Returns (on ambiguity): {"candidates": [{id, name, list_id}, ...]}.
-        Returns (on miss / bad input): {"error": "..."}.
+            Returns (on success): {"mode": "existing", "frame": {...}, "seed": [...]} — the canvas seed.
+            Returns (on ambiguity): {"candidates": [{id, name, list_id}, ...]}.
+            Returns (on miss / bad input): {"error": {"code": "project_not_found" | "missing_parameter",
+        "message": "<actionable prose>", "rtm_code": null}} — branch on `code`, never the prose.
         """
         client: RTMClient = await get_client()
 
@@ -1360,38 +1362,39 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ] = False,
     ) -> dict[str, Any]:
         """GTD — stamp durable template-child tokens on a repeating templated project's children so
-        its dependencies survive recurrence (repeating-templated-project Wave B). A bounded,
-        idempotent governed op: the gtd-side finalise engine can fire it per project, or Paul can
-        run it once over the whole portfolio to switch the resolver on for the live recurring
-        projects.
+            its dependencies survive recurrence (repeating-templated-project Wave B). A bounded,
+            idempotent governed op: the gtd-side finalise engine can fire it per project, or Paul can
+            run it once over the whole portfolio to switch the resolver on for the live recurring
+            projects.
 
-        A repeating templated project re-keys every occurrence's children with fresh task_ids, so a
-        DEPENDS-ON dep or ORDER pin authored against a prior occurrence's raw id goes stale. The fix
-        (already resolved read-side, v1.24.0): each child carries a TMPL-CHILD note holding an
-        8-hex token (tmpl-child/1), and deps are authored in token-space. RTM copies a child's notes
-        verbatim onto each new occurrence, so a token stamped ONCE propagates forward automatically —
-        this is the one-time back-fill that writes the tokens the resolver then maps.
+            A repeating templated project re-keys every occurrence's children with fresh task_ids, so a
+            DEPENDS-ON dep or ORDER pin authored against a prior occurrence's raw id goes stale. The fix
+            (already resolved read-side, v1.24.0): each child carries a TMPL-CHILD note holding an
+            8-hex token (tmpl-child/1), and deps are authored in token-space. RTM copies a child's notes
+            verbatim onto each new occurrence, so a token stamped ONCE propagates forward automatically —
+            this is the one-time back-fill that writes the tokens the resolver then maps.
 
-        Constrained write. One rtm.tasks.getList (status:incomplete) + a session-cached settings
-        read for the token-note date; for each unstamped open child it writes a TMPL-CHILD note, and
-        re-authors each active DEPENDS-ON note with the additive `Template-child-id:` line (the raw
-        task_id stays as the fallback). Records each write's transaction (undoable via batch_undo).
+            Constrained write. One rtm.tasks.getList (status:incomplete) + a session-cached settings
+            read for the token-note date; for each unstamped open child it writes a TMPL-CHILD note, and
+            re-authors each active DEPENDS-ON note with the additive `Template-child-id:` line (the raw
+            task_id stays as the fallback). Records each write's transaction (undoable via batch_undo).
 
-        IDEMPOTENT — a child already carrying a token is skipped (never re-slugged; RTM has already
-        propagated that identity), and a DEPENDS-ON already carrying the line is left alone, so a
-        second run is a no-op. ONE-OFF projects are never stamped (no is_repeating → skipped_reason
-        "not_repeating"). No tag is written (the TMPL-CHILD body is pure tmpl-child/1 JSON), so there
-        is no strict-tag interaction and no activation hazard.
+            IDEMPOTENT — a child already carrying a token is skipped (never re-slugged; RTM has already
+            propagated that identity), and a DEPENDS-ON already carrying the line is left alone, so a
+            second run is a no-op. ONE-OFF projects are never stamped (no is_repeating → skipped_reason
+            "not_repeating"). No tag is written (the TMPL-CHILD body is pure tmpl-child/1 JSON), so there
+            is no strict-tag interaction and no activation hazard.
 
-        Args:
-            project_id: the repeating project's task id. Omit to sweep EVERY active repeating
-                templated project in the portfolio (incomplete #project, not #test, is_repeating).
-            dry_run: compute and return the plan (what would be stamped) WITHOUT writing anything.
+            Args:
+                project_id: the repeating project's task id. Omit to sweep EVERY active repeating
+                    templated project in the portfolio (incomplete #project, not #test, is_repeating).
+                dry_run: compute and return the plan (what would be stamped) WITHOUT writing anything.
 
-        Returns: {"projects": [{project_id, project_name, is_repeating, stamped: [{child_id, slug}],
-            dep_lines: [{child_id, note_id, upstream_slug}], skipped_reason ("not_repeating"|null)}],
-            "dry_run", "applied": [...], "errors": [...], "message": "..."}.
-        Returns (on a bad explicit project_id): {"error": "..."}.
+            Returns: {"projects": [{project_id, project_name, is_repeating, stamped: [{child_id, slug}],
+                dep_lines: [{child_id, note_id, upstream_slug}], skipped_reason ("not_repeating"|null)}],
+                "dry_run", "applied": [...], "errors": [...], "message": "..."}.
+            Returns (on a bad explicit project_id): {"error": {"code": "project_not_found",
+        "message": "<actionable prose>", "rtm_code": null}} — branch on `code`, never the prose.
         """
         client: RTMClient = await get_client()
         result = await client.call("rtm.tasks.getList", filter="status:incomplete")
@@ -1577,33 +1580,37 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """GTD — post one turn of the in-board AI conversation surface (the CHAT note class) to a
-        task and manage the worker's drain signal in ONE signed call. The board's governed write
-        path for the project-plan-canvas chat: Paul types an instruction (role "me"); a headless
-        worker session replies (role "ai"). They converse through RTM notes — the system of record —
-        never a live session.
+            task and manage the worker's drain signal in ONE signed call. The board's governed write
+            path for the project-plan-canvas chat: Paul types an instruction (role "me"); a headless
+            worker session replies (role "ai"). They converse through RTM notes — the system of record —
+            never a live session.
 
-        The turn is one note on the target task, titled `YYYY-MM-DD HH:MM — CHAT — <role> — <scope>`
-        (localised to the account timezone), body = the message text. It is governed: a "me" turn
-        also stamps #ai_chat_requested (the worker's durable work-list signal) + #ai_chat (has-a-
-        thread marker); an "ai" turn removes #ai_chat_requested (the turn is answered) and leaves
-        #ai_chat. Pass only the task_id you have — taskseries_id + list_id are resolved internally
-        from one rtm.tasks.getList. Records each write's transaction (undoable via batch_undo).
+            The turn is one note on the target task, titled `YYYY-MM-DD HH:MM — CHAT — <role> — <scope>`
+            (localised to the account timezone), body = the message text. It is governed: a "me" turn
+            also stamps #ai_chat_requested (the worker's durable work-list signal) + #ai_chat (has-a-
+            thread marker); an "ai" turn removes #ai_chat_requested (the turn is answered) and leaves
+            #ai_chat. Pass only the task_id you have — taskseries_id + list_id are resolved internally
+            from one rtm.tasks.getList. Records each write's transaction (undoable via batch_undo).
 
-        Args:
-            task_id: the target task id (a project or an item — from gtd_project_index / list_tasks).
-            text: the message body (plain; markdown allowed).
-            role: "me" (Paul's turn, default) or "ai" (the worker's reply).
-            scope: optional short display label for the title; defaults to the task name.
-            mode: optional posture for a "me" turn — "discuss" | "act" — recorded as a body footer
-                so the worker knows the requested posture (ignored for "ai" turns).
+            Args:
+                task_id: the target task id (a project or an item — from gtd_project_index / list_tasks).
+                text: the message body (plain; markdown allowed).
+                role: "me" (Paul's turn, default) or "ai" (the worker's reply).
+                scope: optional short display label for the title; defaults to the task name.
+                mode: optional posture for a "me" turn — "discuss" | "act" — recorded as a body footer
+                    so the worker knows the requested posture (ignored for "ai" turns).
 
-        The #ai_chat_requested / #ai_chat tag writes pass the strict-tag existence gate — both must
-        exist in the RTM account (provision once, account-side); a missing tag yields the guided
-        error with NOTHING written. Tag removal ("ai" turn) is never gated.
+            The #ai_chat_requested / #ai_chat tag writes pass the strict-tag existence gate — both must
+            exist in the RTM account (provision once, account-side); a missing tag yields the guided
+            error with NOTHING written. Tag removal ("ai" turn) is never gated.
 
-        Returns (on success): {"note": {id, title, created}, "task_id", "role", "tag_changes": [...],
-            "errors": [...]} with the note's transaction_id for undo.
-        Returns (on bad input / strict-tag rejection — nothing written): {"error": "...", ...}.
+            Returns (on success): {"note": {id, title, created}, "task_id", "role", "tag_changes": [...],
+                "errors": [...]} with the note's transaction_id for undo.
+            Returns (on bad input / strict-tag rejection — nothing written): {"error": {"code":
+        "invalid_input" | "task_not_found" | "conversation_read_only" | "strict_tag_rejected",
+        "message": "<actionable prose>", "rtm_code": null, "details": {...}}}. The strict-tag
+        gate's recovery material (rejected_tags / how_to_proceed / strict_tag_mode) is under
+        `details`. Branch on `code`, never the prose.
         """
         client: RTMClient = await get_client()
 
@@ -1747,44 +1754,45 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """GTD — return just the CHAT turns for a task: the cheap poll path for the in-board AI
-        conversation surface (vs re-reading the whole canvas). The read-sibling of gtd_chat_post.
+            conversation surface (vs re-reading the whole canvas). The read-sibling of gtd_chat_post.
 
-        Read-only. One signed rtm.tasks.getList (spanning incomplete AND completed tasks); no write,
-        no timeline, no settings read. Resolves the task by id, parses its CHAT notes (non-CHAT notes
-        excluded) into turns oldest-first, and reports whether the worker's drain signal is raised.
-        Completed items are included so a prior conversation stays viewable after the task is done
-        (CHAT notes persist); `requested` is naturally False for a completed task (no pending worker),
-        so the board renders the history read-only without a "thinking…" state.
+            Read-only. One signed rtm.tasks.getList (spanning incomplete AND completed tasks); no write,
+            no timeline, no settings read. Resolves the task by id, parses its CHAT notes (non-CHAT notes
+            excluded) into turns oldest-first, and reports whether the worker's drain signal is raised.
+            Completed items are included so a prior conversation stays viewable after the task is done
+            (CHAT notes persist); `requested` is naturally False for a completed task (no pending worker),
+            so the board renders the history read-only without a "thinking…" state.
 
-        Each turn carries server-derived attachments (always present, [] when none):
-        - files: [{path, label, note_id}] — artefacts filed by the worker, parsed from OUTPUT
-          notes' "FILING: <vault-relative path> (+ .meta.md)" lines (single-line and
-          labelled-continuation forms) and time-correlated to the ai turn that reported them (an
-          OUTPUT note attaches to the earliest ai turn created at-or-after it; an OUTPUT note after
-          the last ai turn attaches to nothing). For an ITEM target the scan covers the task's own
-          notes only. For a #project target it additionally covers the project's DESCENDANT tasks
-          (children + grandchildren, completed included — a project's artefacts are filed against
-          its child actions), and each descendant-filed entry carries two extra provenance fields:
-          `item_id`/`item_name` (the descendant that filed it). The gate is the #project tag, not
-          subtask presence. `path` is the vault-relative path VERBATIM — it compares equal to a
-          FILED: trailer echo in the turn text, so a client should prefer files[] and suppress its
-          own FILED: parse when the key is present. `label` is the OUTPUT note's title summary;
-          `note_id` the OUTPUT note (provenance). Only ai turns carry files.
-        - links: [{url, label}] — "LINK: <url> — <label>" trailer lines parsed from the turn's own
-          text (em/en-dash or spaced-hyphen separator; no separator → label ""). The trailer lines
-          remain IN `text` (clients strip them when rendering).
+            Each turn carries server-derived attachments (always present, [] when none):
+            - files: [{path, label, note_id}] — artefacts filed by the worker, parsed from OUTPUT
+              notes' "FILING: <vault-relative path> (+ .meta.md)" lines (single-line and
+              labelled-continuation forms) and time-correlated to the ai turn that reported them (an
+              OUTPUT note attaches to the earliest ai turn created at-or-after it; an OUTPUT note after
+              the last ai turn attaches to nothing). For an ITEM target the scan covers the task's own
+              notes only. For a #project target it additionally covers the project's DESCENDANT tasks
+              (children + grandchildren, completed included — a project's artefacts are filed against
+              its child actions), and each descendant-filed entry carries two extra provenance fields:
+              `item_id`/`item_name` (the descendant that filed it). The gate is the #project tag, not
+              subtask presence. `path` is the vault-relative path VERBATIM — it compares equal to a
+              FILED: trailer echo in the turn text, so a client should prefer files[] and suppress its
+              own FILED: parse when the key is present. `label` is the OUTPUT note's title summary;
+              `note_id` the OUTPUT note (provenance). Only ai turns carry files.
+            - links: [{url, label}] — "LINK: <url> — <label>" trailer lines parsed from the turn's own
+              text (em/en-dash or spaced-hyphen separator; no separator → label ""). The trailer lines
+              remain IN `text` (clients strip them when rendering).
 
-        Args:
-            task_id: the target task id (a project or an item, incomplete or completed).
-            since: optional ISO-8601 timestamp — return only turns created strictly after it
-                (incremental poll; attachment correlation still runs over the full thread).
+            Args:
+                task_id: the target task id (a project or an item, incomplete or completed).
+                since: optional ISO-8601 timestamp — return only turns created strictly after it
+                    (incremental poll; attachment correlation still runs over the full thread).
 
-        Returns (on success): {"task_id", "turns": [{note_id, role, scope, mode?, text, created,
-            files: [{path, label, note_id}], links: [{url, label}]}...], "requested": bool} — turns
-            oldest-first; `requested` is whether #ai_chat_requested is set (lets the board show a
-            "thinking…" state without a second call). `created` is RTM's value (UTC); the localised
-            display stamp lives in the note title.
-        Returns (on miss / bad input): {"error": "..."}.
+            Returns (on success): {"task_id", "turns": [{note_id, role, scope, mode?, text, created,
+                files: [{path, label, note_id}], links: [{url, label}]}...], "requested": bool} — turns
+                oldest-first; `requested` is whether #ai_chat_requested is set (lets the board show a
+                "thinking…" state without a second call). `created` is RTM's value (UTC); the localised
+                display stamp lives in the note title.
+            Returns (on miss / bad input): {"error": {"code": "project_not_found" | "missing_parameter",
+        "message": "<actionable prose>", "rtm_code": null}} — branch on `code`, never the prose.
         """
         client: RTMClient = await get_client()
         result = await client.call(
@@ -1849,28 +1857,31 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ],
     ) -> dict[str, Any]:
         """GTD — mark or unmark a task's #redacted viewing curtain: the single governed write surface
-        the project-plan-canvas is given for redaction (the sandboxed board may not call the bare
-        add_task_tags / remove_task_tags primitives). Redaction renders the project/item as a locked
-        placeholder — a curtain for casual over-the-shoulder privacy, not a server-side vault.
+            the project-plan-canvas is given for redaction (the sandboxed board may not call the bare
+            add_task_tags / remove_task_tags primitives). Redaction renders the project/item as a locked
+            placeholder — a curtain for casual over-the-shoulder privacy, not a server-side vault.
 
-        Constrained write. Resolves the task's full triple by id from ONE rtm.tasks.getList (spanning
-        incomplete AND completed — redaction is a viewing-state change that applies to done items too),
-        then applies exactly one tag write and records its transaction (undoable via undo/batch_undo).
-        Nothing is written on a miss or a strict-tag rejection.
+            Constrained write. Resolves the task's full triple by id from ONE rtm.tasks.getList (spanning
+            incomplete AND completed — redaction is a viewing-state change that applies to done items too),
+            then applies exactly one tag write and records its transaction (undoable via undo/batch_undo).
+            Nothing is written on a miss or a strict-tag rejection.
 
-        Identify the task by task_id (required) — the board always has it from gtd_project_index /
-        gtd_project_canvas, so no fuzzy name resolution is used.
+            Identify the task by task_id (required) — the board always has it from gtd_project_index /
+            gtd_project_canvas, so no fuzzy name resolution is used.
 
-        Args:
-            task_id: the target task id (a #project or an item).
-            redacted: True to add #redacted (draw the curtain); False to remove it (lift the curtain).
+            Args:
+                task_id: the target task id (a #project or an item).
+                redacted: True to add #redacted (draw the curtain); False to remove it (lift the curtain).
 
-        The add path passes the strict-tag existence gate — #redacted must exist in the RTM account
-        (it is provisioned); a missing tag yields the guided error with NOTHING written. Removal is
-        never gated (it reduces entropy).
+            The add path passes the strict-tag existence gate — #redacted must exist in the RTM account
+            (it is provisioned); a missing tag yields the guided error with NOTHING written. Removal is
+            never gated (it reduces entropy).
 
-        Returns (on success): {"task_id", "redacted"} with the transaction_id for undo.
-        Returns (on miss / strict-tag rejection — nothing written): {"error": "...", ...}.
+            Returns (on success): {"task_id", "redacted"} with the transaction_id for undo.
+            Returns (on miss / strict-tag rejection — nothing written): {"error": {"code":
+        "task_not_found" | "strict_tag_rejected", "message": "<actionable prose>",
+        "rtm_code": null, "details": {...}}} — the strict-tag gate's recovery material rides
+        under `details`. Branch on `code`, never the prose.
         """
         client: RTMClient = await get_client()
 

@@ -190,7 +190,7 @@ def resolve_project(parsed: list[dict[str, Any]], project_name: str) -> dict[str
     Exact (case-insensitive) match wins over substring. Returns:
         {"project": <task>}                              — unambiguous match
         {"candidates": [{id, name, list_id}, ...]}       — >1 match (caller must disambiguate)
-        {"error": "..."}                                 — no match
+        {"error": {"code": "project_not_found", ...}}     — no match
     """
     name_lower = project_name.strip().lower()
     projects = [
@@ -231,7 +231,7 @@ def resolve_focus(parsed: list[dict[str, Any]], focus: str) -> dict[str, Any]:
     Mirrors `resolve_project`'s three-shape return:
         {"focus": <task>}                          — unambiguous match
         {"candidates": [{id, name, list_id}, ...]} — >1 name match (caller disambiguates)
-        {"error": "..."}                           — no match (actionable; never create loose)
+        {"error": {"code": "focus_not_found", ...}} — no match (actionable; never create loose)
     """
     by_id = {t["id"]: t for t in parsed}
     focus = (focus or "").strip()

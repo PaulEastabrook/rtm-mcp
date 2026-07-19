@@ -123,7 +123,8 @@ async def resolve_list_id(
     Returns:
         ``{"list_id": "...", "list": {...}}`` on success (``list`` is the
         full parsed list dict for callers that need to inspect e.g. ``locked``).
-        ``{"error": "..."}`` if the list is not found.
+        ``{"error": {"code": "list_not_found", "message": ..., "rtm_code": None,
+        "details": {"query": ...}}}`` if the list is not found.
     """
     from .parsers import parse_lists_response
 
