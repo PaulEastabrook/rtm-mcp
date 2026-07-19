@@ -1623,7 +1623,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             Returns (on success): {"note": {id, title, created}, "task_id", "role", "tag_changes": [...],
                 "errors": [...]} with the note's transaction_id for undo.
             Returns (on bad input / strict-tag rejection — nothing written): {"error": {"code":
-        "invalid_input" | "task_not_found" | "conversation_read_only" | "strict_tag_rejected",
+        "invalid_input" | "task_not_found" | "conversation_read_only" | "strict_tag_rejected"
+        | "write_failed",
         "message": "<actionable prose>", "rtm_code": null, "details": {...}}}. The strict-tag
         gate's recovery material (rejected_tags / how_to_proceed / strict_tag_mode) is under
         `details`. Branch on `code`, never the prose.
@@ -1807,8 +1808,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 oldest-first; `requested` is whether #ai_chat_requested is set (lets the board show a
                 "thinking…" state without a second call). `created` is RTM's value (UTC); the localised
                 display stamp lives in the note title.
-            Returns (on miss / bad input): {"error": {"code": "project_not_found" | "missing_parameter",
-        "message": "<actionable prose>", "rtm_code": null}} — branch on `code`, never the prose.
+            Returns (on miss): {"error": {"code": "task_not_found", "message":
+        "<actionable prose>", "rtm_code": null}} — branch on `code`, never the prose.
         """
         client: RTMClient = await get_client()
         result = await client.call(
