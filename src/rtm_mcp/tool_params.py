@@ -161,6 +161,26 @@ def optional_string(description: str, **extra: Any) -> WithJsonSchema:
     return _optional("string", description, **extra)
 
 
+def required_string(description: str, **extra: Any) -> WithJsonSchema:
+    """Single-typed schema for a REQUIRED string param (no `default: null`).
+
+    Used where the Python annotation is a genuine value-type union but the *advertised*
+    contract should be the string form — `set_task_priority.priority` is annotated
+    `str | int` because `parsers.priority_to_code` does `str(priority).lower()`, so
+    `1` and `"1"` both work. Advertising `anyOf: [string, integer]` there had two
+    costs: simplifying clients flattened it to `{}` (so the enum, and the param itself,
+    were invisible), and the enum was string-only anyway — meaning a strictly-validating
+    client would have rejected `priority=1` despite the server accepting it.
+
+    Advertising the string form is NARROWER than what the handler accepts, never wider:
+    every schema-conformant call still works, and the integer aliases keep working for
+    existing callers. The docstring documents the alias.
+    """
+    schema: dict[str, Any] = {"type": "string", "description": description}
+    schema.update(extra)
+    return WithJsonSchema(schema)
+
+
 def optional_integer(description: str, **extra: Any) -> WithJsonSchema:
     """For `int | None`."""
     return _optional("integer", description, **extra)

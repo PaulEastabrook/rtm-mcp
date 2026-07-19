@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "server": "rtm",
-  "generated_at": "2026-07-19T12:22:28Z",
-  "source_version": "1.33.0",
+  "generated_at": "2026-07-19T13:02:06Z",
+  "source_version": "1.34.0",
   "tools": {
     "mcp__rtm__add_list": "99ade41ae5e1ed26e9fe0b06ca6ef078534ccfe0ca285393ec4159c6983c9b54",
     "mcp__rtm__add_note": "32b671facd29843b09daed754280944bc942d7d031af1f1bd99cbe0c552ca0a9",
@@ -51,7 +51,7 @@
     "mcp__rtm__set_task_due_date": "3645927fec3a85c0867256956cb91513443fd92a9983ed9efe48998920a09eaa",
     "mcp__rtm__set_task_estimate": "45e077d32a5e6ebb94fffc342ace223dc0992db9aa4223c8f34f501f7accbcb4",
     "mcp__rtm__set_task_name": "ea1a13384bca31c640efbf52395dfbca3a38218516f862424e808c7b58117b7f",
-    "mcp__rtm__set_task_priority": "82c269d95915deef7e8074d16b8377c1034a28ad4204926cb6a45d1cc547d815",
+    "mcp__rtm__set_task_priority": "48fbbe251988dd0f1830eb97164ce4baba959238445164b124ee88b838ff7bb7",
     "mcp__rtm__set_task_recurrence": "8da49e5dc8257c03deb4b32427efba854f63f1f05381f1a84a6c1280640abdca",
     "mcp__rtm__set_task_start_date": "3ea7f00f2deb49c1d0cd323ee80abf6a30a6b0fc67ae13dad385ef520db5443b",
     "mcp__rtm__set_task_tags": "e14764eb89f94064bb1c30974cf5e789d71033de80fd5b9644d6a0e94697362d",
