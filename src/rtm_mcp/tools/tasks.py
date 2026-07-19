@@ -152,6 +152,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             - list_tasks(list_name="Personal") → tasks in Personal list
             - list_tasks(parent_task_id="1194808991") → subtasks of a specific parent
             - list_tasks(filter="status:completed", include_completed=True) → completed tasks
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: list_not_found.
         """
         client: RTMClient = await get_client()
 
@@ -298,6 +302,12 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             - add_task("Weekly review *every monday", list_name="Work")
             - add_task("Sub-item", parent_task_id="1194808991")
             - add_task("Fix login bug", external_id="JIRA-1234")
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: list_not_found, strict_tag_rejected.
+            A strict_tag_rejected carries rejected_tags / how_to_proceed
+            under `error.details`.
         """
         client: RTMClient = await get_client()
 
@@ -393,6 +403,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Completed: ..."} with transaction_id for undo.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
 
@@ -480,6 +494,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Reopened: ..."} with transaction_id for undo.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_completed, task_not_found.
         """
         client: RTMClient = await get_client()
 
@@ -573,6 +591,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"message": "Deleted: ..."} with transaction_id for undo.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
 
@@ -657,6 +679,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Renamed to: ..."} with transaction_id for undo.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -722,6 +748,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Due date set"} with transaction_id for undo.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -788,6 +818,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Priority set to: ..."} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -854,6 +888,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Priority moved up/down"} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: invalid_input, missing_parameter, task_not_found.
         """
         if direction not in MOVE_DIRECTIONS:
             return build_response(
@@ -919,6 +957,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Postponed: ..."} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -977,6 +1019,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Moved to: ..."} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: list_not_found, missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
 
@@ -1052,6 +1098,12 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Added tags: ..."} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, strict_tag_rejected, task_not_found.
+            A strict_tag_rejected carries rejected_tags / how_to_proceed
+            under `error.details`.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -1120,6 +1172,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Removed tags: ..."} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -1192,6 +1248,12 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Tags set to: ..."} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, strict_tag_rejected, task_not_found.
+            A strict_tag_rejected carries rejected_tags / how_to_proceed
+            under `error.details`.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -1264,6 +1326,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Recurrence set/cleared"} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -1327,6 +1393,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Start date set/cleared"} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -1391,6 +1461,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "Estimate set/cleared"} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -1450,6 +1524,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Returns:
             {"task": {...}, "message": "URL set/cleared"} with transaction_id.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
@@ -1522,6 +1600,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         RTM error codes: 4040=Pro required, 4050=invalid parent, 4060=max nesting,
             4070=repeating task conflict, 4080=due date before start date,
             4090=self-parenting.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: missing_parameter, task_not_found.
         """
         client: RTMClient = await get_client()
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
