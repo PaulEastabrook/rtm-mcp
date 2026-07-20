@@ -375,6 +375,8 @@ _HELPER_CODES: dict[str, set[str]] = {
     "resolve_task_ids": {"task_not_found", "missing_parameter"},
     "resolve_list_id": {"list_not_found"},
     "enforce_strict_tags": {"strict_tag_rejected"},
+    "enforce_note_shape": {"note_shape_rejected"},
+    "enforce_list_target": {"smart_list_target", "locked_system_list"},
     # error_from_exception maps whatever RTM raised; these are the codes worth advertising.
     "error_from_exception": {"auth_failed", "service_unavailable", "network_error"},
 }

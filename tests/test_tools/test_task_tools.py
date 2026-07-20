@@ -1638,3 +1638,130 @@ class TestParseEstimateDays:
         from rtm_mcp.parsers import parse_estimate_minutes
 
         assert parse_estimate_minutes("P") is None
+
+
+# ---------------------------------------------------------------------------
+# The list-target write-boundary gate (RTM_STRICT_LIST_TARGETS)
+# ---------------------------------------------------------------------------
+
+
+def _lists_resp() -> dict:
+    """Three lists spanning the gate's whole judgement space."""
+
+    def _lst(list_id: str, name: str, smart: str = "0", locked: str = "0") -> dict:
+        return {
+            "id": list_id,
+            "name": name,
+            "deleted": "0",
+            "locked": locked,
+            "archived": "0",
+            "position": "0",
+            "smart": smart,
+        }
+
+    return {
+        "stat": "ok",
+        "lists": {
+            "list": [
+                _lst("1", "Inbox", locked="1"),
+                _lst("5", "Work"),
+                _lst("9", "Overdue View", smart="1"),
+            ]
+        },
+    }
+
+
+class TestListTargetGate:
+    """Three paths per the write-gate contract: accept, reject, flag-off inert."""
+
+    @pytest.fixture
+    def gated(self, task_tools):
+        tools, client = task_tools
+        client.config = MagicMock(strict_tags=False, strict_list_targets=True)
+        client.get_default_list_id = AsyncMock(return_value="1")
+
+        async def _side(method, **kw):
+            if method == "rtm.lists.getList":
+                return _lists_resp()
+            if method == "rtm.settings.getList":
+                return {"stat": "ok", "settings": {"timezone": "UTC"}}
+            if method == "rtm.tasks.moveTo":
+                return _make_write_response(_ts(name="Task"), list_id="5")
+            if method == "rtm.tasks.add":
+                return _make_write_response(_ts(name="New"), list_id="5")
+            return _make_getlist_response([_ts(name="Task")])
+
+        client.call = AsyncMock(side_effect=_side)
+        return tools, client
+
+    @pytest.mark.asyncio
+    async def test_add_task_accepts_a_writable_list(self, gated):
+        tools, _client = gated
+        result = await tools["add_task"](FakeContext(), name="New", list_name="Work")
+        assert "error" not in result["data"]
+
+    @pytest.mark.asyncio
+    async def test_add_task_rejects_a_smart_list_without_writing(self, gated):
+        tools, client = gated
+        result = await tools["add_task"](FakeContext(), name="New", list_name="Overdue View")
+        error = result["data"]["error"]
+        assert error["code"] == "smart_list_target"
+        assert error["details"]["rejected_list"] == "Overdue View"
+        assert not any(c.args[0] == "rtm.tasks.add" for c in client.call.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_add_task_rejects_a_locked_list_without_writing(self, gated):
+        tools, client = gated
+        result = await tools["add_task"](FakeContext(), name="New", list_name="Inbox")
+        assert result["data"]["error"]["code"] == "locked_system_list"
+        assert not any(c.args[0] == "rtm.tasks.add" for c in client.call.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_add_task_default_list_fallback_is_not_gated(self, gated):
+        """Scope decision: the gate judges a CALLER-NAMED target only. An account whose
+        configured default is the locked built-in Inbox would otherwise have every bare
+        capture rejected — a behaviour change the caller never asked for and cannot fix
+        from the call site."""
+        tools, client = gated
+        result = await tools["add_task"](FakeContext(), name="New")  # no list_name
+        assert "error" not in result["data"]
+        assert any(c.args[0] == "rtm.tasks.add" for c in client.call.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_move_task_rejects_a_smart_destination_without_writing(self, gated):
+        tools, client = gated
+        result = await tools["move_task"](
+            FakeContext(), to_list_name="Overdue View", task_name="Task"
+        )
+        assert result["data"]["error"]["code"] == "smart_list_target"
+        assert not any(c.args[0] == "rtm.tasks.moveTo" for c in client.call.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_move_task_accepts_a_writable_destination(self, gated):
+        tools, _client = gated
+        result = await tools["move_task"](FakeContext(), to_list_name="Work", task_name="Task")
+        assert "Moved to" in result["data"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_gate_off_allows_a_smart_destination(self, task_tools):
+        """Flags-off reproduces pre-gate behaviour exactly — the write reaches RTM and
+        RTM's own response governs, as it did before this gate existed."""
+        tools, client = task_tools
+        client.config = MagicMock(strict_tags=False, strict_list_targets=False)
+
+        async def _side(method, **kw):
+            if method == "rtm.lists.getList":
+                return _lists_resp()
+            if method == "rtm.settings.getList":
+                return {"stat": "ok", "settings": {"timezone": "UTC"}}
+            if method == "rtm.tasks.moveTo":
+                return _make_write_response(_ts(name="Task"), list_id="9")
+            return _make_getlist_response([_ts(name="Task")])
+
+        client.call = AsyncMock(side_effect=_side)
+
+        result = await tools["move_task"](
+            FakeContext(), to_list_name="Overdue View", task_name="Task"
+        )
+        assert "error" not in result["data"]
+        assert any(c.args[0] == "rtm.tasks.moveTo" for c in client.call.await_args_list)

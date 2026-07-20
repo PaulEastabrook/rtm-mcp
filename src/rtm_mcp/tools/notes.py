@@ -13,6 +13,7 @@ from ..models import (
     NOTE_WRITE_OUTPUT,
     TASK_NOTES_OUTPUT,
 )
+from ..note_shape import enforce_note_shape
 from ..parsers import (
     ensure_list,
     extract_note_body,
@@ -85,9 +86,19 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
 
         Errors: {"error": {"code": ..., "message": "<actionable prose>",
             "rtm_code": ...}} — branch on `code`, NEVER parse the message.
-            Possible: missing_parameter, task_not_found.
+            Possible: missing_parameter, task_not_found, note_shape_rejected.
+            A note_shape_rejected carries rejected_title / expected_shape /
+            how_to_proceed under `error.details`.
         """
         client: RTMClient = await get_client()
+
+        # Note-shape gate (off by default). Runs BEFORE the task lookup so a rejection
+        # costs no API call. RTM stores the body as `title\ntext`, so with no explicit
+        # note_title the gate judges the first line of note_text.
+        err = enforce_note_shape(client, note_title, note_text, tool="add_note")
+        if err:
+            return build_response(data=err)
+
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)
@@ -180,9 +191,21 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
 
         Errors: {"error": {"code": ..., "message": "<actionable prose>",
             "rtm_code": ...}} — branch on `code`, NEVER parse the message.
-            Possible: missing_parameter, task_not_found.
+            Possible: missing_parameter, task_not_found, note_shape_rejected.
+            A note_shape_rejected carries rejected_title / expected_shape /
+            how_to_proceed under `error.details`.
         """
         client: RTMClient = await get_client()
+
+        # Note-shape gate (off by default) — TITLE-CHANGING path only. An edit that
+        # supplies no note_title is a body-only edit: judging the first line of
+        # note_text there would block a legacy note whose title predates the grammar
+        # from ever having its body corrected, so it is deliberately not gated.
+        if (note_title or "").strip():
+            err = enforce_note_shape(client, note_title, "", tool="edit_note")
+            if err:
+                return build_response(data=err)
+
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)
         if "error" in ids:
             return build_response(data=ids)

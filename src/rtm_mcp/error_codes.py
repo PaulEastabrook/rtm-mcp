@@ -111,6 +111,7 @@ class ErrorCode(str, Enum):
     # ---------------------------------------------------------------- governance
     # A deterministic safety gate refused the write. Not a bug — the gate working.
     STRICT_TAG_REJECTED = "strict_tag_rejected"  # tag absent from the account
+    NOTE_SHAPE_REJECTED = "note_shape_rejected"  # note title fails the mechanical grammar
     DESTRUCTIVE_UNCONFIRMED = "destructive_unconfirmed"  # confirm_destructive not set
 
     # -------------------------------------------------------------------- commit

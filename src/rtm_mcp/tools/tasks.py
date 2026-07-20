@@ -7,6 +7,7 @@ from pydantic import Field
 
 from ..client import RTMClient
 from ..error_codes import ErrorCode
+from ..list_targets import enforce_list_target
 from ..lookup import find_task, resolve_list_id, resolve_task_ids
 from ..models import (
     DELETE_TASK_OUTPUT,
@@ -305,9 +306,12 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Errors: {"error": {"code": ..., "message": "<actionable prose>",
             "rtm_code": ...}} — branch on `code`, NEVER parse the message.
-            Possible: list_not_found, strict_tag_rejected.
+            Possible: list_not_found, strict_tag_rejected, smart_list_target,
+            locked_system_list.
             A strict_tag_rejected carries rejected_tags / how_to_proceed
-            under `error.details`.
+            under `error.details`. smart_list_target / locked_system_list are
+            raised only when the list-target gate is enabled
+            (RTM_STRICT_LIST_TARGETS) and only for an explicitly named list_name.
         """
         client: RTMClient = await get_client()
 
@@ -328,6 +332,11 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
                 # Erroring beats silently creating the task in the Inbox when
                 # the requested list doesn't resolve (same contract as move_task).
                 return build_response(data=resolved)
+            # List-target gate (off by default). Caller-named targets only — the
+            # default-list fallback below is deliberately not gated.
+            err = enforce_list_target(client, resolved, list_name, tool="add_task")
+            if err:
+                return build_response(data=err)
             params["list_id"] = resolved["list_id"]
         elif not parent_task_id:
             # No list given: honor the user's configured default list. RTM's
@@ -1022,7 +1031,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
 
         Errors: {"error": {"code": ..., "message": "<actionable prose>",
             "rtm_code": ...}} — branch on `code`, NEVER parse the message.
-            Possible: list_not_found, missing_parameter, task_not_found.
+            Possible: list_not_found, missing_parameter, task_not_found,
+            smart_list_target, locked_system_list. The last two are raised only
+            when the list-target gate is enabled (RTM_STRICT_LIST_TARGETS).
         """
         client: RTMClient = await get_client()
 
@@ -1030,6 +1041,10 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         resolved = await resolve_list_id(client, to_list_name)
         if "error" in resolved:
             return build_response(data=resolved)
+        # List-target gate (off by default): refuse a smart / locked destination.
+        err = enforce_list_target(client, resolved, to_list_name, tool="move_task")
+        if err:
+            return build_response(data=err)
         to_list_id = resolved["list_id"]
 
         ids = await resolve_task_ids(client, task_name, task_id, taskseries_id, list_id)

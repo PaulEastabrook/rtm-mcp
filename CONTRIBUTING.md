@@ -231,17 +231,50 @@ them (`off_enum`, `unknown_kind`, `type_illegal`) are **grammar-bound** — they
 `validate-engage-verdict.py` under the ratified `engage-verdict-grammar.md`, so re-spelling them is
 a lockstep change to both repos. Never edit one side alone.
 
-## 6. Tag-write discipline
+## 6. Write gates
 
-Tag writes go through the **strict-tag existence gate** (`strict_tags.py`; background in
-`CLAUDE.md` § "Strict-Tag Mode"):
+Three deterministic **write-boundary gates** refuse a malformed write at the server, so the
+discipline becomes an invariant no agent, session, or scheduled engine can forget. They share
+one shape: a pure-policy module, a config flag, an early return before any RTM call.
 
-- Gate **add/set** tag writes with `enforce_strict_tags(client, requested, *, tool=...)`; on a
-  rejection return `build_response(data=err)` **without** calling RTM.
-- **Never** gate tag *removal* (it reduces entropy).
-- The server holds **no canonical taxonomy and needs no sync** — the gate only enforces "does
-  this tag already exist in the account?". Canonical-taxonomy policing stays plugin-side. Do not
-  add a taxonomy or import one into the server.
+| Gate | Module | Flag | Default | Codes |
+|---|---|---|---|---|
+| Tag existence | `strict_tags.py` | `RTM_STRICT_TAGS` | **on** | `strict_tag_rejected` |
+| Note-title grammar | `note_shape.py` | `RTM_STRICT_NOTES` | off | `note_shape_rejected` |
+| List-target writability | `list_targets.py` | `RTM_STRICT_LIST_TARGETS` | off | `smart_list_target`, `locked_system_list` |
+
+**The governing rule — the server enforces mechanical SHAPE; the plugin owns VOCABULARY.**
+This is the § 4.4 ownership split, and it is the reason each gate stops where it does:
+
+- Tags — the server checks a tag **exists in the account**; whether it is the *canonical* tag is
+  gtd's `validate-tags.py`. (Tag canonicality is a deliberate **non-goal** here, not an omission.)
+- Notes — the server checks the title **parses** as `YYYY-MM-DD [HH:MM] — TYPE — summary`;
+  whether TYPE is a *canonical* type is gtd's `note-shape-catalogue.md` § 2 +
+  `validate-note.py`. A well-shaped title with an unknown TYPE **passes here by design**.
+- List targets — the server refuses a list RTM itself flags `smart` or `locked`; whether a
+  *writable* list is the **right** target (Inbox_Stuff as sole capture point, Processed as
+  gtd-internal) is gtd's `list-catalogue.md` + `validate-list-target.py`.
+
+If implementing a check would require the server to know a gtd-owned value, it belongs
+plugin-side — stop and flag it. Do not add a taxonomy or import one into the server.
+
+**Rules when adding to or wiring a gate:**
+
+- Gate **before** the RTM call and before any resolver that costs an API call, and return
+  `build_response(data=err)`. A gate that still writes is not a write boundary — assert the
+  zero-call property in the test.
+- **Never** gate an operation that *reduces* entropy (tag removal is the standing example).
+- **Default off** for a new gate. Flags-off must reproduce prior behaviour byte-for-byte; that
+  reversibility is what makes the bake-in stage safe. Ship the enable decision separately.
+- **Reject deterministically and recoverably**: a stable `error.code` plus `how_to_proceed`
+  under `error.details`, never prose alone. Point recovery at the plugin for vocabulary.
+- **Reuse an existing `ErrorCode`** where the concept already has one (the list-target gate
+  reuses `smart_list_target` / `locked_system_list`). Minting a synonym recreates exactly the
+  drift the unified registry removed.
+- Register any new gate helper in `_HELPER_CODES` (`tests/test_tool_schemas.py`) so the
+  advertised-error-contract guard knows which codes it surfaces on a caller's behalf.
+- Test three paths per gate: **accept**, **reject** (correct code + guidance + nothing written),
+  and **flag-off inert**.
 
 ## 7. Source style
 

@@ -223,3 +223,36 @@ class TestSavePermissions:
         path = tmp_path / "config.json"
         config.save(path)
         assert (path.stat().st_mode & 0o777) == 0o600
+
+
+class TestWriteGateFlags:
+    """The two write-boundary gate flags (note-shape + list-target). Both default OFF —
+    the reversibility guarantee that makes the bake-in stage safe."""
+
+    def test_both_gates_default_off(self, monkeypatch):
+        monkeypatch.delenv("RTM_STRICT_NOTES", raising=False)
+        monkeypatch.delenv("RTM_STRICT_LIST_TARGETS", raising=False)
+        config = RTMConfig()
+        assert config.strict_notes == "off"
+        assert config.strict_list_targets is False
+
+    @pytest.mark.parametrize("mode", ["off", "warn", "shape"])
+    def test_valid_strict_notes_modes_accepted(self, monkeypatch, mode):
+        monkeypatch.setenv("RTM_STRICT_NOTES", mode)
+        assert RTMConfig().strict_notes == mode
+
+    def test_strict_notes_mode_is_normalised(self, monkeypatch):
+        monkeypatch.setenv("RTM_STRICT_NOTES", "  SHAPE  ")
+        assert RTMConfig().strict_notes == "shape"
+
+    def test_typo_in_strict_notes_fails_loudly(self, monkeypatch):
+        """A misspelt mode must NOT silently leave the gate inert — an operator who
+        thinks the gate is on and is wrong is worse off than one with no gate."""
+        monkeypatch.setenv("RTM_STRICT_NOTES", "strict")
+        with pytest.raises(ValidationError):
+            RTMConfig()
+
+    @pytest.mark.parametrize("raw,expected", [("1", True), ("true", True), ("0", False)])
+    def test_strict_list_targets_env_toggle(self, monkeypatch, raw, expected):
+        monkeypatch.setenv("RTM_STRICT_LIST_TARGETS", raw)
+        assert RTMConfig().strict_list_targets is expected

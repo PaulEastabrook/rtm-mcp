@@ -4,8 +4,10 @@ import json
 import os
 from pathlib import Path
 
-from pydantic import AliasChoices, Field, ValidationError
+from pydantic import AliasChoices, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .note_shape import VALID_STRICT_NOTES_MODES
 
 
 class RTMConfig(BaseSettings):
@@ -93,6 +95,44 @@ class RTMConfig(BaseSettings):
             "RTM_STRICT_TAGS=0 (or false/no) to allow new tags."
         ),
     )
+
+    # Note-shape mode (mechanical title-grammar gate) — see note_shape.py
+    strict_notes: str = Field(
+        default="off",
+        description=(
+            "Gate note-title writes against the mechanical grammar "
+            "'YYYY-MM-DD [HH:MM] — TYPE — summary'. Env var RTM_STRICT_NOTES. "
+            "'off' (default) inert; 'warn' logs but allows; 'shape' rejects. "
+            "SHAPE only — the canonical TYPE vocabulary stays plugin-side."
+        ),
+    )
+
+    # List-target mode (mechanical writability gate) — see list_targets.py
+    strict_list_targets: bool = Field(
+        default=False,
+        description=(
+            "Reject add_task/move_task whose caller-named destination list is smart "
+            "or locked. Env var RTM_STRICT_LIST_TARGETS. Off by default; set "
+            "RTM_STRICT_LIST_TARGETS=1 to enable. Mechanical writability only — "
+            "canonical list policy stays plugin-side."
+        ),
+    )
+
+    @field_validator("strict_notes")
+    @classmethod
+    def _validate_strict_notes(cls, value: str) -> str:
+        """Fail loudly on a typo'd mode rather than silently running inert.
+
+        A misspelt RTM_STRICT_NOTES would otherwise fall through the mode check in
+        `enforce_note_shape` and disable the gate the operator thought they enabled.
+        """
+        normalized = (value or "off").strip().lower()
+        if normalized not in VALID_STRICT_NOTES_MODES:
+            raise ValueError(
+                f"RTM_STRICT_NOTES must be one of {', '.join(VALID_STRICT_NOTES_MODES)}; "
+                f"got '{value}'"
+            )
+        return normalized
 
     # Read-only AI Memory vault root — backs companion-metadata resolution on
     # gtd_project_canvas. RTM_VAULT_ROOT (server-local) takes precedence over the

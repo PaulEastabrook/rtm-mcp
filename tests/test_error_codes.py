@@ -165,3 +165,28 @@ class TestErrorBodyModel:
         )
         assert body.code is ErrorCode.STRICT_TAG_REJECTED
         assert body.details == {"strict_tag_mode": True}
+
+
+class TestWriteBoundaryGateCodes:
+    """The three write-boundary gates (tags / notes / list-targets) and their codes.
+
+    The additive-only discipline in practice: the note-shape gate needed a NEW code, but
+    the list-target gate reused two codes that already shipped. Re-spelling those (e.g. a
+    `list_target_rejected`) would have created exactly the drift the unified registry
+    exists to prevent — two names for one concept."""
+
+    def test_note_shape_gate_has_its_own_code(self) -> None:
+        assert ErrorCode.NOTE_SHAPE_REJECTED == "note_shape_rejected"
+
+    def test_list_target_gate_reuses_existing_codes(self) -> None:
+        """These predate the gate — smart_list_target from commit validation,
+        locked_system_list from delete_list. The gate must not mint synonyms."""
+        assert ErrorCode.SMART_LIST_TARGET == "smart_list_target"
+        assert ErrorCode.LOCKED_SYSTEM_LIST == "locked_system_list"
+
+    def test_no_synonym_codes_were_minted_for_the_gates(self) -> None:
+        values = {c.value for c in ErrorCode}
+        synonyms = {"list_target_rejected", "invalid_list_target", "note_title_rejected"}
+        assert values & synonyms == set(), (
+            "a gate minted a synonym for a concept the registry already names"
+        )
