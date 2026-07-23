@@ -726,6 +726,98 @@ class TransitionResult(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Phase 2 writes — completion, dependency, properties, bulk
+# --------------------------------------------------------------------------- #
+
+
+class CompleteActionResult(BaseModel):
+    """gtd_complete_action — true post-state plus the fan-out events the caller should fire.
+
+    `fanout_events` are gtd `progression-fanout` EVENT names, not tags: no RTM tag by those names
+    exists and a server cannot invoke an agent, so they are returned as data while the sanctioned
+    durable mark (`ai_overlay_refresh_needed`) is stamped on the parent project."""
+
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    completed: bool = False
+    note_type: str = ""
+    note_title: str = ""
+    cascade_note_title: str = ""
+    approval_transition: bool = False
+    fanout_events: list[str] = []
+    created_items: list[str] = []
+    signal_stamped: str = ""
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+class CloseInboxItemResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    completed: bool = False
+    note_title: str = ""
+    derived_count: int = 0
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+class SetPropertiesResult(BaseModel):
+    """gtd_set_properties — priority/estimate are taskseries-level, so a write may be REDIRECTED
+    to the series' nearest-active occurrence; divergent proposals are surfaced, never picked."""
+
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    written_to_task_id: str = ""
+    properties_set: list[str] = []
+    series_collapsed: bool = False
+    divergent: list[dict[str, Any]] = []
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+class LinkDependencyResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    dependent_id: str = ""
+    upstream_id: str = ""
+    upstream_type: str = ""
+    status: str = ""
+    note_title: str = ""
+    signal_stamped: str = ""
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+class BatchItemResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str
+    applied: bool = False
+    tags: list[str] = []
+    signal_stamped: str = ""
+
+
+class BatchTransitionResult(BaseModel):
+    """All-or-nothing (D9): if ANY item fails validation, `applied_count` is 0 and `rejected`
+    carries the per-item reasons — nothing was written."""
+
+    model_config = ConfigDict(extra="allow")
+    results: list[BatchItemResult] = []
+    applied_count: int = 0
+    requested_count: int = 0
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+# --------------------------------------------------------------------------- #
 # Phase 0 reads — detector candidate tools (gtd_*_candidates / clusters / health)
 # --------------------------------------------------------------------------- #
 
@@ -984,6 +1076,17 @@ CREATE_ITEM_OUTPUT = _envelope_schema("CreateItemEnvelope", CreateItemResult, Ca
 ADD_NOTE_OUTPUT = _envelope_schema("GtdAddNoteEnvelope", AddNoteResult, Candidates)
 CAPTURE_OUTPUT_SCHEMA = _envelope_schema("GtdCaptureEnvelope", GtdCaptureResult)
 TRANSITION_OUTPUT = _envelope_schema("TransitionEnvelope", TransitionResult, Candidates)
+
+# GTD Phase 2 writes
+COMPLETE_ACTION_OUTPUT = _envelope_schema(
+    "CompleteActionEnvelope", CompleteActionResult, Candidates
+)
+CLOSE_INBOX_OUTPUT = _envelope_schema("CloseInboxEnvelope", CloseInboxItemResult, Candidates)
+SET_PROPERTIES_OUTPUT = _envelope_schema("SetPropertiesEnvelope", SetPropertiesResult, Candidates)
+LINK_DEPENDENCY_OUTPUT = _envelope_schema(
+    "LinkDependencyEnvelope", LinkDependencyResult, Candidates
+)
+BATCH_TRANSITION_OUTPUT = _envelope_schema("BatchTransitionEnvelope", BatchTransitionResult)
 
 # GTD Phase 0 reads — detector candidates
 REASSESSMENT_OUTPUT = _envelope_schema("ReassessmentEnvelope", ReassessmentResult)

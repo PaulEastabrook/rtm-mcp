@@ -243,3 +243,170 @@ def test_transition_rejects_two_life_contexts():
 def test_collect_transition_tags_includes_signals():
     got = w.collect_transition_tags(["someday"])
     assert {"someday", "ai_conversation", "ai_overlay_refresh_needed"} <= got
+
+
+# --------------------------------------------------------------------------- #
+# Phase 2 — completion / dependency / series guard
+# --------------------------------------------------------------------------- #
+
+
+def test_completion_events_guards():
+    # waiting_for_resolved only for a waiting-for
+    assert w.completion_events(["action"], has_outcome_note=False, decided=False) == ["completed"]
+    assert "waiting_for_resolved" in w.completion_events(
+        ["waiting_for"], has_outcome_note=False, decided=False
+    )
+    # calendar_entry_completed only when NO outcome note was filed this cycle
+    assert "calendar_entry_completed" in w.completion_events(
+        ["calendar_entry"], has_outcome_note=False, decided=False
+    )
+    assert "calendar_entry_completed" not in w.completion_events(
+        ["calendar_entry"], has_outcome_note=True, decided=False
+    )
+    # decided only when decision-shaped
+    assert "decided" in w.completion_events(["action"], has_outcome_note=False, decided=True)
+    # #test items fan out nothing at all
+    assert w.completion_events(["test", "waiting_for"], has_outcome_note=False, decided=False) == []
+
+
+def test_fanout_events_are_events_not_tags():
+    """They are progression-fanout `event:` arguments — no RTM tag by these names exists."""
+    assert {
+        "completed",
+        "decided",
+        "waiting_for_resolved",
+        "calendar_entry_completed",
+    } == w.FANOUT_EVENTS
+    assert not (w.FANOUT_EVENTS & w.WORKFLOW_STATES)
+
+
+def test_output_approval_transition_first_only():
+    assert w.output_approval_transition(["ai_output_review_needed"]) == (
+        ["ai_output_approved"],
+        ["ai_output_review_needed"],
+    )
+    # already approved → no tag change (the event already fired)
+    assert w.output_approval_transition(["ai_output_approved"]) == ([], [])
+    assert w.output_approval_transition(["action"]) == ([], [])
+
+
+def test_validate_complete_calendar_needs_outcome():
+    assert "missing_parameter" in _reasons(
+        w.validate_complete(kind_tags=["calendar_entry"], completion="x", outcome="")
+    )
+    assert w.validate_complete(kind_tags=["calendar_entry"], completion="", outcome="y") == []
+    assert "missing_parameter" in _reasons(
+        w.validate_complete(kind_tags=["action"], completion="", outcome="")
+    )
+    assert w.validate_complete(kind_tags=["action"], completion="done", outcome="") == []
+
+
+def test_depends_on_note_carries_every_required_field():
+    body = w.depends_on_note(
+        upstream_name="Draft the spec",
+        upstream_ids={"task_id": "1", "taskseries_id": "2", "list_id": "3"},
+        upstream_type="action",
+        why="payload",
+        captured_at="2026-07-23",
+    )
+    for required in ("Depends on:", "task_id:", "taskseries_id:", "list_id:", "Status:"):
+        assert required in body
+    assert 'task_id: "1"' in body
+    assert "Status: active" in body
+
+
+def test_depends_on_statuses_use_resolved_not_superseded():
+    # journaling-lifecycle + five runtime call sites write `resolved`; the catalogue's
+    # `superseded` is stale.
+    assert {"active", "resolved", "obsolete"} == w.DEPENDS_ON_STATUSES
+    assert "superseded" not in w.DEPENDS_ON_STATUSES
+
+
+def test_upstream_types_include_project_and_external():
+    assert {"project", "external"} <= w.UPSTREAM_TYPES
+
+
+def test_validate_link_dependency_rejections():
+    assert "invalid_input" in _reasons(
+        w.validate_link_dependency(upstream_type="nonsense", why="w", same_task=False)
+    )
+    assert "missing_parameter" in _reasons(
+        w.validate_link_dependency(upstream_type="action", why=" ", same_task=False)
+    )
+    assert "self_dep" in _reasons(
+        w.validate_link_dependency(upstream_type="action", why="w", same_task=True)
+    )
+
+
+def test_inbox_close_body_lists_derived_and_source():
+    body = w.inbox_close_body(
+        [{"type": "action", "name": "Do it", "url": "http://x"}],
+        source_name="raw capture",
+        source_url="http://s",
+    )
+    assert "DERIVED ITEMS CREATED:" in body
+    assert '1. [action] "Do it" — RTM URL: http://x' in body
+    assert 'SOURCE: Inbox_Stuff item "raw capture"' in body
+
+
+# ---- series guard -------------------------------------------------------- #
+
+
+def _row(i, series, due="", completed=None, repeating=False):
+    return {
+        "id": i,
+        "taskseries_id": series,
+        "due": due,
+        "completed": completed,
+        "is_repeating": repeating,
+    }
+
+
+def test_series_guard_one_off_is_identity():
+    rows = [_row("9", "z")]
+    assert w.collapse_write({"9": "must"}, rows) == {"9": "must"}
+    assert w.divergent_band_proposals({"9": "must"}, rows) == []
+
+
+def test_series_guard_collapses_to_nearest_active():
+    rows = [_row("2", "s", due="2026-09-01"), _row("1", "s", due="2026-08-01")]
+    # a write aimed at the LATER occurrence is redirected to the soonest-due open one
+    assert w.collapse_write({"2": "must"}, rows) == {"1": "must"}
+
+
+def test_series_guard_gate_single_repeating_occurrence():
+    # one open occurrence, but is_repeating → still collapsible
+    rows = [_row("1", "s", due="2026-08-01", repeating=True)]
+    assert "s" in w.collapsible_series(rows)
+    # a single non-repeating occurrence is NOT collapsible
+    assert w.collapsible_series([_row("1", "s", due="2026-08-01")]) == {}
+
+
+def test_series_guard_completed_rows_excluded():
+    rows = [_row("1", "s", completed="2026-01-01"), _row("2", "s", due="2026-08-01")]
+    assert w.collapsible_series(rows) == {}  # only one OPEN occurrence, not repeating
+
+
+def test_series_guard_undated_sorts_after_dated():
+    rows = [_row("2", "s"), _row("1", "s", due="2026-08-01")]
+    assert w.nearest_active(rows)["id"] == "1"
+
+
+def test_series_guard_divergence_surfaced_not_resolved():
+    rows = [_row("1", "s", due="2026-08-01"), _row("2", "s", due="2026-09-01")]
+    conflicts = w.divergent_band_proposals({"1": "must", "2": "could"}, rows)
+    assert len(conflicts) == 1
+    assert conflicts[0]["nearest_active_id"] == "1"
+    assert conflicts[0]["chosen_band"] == "must"
+    # band aliases normalise, so these do NOT diverge
+    assert w.divergent_band_proposals({"1": "high", "2": "1"}, rows) == []
+
+
+def test_validate_set_properties():
+    assert "missing_parameter" in _reasons(
+        w.validate_set_properties(priority=None, energy=None, has_any=False)
+    )
+    assert "invalid_input" in _reasons(
+        w.validate_set_properties(priority="wont", energy=None, has_any=True)
+    )
+    assert w.validate_set_properties(priority="must", energy="low_energy", has_any=True) == []

@@ -88,6 +88,9 @@ DESTRUCTIVE_TOOLS = {
     "delete_note",
     "gtd_apply_canvas_commit",
     "gtd_apply_engage_commit",
+    "gtd_complete_action",
+    "gtd_close_inbox_item",
+    "gtd_batch_transition",
 }
 
 

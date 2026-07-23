@@ -92,6 +92,8 @@ GTD_WRITE_REJECT_REASONS = frozenset(
         ErrorCode.TASK_NOT_FOUND,
         ErrorCode.LIST_NOT_FOUND,
         ErrorCode.BAD_DATE,
+        ErrorCode.SELF_DEP,
+        ErrorCode.DESTRUCTIVE_UNCONFIRMED,
     }
 )
 
@@ -391,3 +393,270 @@ def validate_transition(
 def collect_transition_tags(add_tags: list[str]) -> set[str]:
     """Additions only — the strict-tag gate input. Removals reduce entropy and are never gated."""
     return {t.strip() for t in add_tags if t and t.strip()} | {AI_CONVERSATION, OVERLAY_REFRESH}
+
+
+# =========================================================================== #
+# Phase 2 — completion, dependency, properties, bulk
+# =========================================================================== #
+
+#: The AI-output review→approved transition pair (completion is implicit approval).
+AI_OUTPUT_REVIEW_NEEDED = "ai_output_review_needed"
+AI_OUTPUT_APPROVED = "ai_output_approved"
+
+#: Fixed COMPLETION title for closing an Inbox_Stuff item (inbox-stuff-pipeline § COMPLETION).
+INBOX_CLOSE_SUMMARY = "Processed into GTD system"
+
+#: Fan-out EVENTS. These are `event:` arguments to gtd's progression-fanout agent — NOT RTM tags.
+#: No tag by these names exists in the taxonomy, and a server cannot invoke an agent, so the tools
+#: RETURN them for the caller to fire and stamp the sanctioned durable mark instead.
+FANOUT_EVENTS = frozenset(
+    {"completed", "decided", "waiting_for_resolved", "calendar_entry_completed"}
+)
+
+#: DEPENDS-ON note vocabularies. `Status:` is active|resolved|obsolete — note-shape-catalogue § 5
+#: says "superseded", but journaling-lifecycle and five runtime call sites all write "resolved";
+#: the catalogue is the stale one. `Upstream type:` takes the wider journaling-lifecycle union.
+DEPENDS_ON_STATUSES = frozenset({"active", "resolved", "obsolete"})
+UPSTREAM_TYPES = frozenset({"action", "waiting_for", "calendar_entry", "project", "external"})
+
+
+def completion_events(tags: list[str], *, has_outcome_note: bool, decided: bool) -> list[str]:
+    """The fan-out events a completion WOULD fire, per completion-workflow's conditional guards.
+
+    Returned as data (never stamped): `waiting_for_resolved` only for a waiting-for;
+    `calendar_entry_completed` only when a calendar entry has NO outcome note filed this cycle;
+    `decided` only when the action is decision-shaped AND produced a DECISION note. `#test` items
+    are excluded from fan-out entirely."""
+    if "test" in tags:
+        return []
+    events = ["completed"]
+    if "waiting_for" in tags:
+        events.append("waiting_for_resolved")
+    if "calendar_entry" in tags and not has_outcome_note:
+        events.append("calendar_entry_completed")
+    if decided:
+        events.append("decided")
+    return events
+
+
+def output_approval_transition(tags: list[str]) -> tuple[list[str], list[str]]:
+    """`(add, remove)` for the review→approved transition. Completion is implicit approval, but
+    only on the FIRST transition — an already-approved item needs no tag change."""
+    if AI_OUTPUT_REVIEW_NEEDED in tags and AI_OUTPUT_APPROVED not in tags:
+        return [AI_OUTPUT_APPROVED], [AI_OUTPUT_REVIEW_NEEDED]
+    return [], []
+
+
+def depends_on_note(
+    *,
+    upstream_name: str,
+    upstream_ids: dict[str, str],
+    upstream_type: str,
+    why: str,
+    upstream_url: str = "",
+    status: str = "active",
+    captured_at: str,
+    captured_by: str = "rtm-mcp gtd_link_dependency",
+) -> str:
+    """The DEPENDS-ON note BODY. The validator hard-requires `Depends on:` + the full id triple +
+    `Status:`; the remaining lines are documented-required and always emitted. Placed on the
+    DEPENDENT (the convention is "X depends on Y" lives on X)."""
+    return "\n".join(
+        [
+            f"Depends on: {upstream_name}",
+            f"Upstream URL: {upstream_url}",
+            "Upstream RTM IDs:",
+            f'  task_id: "{upstream_ids.get("task_id", "")}"',
+            f'  taskseries_id: "{upstream_ids.get("taskseries_id", "")}"',
+            f'  list_id: "{upstream_ids.get("list_id", "")}"',
+            f"Upstream type: {upstream_type}",
+            f"Why: {why}",
+            f"Status: {status}",
+            f"Captured at: {captured_at}",
+            f"Captured by: {captured_by}",
+        ]
+    )
+
+
+def validate_link_dependency(*, upstream_type: str, why: str, same_task: bool) -> list[dict]:
+    rejections: list[dict[str, Any]] = []
+    if upstream_type not in UPSTREAM_TYPES:
+        rejections.append(
+            _reject(
+                ErrorCode.INVALID_INPUT,
+                f"upstream_type must be one of {sorted(UPSTREAM_TYPES)}",
+                field="upstream_type",
+            )
+        )
+    if not (why or "").strip():
+        rejections.append(
+            _reject(ErrorCode.MISSING_PARAMETER, "why is required — record the prereq nature")
+        )
+    if same_task:
+        rejections.append(_reject(ErrorCode.SELF_DEP, "a task cannot depend on itself"))
+    return rejections
+
+
+def validate_set_properties(
+    *, priority: str | None, energy: str | None, has_any: bool
+) -> list[dict[str, Any]]:
+    rejections: list[dict[str, Any]] = []
+    if not has_any:
+        rejections.append(
+            _reject(ErrorCode.MISSING_PARAMETER, "provide at least one property to set")
+        )
+    if priority and priority not in MOSCOW_BANDS:
+        rejections.append(
+            _reject(
+                ErrorCode.INVALID_INPUT,
+                f"priority must be one of {sorted(MOSCOW_BANDS)} (the MoSCoW band)",
+                field="priority",
+            )
+        )
+    if energy and energy not in ENERGY_LEVELS:
+        rejections.append(
+            _reject(
+                ErrorCode.INVALID_INPUT,
+                f"energy must be one of {sorted(ENERGY_LEVELS)}",
+                field="energy",
+            )
+        )
+    return rejections
+
+
+def validate_complete(*, kind_tags: list[str], completion: str, outcome: str) -> list[dict]:
+    """A calendar entry takes an OUTCOME note in place of the generic COMPLETION note; everything
+    else takes a COMPLETION. Exactly one body must be supplied for the applicable note."""
+    rejections: list[dict[str, Any]] = []
+    is_calendar = CALENDAR_TAG in kind_tags
+    if is_calendar and not (outcome or "").strip():
+        rejections.append(
+            _reject(
+                ErrorCode.MISSING_PARAMETER,
+                "a #calendar_entry completion takes an OUTCOME note — provide `outcome`",
+            )
+        )
+    if not is_calendar and not (completion or "").strip():
+        rejections.append(
+            _reject(ErrorCode.MISSING_PARAMETER, "provide `completion` — the COMPLETION note body")
+        )
+    return rejections
+
+
+def inbox_close_body(derived: list[dict[str, str]], *, source_name: str, source_url: str) -> str:
+    """The Inbox_Stuff COMPLETION body: every derived item with type/name/url, then the SOURCE
+    back-pointer carrying the ORIGINAL name (the Processor may have renamed the item)."""
+    lines = ["DERIVED ITEMS CREATED:"]
+    for i, d in enumerate(derived, 1):
+        lines.append(
+            f'{i}. [{d.get("type", "item")}] "{d.get("name", "")}" — RTM URL: {d.get("url", "")}'
+        )
+    if not derived:
+        lines.append("(none — closed without derived items)")
+    lines.append("")
+    lines.append(f'SOURCE: Inbox_Stuff item "{source_name}" — RTM URL: {source_url}')
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# series_guard — priority AND estimate are taskseries-level facts in RTM
+# --------------------------------------------------------------------------- #
+# Faithful port of gtd's scripts/series_guard.py. A write to ONE occurrence re-writes EVERY open
+# sibling occurrence, so a governed write must collapse to one write per series on the
+# nearest-active occurrence, and must never silently pick when proposals diverge.
+
+_BAND_ALIASES = {
+    "high": "must",
+    "1": "must",
+    "must": "must",
+    "medium": "should",
+    "2": "should",
+    "should": "should",
+    "low": "could",
+    "3": "could",
+    "could": "could",
+}
+
+
+def _norm_band(band: str) -> str:
+    return _BAND_ALIASES.get(str(band).strip().lower(), str(band).strip().lower())
+
+
+def _open_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [r for r in rows if r.get("id") is not None and not r.get("completed")]
+
+
+def _due_key(row: dict[str, Any]) -> tuple[int, str, Any]:
+    """Dated occurrences (soonest first) sort BEFORE undated; ids numeric when castable."""
+    due = row.get("due") or ""
+    rid = str(row.get("id") or "")
+    try:
+        id_key: Any = (0, int(rid))
+    except ValueError:
+        id_key = (1, rid)
+    return (0, due, id_key) if due else (1, "", id_key)
+
+
+def group_open_series(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for r in _open_rows(rows):
+        sid = str(r.get("taskseries_id") or "")
+        if sid:
+            out.setdefault(sid, []).append(r)
+    return out
+
+
+def collapsible_series(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """A series is collapsible with >=2 open occurrences OR any open occurrence is_repeating.
+    One-off tasks pass through as a no-op — the overwhelming common case."""
+    return {
+        sid: srows
+        for sid, srows in group_open_series(rows).items()
+        if len(srows) >= 2 or any(r.get("is_repeating") for r in srows)
+    }
+
+
+def nearest_active(series_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The occurrence to write: soonest-due open occurrence, tie-broken by smallest id."""
+    return sorted(series_rows, key=_due_key)[0]
+
+
+def collapse_write(proposed: dict[str, str], rows: list[dict[str, Any]]) -> dict[str, str]:
+    """Redirect each proposed write on a collapsible series to that series' nearest-active
+    occurrence and dedupe to ONE write per series. The nearest-active's own proposed band wins."""
+    coll = collapsible_series(rows)
+    id_to_series = {str(r["id"]): sid for sid, srows in coll.items() for r in srows}
+    out: dict[str, str] = {}
+    for tid, band in proposed.items():
+        sid = id_to_series.get(str(tid))
+        if sid is None:
+            out[str(tid)] = band  # singleton / one-off — identity
+            continue
+        target = str(nearest_active(coll[sid])["id"])
+        if str(tid) == target:
+            out[target] = band  # the nearest-active's own proposal wins
+        else:
+            out.setdefault(target, band)
+    return out
+
+
+def divergent_band_proposals(
+    proposed: dict[str, str], rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Series whose occurrences were proposed DIFFERENT bands — surfaced, never silently picked."""
+    coll = collapsible_series(rows)
+    conflicts: list[dict[str, Any]] = []
+    for sid, srows in coll.items():
+        ids = {str(r["id"]) for r in srows}
+        props = {t: b for t, b in proposed.items() if str(t) in ids}
+        if len({_norm_band(b) for b in props.values()}) > 1:
+            target = str(nearest_active(srows)["id"])
+            conflicts.append(
+                {
+                    "taskseries_id": sid,
+                    "proposals": props,
+                    "nearest_active_id": target,
+                    "chosen_band": props.get(target, next(iter(props.values()))),
+                }
+            )
+    return sorted(conflicts, key=lambda c: c["taskseries_id"])

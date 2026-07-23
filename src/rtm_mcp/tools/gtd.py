@@ -97,13 +97,16 @@ from ..gtd_reads import (
     build_query_next_actions,
     build_query_todays_field,
     build_waiting_for_queue,
+    classify_gtd_type,
     resolve_task_ref,
 )
 from ..gtd_writes import (
     ACTION_CONTEXTS,
     AI_REVIEW,
+    CALENDAR_TAG,
     COMMS_MODES,
     ENERGY_LEVELS,
+    INBOX_CLOSE_SUMMARY,
     INBOX_LIST,
     ITEM_KINDS,
     JOURNAL_NOTE_TYPES,
@@ -111,19 +114,30 @@ from ..gtd_writes import (
     MOSCOW_BANDS,
     MOSCOW_TO_PRIORITY,
     PROCESSED_LIST,
+    UPSTREAM_TYPES,
+    collapse_write,
     collect_item_tags,
     collect_transition_tags,
+    completion_events,
+    depends_on_note,
+    divergent_band_proposals,
     format_note_title,
+    inbox_close_body,
     item_tags,
+    output_approval_transition,
     state_body,
     validate_add_note,
     validate_capture,
+    validate_complete,
     validate_create_item,
+    validate_link_dependency,
+    validate_set_properties,
     validate_transition,
 )
 from ..lookup import resolve_list_id, resolve_system_list_id
 from ..models import (
     ADD_NOTE_OUTPUT,
+    BATCH_TRANSITION_OUTPUT,
     CALENDAR_PREP_OUTPUT,
     CANVAS_COMMIT_OUTPUT,
     CAPTURE_OUTPUT,
@@ -131,6 +145,8 @@ from ..models import (
     CHAT_INFLIGHT_OUTPUT,
     CHAT_POST_OUTPUT,
     CHAT_THREAD_OUTPUT,
+    CLOSE_INBOX_OUTPUT,
+    COMPLETE_ACTION_OUTPUT,
     CREATE_ITEM_OUTPUT,
     CREATE_PROJECT_OUTPUT,
     DECISION_OUTPUT,
@@ -141,11 +157,13 @@ from ..models import (
     GTD_QUERY_OUTPUT,
     HEALTH_CHECK_OUTPUT,
     INBOX_STATE_OUTPUT,
+    LINK_DEPENDENCY_OUTPUT,
     PROJECT_CANVAS_OUTPUT,
     PROJECT_INDEX_OUTPUT,
     PROJECT_PLAN_OUTPUT,
     REASSESSMENT_OUTPUT,
     RESEARCH_OUTPUT,
+    SET_PROPERTIES_OUTPUT,
     SET_REDACTION_OUTPUT,
     STAMP_TOKENS_OUTPUT,
     TOPIC_CLUSTERS_OUTPUT,
@@ -163,6 +181,7 @@ from ..project_plan import (
     _TEST_TAG,
     REDACTED_TAG,
     _norm_date,
+    _permalink,
     build_envelope,
     resolve_focus,
     resolve_project,
@@ -236,6 +255,8 @@ _ENERGY_ENUM: dict[str, Any] = {"enum": sorted(ENERGY_LEVELS)}
 _COMMS_ENUM: dict[str, Any] = {"enum": sorted(COMMS_MODES)}
 _MOSCOW_ENUM: dict[str, Any] = {"enum": sorted(MOSCOW_BANDS)}
 _NOTE_TYPE_ENUM: dict[str, Any] = {"enum": sorted(JOURNAL_NOTE_TYPES)}
+_UPSTREAM_TYPE_ENUM: dict[str, Any] = {"enum": sorted(UPSTREAM_TYPES)}
+_BATCH_ITEM_SCHEMA: dict[str, Any] = {"type": "string", "description": "A task id."}
 
 
 def register_gtd_tools(mcp: Any, get_client: Any) -> None:
@@ -3734,6 +3755,815 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "applied": applied,
                 "errors": errors,
                 "message": f"Transition applied with {len(applied)} write(s).",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    # ======================================================================= #
+    # Phase 2 writes — completion, dependency, properties, bulk
+    # ======================================================================= #
+
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=COMPLETE_ACTION_OUTPUT)
+    async def gtd_complete_action(
+        ctx: Context,
+        task_ref: Annotated[
+            str, Field(description="The action to complete — a task id (preferred) or a name.")
+        ],
+        completion: Annotated[
+            str | None,
+            optional_string(
+                "COMPLETION note body — the result, what was produced/learned, what it means for "
+                "next steps, loose ends. Required unless the item is a #calendar_entry."
+            ),
+        ] = None,
+        outcome: Annotated[
+            str | None,
+            optional_string(
+                "OUTCOME note body — REQUIRED for a #calendar_entry (decisions made, actions "
+                "assigned, waiting-fors created, topics deferred). Replaces the COMPLETION note."
+            ),
+        ] = None,
+        cascade: Annotated[
+            str | None,
+            optional_string(
+                "CASCADE note body for the parent project — the completion in PROJECT terms. "
+                "Omit to skip (the most commonly skipped step; supply it where a parent exists)."
+            ),
+        ] = None,
+        decided: Annotated[
+            bool,
+            Field(
+                description="True when this action was decision-shaped AND produced a DECISION "
+                "note — adds the `decided` fan-out event."
+            ),
+        ] = False,
+    ) -> dict[str, Any]:
+        """GTD — complete an action densely and correctly: the COMPLETION note (or an OUTCOME note
+        for a calendar entry) is written FIRST, the AI-output review tag resolves to approved,
+        the task is completed, a CASCADE note lands on the parent project, and the durable
+        overlay-refresh signal is stamped — in one governed call.
+
+        DESTRUCTIVE: this completes a pre-existing task. Every write is transaction-recorded,
+        so the whole completion is reversible with `batch_undo`. Validate-then-apply — a
+        rejected completion writes NOTHING. The tool executes a completion you have already
+        decided on; it never decides to complete.
+
+        Ordering invariant honoured: the note is written BEFORE the task is marked complete
+        (journalling-lifecycle — "the note should be the last thing written to the action").
+
+        Fan-out: `fanout_events` are returned as DATA, not stamped. They are gtd
+        `progression-fanout` event names (`completed` / `waiting_for_resolved` /
+        `calendar_entry_completed` / `decided`) — no RTM tag by those names exists and a server
+        cannot invoke an agent, so the caller fires them while the server stamps the sanctioned
+        durable mark `#ai_overlay_refresh_needed` on the parent project. Guards apply:
+        `waiting_for_resolved` only for a waiting-for, `calendar_entry_completed` only when the
+        calendar entry has no OUTCOME note this cycle, and a `#test` item fans out nothing.
+
+        Args:
+            task_ref: the action (id preferred; a name resolves, ambiguous → candidates).
+            completion / outcome / cascade / decided: see each.
+
+        Returns (on success): {"task_id", "completed", "note_type", "note_title",
+            "cascade_note_title", "approval_transition", "fanout_events", "signal_stamped",
+            "applied", "errors", "message"}.
+        Returns (on ambiguity): {"candidates": [{id, name, list_id}]} — call again with an id.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "missing_parameter" | "strict_tag_rejected".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}} — branch on
+            `error.code`, never the prose.
+        """
+        client: RTMClient = await get_client()
+        ref = await _resolve_ref(client, task_ref, "status:incomplete")
+        if "task" not in ref:
+            return build_response(data=ref)
+        task = ref["task"]
+        by_id = {str(t.get("id")): t for t in ref["parsed"]}
+        tags = list(task.get("tags") or [])
+
+        rejections = validate_complete(
+            kind_tags=tags, completion=completion or "", outcome=outcome or ""
+        )
+        add_tags, remove_tags = output_approval_transition(tags)
+        if not rejections and add_tags:
+            gate = await enforce_strict_tags(
+                client, sorted(set(add_tags) | {OVERLAY_REFRESH}), tool="gtd_complete_action"
+            )
+            if gate:
+                rejections.append(as_rejection(gate))
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "task_id": str(task.get("id")),
+                    "completed": False,
+                    "message": "Completion rejected; nothing was written.",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        tz = await client.get_timezone()
+        today = _account_today(tz)
+        ids = {
+            "task_id": task.get("id"),
+            "taskseries_id": task.get("taskseries_id"),
+            "list_id": task.get("list_id"),
+        }
+
+        # 6a — the note comes FIRST, before the completion.
+        is_calendar = CALENDAR_TAG in tags
+        note_type = "OUTCOME" if is_calendar else "COMPLETION"
+        note_title = format_note_title(note_type, (task.get("name") or "")[:60], date=today)
+        await _write(
+            "rtm.tasks.notes.add",
+            f"complete:{note_type.lower()}-note",
+            str(task.get("id")),
+            note_title=note_title,
+            note_text=(outcome if is_calendar else completion) or "",
+            **ids,
+        )
+
+        # 6b — completion is implicit approval of AI output (first transition only).
+        if add_tags:
+            await _write(
+                "rtm.tasks.addTags",
+                "complete:approve",
+                str(task.get("id")),
+                tags=",".join(add_tags),
+                **ids,
+            )
+            await _write(
+                "rtm.tasks.removeTags",
+                "complete:clear-review",
+                str(task.get("id")),
+                tags=",".join(remove_tags),
+                **ids,
+            )
+
+        # 6c — mark complete.
+        done = await _write("rtm.tasks.complete", "complete:task", str(task.get("id")), **ids)
+
+        # 6d — CASCADE note on the parent project, in project terms.
+        proj = _nearest_project(task, by_id)
+        cascade_title = ""
+        if cascade and str(proj.get("id")) != str(task.get("id")):
+            cascade_title = format_note_title("CASCADE", (task.get("name") or "")[:60], date=today)
+            await _write(
+                "rtm.tasks.notes.add",
+                "complete:cascade",
+                str(proj.get("id")),
+                note_title=cascade_title,
+                note_text=cascade,
+                task_id=proj.get("id"),
+                taskseries_id=proj.get("taskseries_id"),
+                list_id=proj.get("list_id"),
+            )
+
+        # The durable mark the gtd engine drains (the server never invokes an agent).
+        await _write(
+            "rtm.tasks.addTags",
+            "complete:overlay-refresh",
+            str(proj.get("id")),
+            tags=OVERLAY_REFRESH,
+            task_id=proj.get("id"),
+            taskseries_id=proj.get("taskseries_id"),
+            list_id=proj.get("list_id"),
+        )
+
+        events = completion_events(
+            tags, has_outcome_note=is_calendar and bool(outcome), decided=decided
+        )
+        return build_response(
+            data={
+                "task_id": str(task.get("id")),
+                "completed": done is not None,
+                "note_type": note_type,
+                "note_title": note_title,
+                "cascade_note_title": cascade_title,
+                "approval_transition": bool(add_tags),
+                "fanout_events": events,
+                "signal_stamped": OVERLAY_REFRESH,
+                "applied": applied,
+                "errors": errors,
+                "message": f"Completed '{task.get('name')}' with {len(applied)} write(s).",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CLOSE_INBOX_OUTPUT)
+    async def gtd_close_inbox_item(
+        ctx: Context,
+        inbox_item_ref: Annotated[
+            str, Field(description="The Inbox_Stuff item to close — a task id (preferred) or name.")
+        ],
+        derived_refs: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema(
+                    "Task ids of the items derived from this capture. Each is resolved and listed "
+                    "in the COMPLETION note; an unresolvable id rejects the close (never orphan "
+                    "the source)."
+                )
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — close the clarify loop on an Inbox_Stuff item: write the COMPLETION note listing
+        every derived item with its deep link, then complete the source.
+
+        DESTRUCTIVE: completes a pre-existing task (transaction-recorded, reversible via
+        `batch_undo`). The item is COMPLETED, never deleted — it stays on Inbox_Stuff as the
+        audit record of what was captured and what it became.
+
+        Safety: if any `derived_refs` id cannot be resolved the close is REJECTED and nothing
+        is written — the pipeline rule is never to close a source whose derived writes did not
+        land. The note title is the fixed canonical string
+        `YYYY-MM-DD — COMPLETION — Processed into GTD system`.
+
+        Args:
+            inbox_item_ref: the source item (id preferred; a name resolves).
+            derived_refs: ids of the derived items to list in the note.
+
+        Returns (on success): {"task_id", "completed", "note_title", "derived_count",
+            "applied", "errors", "message"}.
+        Returns (on ambiguity): {"candidates": [...]} — call again with an id.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "task_not_found" | "missing_parameter".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}}.
+        """
+        client: RTMClient = await get_client()
+        refs = [str(r).strip() for r in (coerce_json(derived_refs) or []) if str(r).strip()]
+        ref = await _resolve_ref(client, inbox_item_ref, "status:incomplete")
+        if "task" not in ref:
+            return build_response(data=ref)
+        task = ref["task"]
+        by_id = {str(t.get("id")): t for t in ref["parsed"]}
+
+        derived: list[dict[str, str]] = []
+        rejections: list[dict[str, Any]] = []
+        for rid in refs:
+            d = by_id.get(rid)
+            if not d:
+                rejections.append(
+                    {
+                        "reason": ErrorCode.TASK_NOT_FOUND.value,
+                        "detail": f"derived item {rid} not found — refusing to close the source",
+                        "id": rid,
+                    }
+                )
+                continue
+            derived.append(
+                {
+                    "type": classify_gtd_type(d.get("tags") or []),
+                    "name": d.get("name") or "",
+                    "url": _permalink(rid, by_id, d.get("list_id")),
+                }
+            )
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "task_id": str(task.get("id")),
+                    "completed": False,
+                    "message": "Close rejected; nothing was written.",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        tz = await client.get_timezone()
+        title = format_note_title("COMPLETION", INBOX_CLOSE_SUMMARY, date=_account_today(tz))
+        ids = {
+            "task_id": task.get("id"),
+            "taskseries_id": task.get("taskseries_id"),
+            "list_id": task.get("list_id"),
+        }
+        await _write(
+            "rtm.tasks.notes.add",
+            "close-inbox:note",
+            str(task.get("id")),
+            note_title=title,
+            note_text=inbox_close_body(
+                derived,
+                source_name=task.get("name") or "",
+                source_url=_permalink(str(task.get("id")), by_id, task.get("list_id")),
+            ),
+            **ids,
+        )
+        done = await _write(
+            "rtm.tasks.complete", "close-inbox:complete", str(task.get("id")), **ids
+        )
+        return build_response(
+            data={
+                "task_id": str(task.get("id")),
+                "completed": done is not None,
+                "note_title": title,
+                "derived_count": len(derived),
+                "applied": applied,
+                "errors": errors,
+                "message": f"Closed the inbox item; {len(derived)} derived item(s) recorded.",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=SET_PROPERTIES_OUTPUT)
+    async def gtd_set_properties(
+        ctx: Context,
+        task_ref: Annotated[
+            str, Field(description="The task to edit — a task id (preferred) or a name.")
+        ],
+        name: Annotated[str | None, optional_string("New name (written verbatim).")] = None,
+        priority: Annotated[
+            str | None,
+            optional_string("MoSCoW band — must | should | could.", **_MOSCOW_ENUM),
+        ] = None,
+        estimate: Annotated[
+            str | None, optional_string("Time estimate, e.g. '30 minutes'.")
+        ] = None,
+        due: Annotated[
+            str | None, optional_string("Due date phrase — resolved via rtm.time.parse. '' clears.")
+        ] = None,
+        start: Annotated[
+            str | None, optional_string("Start date phrase — resolved via rtm.time.parse.")
+        ] = None,
+        energy: Annotated[
+            str | None, optional_string("Energy rating — swaps the pair.", **_ENERGY_ENUM)
+        ] = None,
+        recurrence: Annotated[
+            str | None, optional_string("RTM repeat rule, e.g. 'every week'. '' clears.")
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — set several scalar properties on one task in a single governed call, with the
+        recurring-series guard applied.
+
+        Governed write, validate-then-apply — a rejected edit writes NOTHING. Dates resolve
+        through `rtm.time.parse` BEFORE any write, so a hallucinated phrase is a `bad_date`
+        rejection rather than a written date. Each write is transaction-recorded (`batch_undo`).
+
+        SERIES GUARD (the subtle one): RTM stores **priority and estimate on the taskseries**,
+        so a write to one occurrence silently re-writes every open sibling. This tool therefore
+        collapses such a write to ONE write per series, **redirected to the series'
+        nearest-active occurrence** (soonest-due open, tie-broken by smallest id) — which may
+        not be the occurrence you named; the response reports `written_to_task_id` and
+        `series_collapsed`. A one-off task passes through unchanged. Divergent band proposals
+        are surfaced in `divergent`, never silently resolved.
+
+        Args:
+            task_ref: the task (id preferred; a name resolves, ambiguous → candidates).
+            name / priority / estimate / due / start / energy / recurrence: at least one required.
+
+        Returns (on success): {"task_id", "written_to_task_id", "properties_set",
+            "series_collapsed", "divergent", "applied", "errors", "message"}.
+        Returns (on ambiguity): {"candidates": [...]} — call again with an id.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "invalid_input" | "missing_parameter" | "bad_date" | "strict_tag_rejected".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}}.
+        """
+        client: RTMClient = await get_client()
+        has_any = any(
+            v is not None for v in (name, priority, estimate, due, start, energy, recurrence)
+        )
+        rejections = validate_set_properties(priority=priority, energy=energy, has_any=has_any)
+        ref = await _resolve_ref(client, task_ref, "status:incomplete")
+        if "task" not in ref:
+            return build_response(data=ref)
+        task = ref["task"]
+        parsed = ref["parsed"]
+
+        tz = await client.get_timezone()
+        dates: dict[str, str] = {}
+        for label, phrase in (("due", due), ("start", start)):
+            if phrase is None:
+                continue
+            if not phrase.strip():
+                dates[label] = ""  # explicit clear
+                continue
+            params: dict[str, Any] = {"text": phrase}
+            if tz:
+                params["timezone"] = tz
+            try:
+                pres = await client.call("rtm.time.parse", **params)
+                iso = ((pres.get("time") or {}) if isinstance(pres, dict) else {}).get("$t") or ""
+            except Exception:
+                iso = ""
+            if not iso:
+                rejections.append(
+                    {
+                        "reason": ErrorCode.BAD_DATE.value,
+                        "detail": f"could not resolve {label} '{phrase}'",
+                    }
+                )
+            else:
+                dates[label] = iso
+
+        if energy and not rejections:
+            gate = await enforce_strict_tags(client, [energy], tool="gtd_set_properties")
+            if gate:
+                rejections.append(as_rejection(gate))
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "task_id": str(task.get("id")),
+                    "message": "Property edit rejected; nothing was written.",
+                }
+            )
+
+        # Series guard: redirect the series-level writes (priority / estimate) to nearest-active.
+        tid = str(task.get("id"))
+        target = task
+        series_collapsed = False
+        divergent: list[dict[str, Any]] = []
+        if priority is not None or estimate is not None:
+            siblings = [
+                r
+                for r in parsed
+                if str(r.get("taskseries_id") or "") == str(task.get("taskseries_id") or "")
+            ]
+            collapsed = collapse_write({tid: priority or "band"}, siblings)
+            written_id = next(iter(collapsed), tid)
+            if written_id != tid:
+                series_collapsed = True
+                target = next((r for r in siblings if str(r.get("id")) == written_id), task)
+            divergent = divergent_band_proposals({tid: priority or "band"}, siblings)
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        ids = {
+            "task_id": task.get("id"),
+            "taskseries_id": task.get("taskseries_id"),
+            "list_id": task.get("list_id"),
+        }
+        series_ids = {
+            "task_id": target.get("id"),
+            "taskseries_id": target.get("taskseries_id"),
+            "list_id": target.get("list_id"),
+        }
+        done: list[str] = []
+        if name is not None:
+            await _write("rtm.tasks.setName", "props:name", tid, name=name, **ids)
+            done.append("name")
+        if priority is not None:
+            await _write(
+                "rtm.tasks.setPriority",
+                "props:priority",
+                str(target.get("id")),
+                priority=MOSCOW_TO_PRIORITY[priority],
+                **series_ids,
+            )
+            done.append("priority")
+        if estimate is not None:
+            await _write(
+                "rtm.tasks.setEstimate",
+                "props:estimate",
+                str(target.get("id")),
+                estimate=estimate,
+                **series_ids,
+            )
+            done.append("estimate")
+        if "due" in dates:
+            await _write(
+                "rtm.tasks.setDueDate", "props:due", tid, due=dates["due"], parse="0", **ids
+            )
+            done.append("due")
+        if "start" in dates:
+            await _write(
+                "rtm.tasks.setStartDate", "props:start", tid, start=dates["start"], parse="0", **ids
+            )
+            done.append("start")
+        if energy:
+            drop = sorted(ENERGY_LEVELS - {energy})
+            await _write(
+                "rtm.tasks.removeTags", "props:energy-clear", tid, tags=",".join(drop), **ids
+            )
+            await _write("rtm.tasks.addTags", "props:energy", tid, tags=energy, **ids)
+            done.append("energy")
+        if recurrence is not None:
+            await _write(
+                "rtm.tasks.setRecurrence", "props:recurrence", tid, repeat=recurrence, **ids
+            )
+            done.append("recurrence")
+
+        return build_response(
+            data={
+                "task_id": tid,
+                "written_to_task_id": str(target.get("id")),
+                "properties_set": done,
+                "series_collapsed": series_collapsed,
+                "divergent": divergent,
+                "applied": applied,
+                "errors": errors,
+                "message": f"Set {len(done)} propert(ies) with {len(applied)} write(s).",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=LINK_DEPENDENCY_OUTPUT)
+    async def gtd_link_dependency(
+        ctx: Context,
+        dependent_ref: Annotated[
+            str,
+            Field(
+                description="The BLOCKED task — the note lands here ('X depends on Y' lives on X)."
+            ),
+        ],
+        upstream_ref: Annotated[
+            str, Field(description="The task being waited on (the prerequisite).")
+        ],
+        why: Annotated[
+            str,
+            Field(
+                description="One or two sentences: what is the prereq nature of this dependency?"
+            ),
+        ],
+        upstream_type: Annotated[
+            str,
+            Field(description="What the upstream is.", json_schema_extra=_UPSTREAM_TYPE_ENUM),
+        ] = "action",
+    ) -> dict[str, Any]:
+        """GTD — record a dependency as a conforming DEPENDS-ON note on the DEPENDENT task, and
+        stamp the overlay-refresh signal so the plan-graph re-layers.
+
+        Governed write, validate-then-apply — a rejected link writes NOTHING. The note carries
+        every field the gtd validator hard-requires (`Depends on:`, the full upstream id triple,
+        `Status:`) plus the documented `Upstream URL:` / `Upstream type:` / `Why:` /
+        `Captured at:` / `Captured by:` lines. `Status:` opens as `active`.
+
+        Placement: on the dependent, never the upstream — and no back-link is written on the
+        upstream (that is the convention, not an omission).
+
+        NOT done here (the membrane): the `context.md` `dependencies:` frontmatter mirror is a
+        VAULT filesystem write. This server is vault-free — agent-memory owns the vault, gtd
+        wraps RTM — so the mirror is gtd-side drain work, triggered by the
+        `#ai_overlay_refresh_needed` mark this tool stamps. RTM is the system of record; the
+        frontmatter is a derivative queryable view.
+
+        Args:
+            dependent_ref / upstream_ref: task ids (preferred) or names.
+            why: the human reason for the dependency.
+            upstream_type: action | waiting_for | calendar_entry | project | external.
+
+        Returns (on success): {"dependent_id", "upstream_id", "upstream_type", "status",
+            "note_title", "signal_stamped", "applied", "errors", "message"}.
+        Returns (on ambiguity): {"candidates": [...]} — call again with an id.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "invalid_input" | "missing_parameter" | "self_dep" | "strict_tag_rejected".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}}.
+        """
+        client: RTMClient = await get_client()
+        ref = await _resolve_ref(client, dependent_ref, "status:incomplete")
+        if "task" not in ref:
+            return build_response(data=ref)
+        dependent = ref["task"]
+        parsed = ref["parsed"]
+        by_id = {str(t.get("id")): t for t in parsed}
+
+        up = resolve_task_ref(parsed, upstream_ref)
+        if "task" not in up:
+            if "candidates" in up:
+                return build_response(data=up)
+            return build_response(
+                data=build_error(
+                    ErrorCode.TASK_NOT_FOUND,
+                    f"No upstream task matching '{upstream_ref}'.",
+                    query=upstream_ref,
+                )
+            )
+        upstream = up["task"]
+
+        rejections = validate_link_dependency(
+            upstream_type=upstream_type,
+            why=why,
+            same_task=str(dependent.get("id")) == str(upstream.get("id")),
+        )
+        if not rejections:
+            gate = await enforce_strict_tags(client, [OVERLAY_REFRESH], tool="gtd_link_dependency")
+            if gate:
+                rejections.append(as_rejection(gate))
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "dependent_id": str(dependent.get("id")),
+                    "message": "Dependency rejected; nothing was written.",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        tz = await client.get_timezone()
+        today = _account_today(tz)
+        uid = str(upstream.get("id"))
+        title = format_note_title(
+            "DEPENDS-ON", f"depends on {(upstream.get('name') or '')[:50]}", date=today
+        )
+        body = depends_on_note(
+            upstream_name=upstream.get("name") or "",
+            upstream_ids={
+                "task_id": uid,
+                "taskseries_id": str(upstream.get("taskseries_id") or ""),
+                "list_id": str(upstream.get("list_id") or ""),
+            },
+            upstream_type=upstream_type,
+            why=why,
+            upstream_url=_permalink(uid, by_id, upstream.get("list_id")),
+            captured_at=today,
+        )
+        await _write(
+            "rtm.tasks.notes.add",
+            "dep:note",
+            str(dependent.get("id")),
+            note_title=title,
+            note_text=body,
+            task_id=dependent.get("id"),
+            taskseries_id=dependent.get("taskseries_id"),
+            list_id=dependent.get("list_id"),
+        )
+        proj = _nearest_project(dependent, by_id)
+        await _write(
+            "rtm.tasks.addTags",
+            "dep:overlay-refresh",
+            str(proj.get("id")),
+            tags=OVERLAY_REFRESH,
+            task_id=proj.get("id"),
+            taskseries_id=proj.get("taskseries_id"),
+            list_id=proj.get("list_id"),
+        )
+        return build_response(
+            data={
+                "dependent_id": str(dependent.get("id")),
+                "upstream_id": uid,
+                "upstream_type": upstream_type,
+                "status": "active",
+                "note_title": title,
+                "signal_stamped": OVERLAY_REFRESH,
+                "applied": applied,
+                "errors": errors,
+                "message": "Dependency recorded.",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=BATCH_TRANSITION_OUTPUT)
+    async def gtd_batch_transition(
+        ctx: Context,
+        items: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema("Task ids to transition. Every item is validated first.")
+            ),
+        ] = None,
+        add_tags: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(coerced_str_array_schema("Tags to add to every item.")),
+        ] = None,
+        remove_tags: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(coerced_str_array_schema("Tags to remove from every item.")),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — transition MANY items in one governed call, stamping the orchestration signal for
+        EVERY item. This closes the silent fan-out gap the generic bulk tag path leaves: with
+        `rtm_batch_tag` the caller must remember a separate signal fire per item, and item 15
+        of 20 is where that discipline fails invisibly.
+
+        ALL-OR-NOTHING (D9): every item is validated — resolvable, and the RESULTING tag set
+        respecting the "exactly one per task" invariants — before anything is written. If ANY
+        item fails, `applied_count` is 0 and nothing was written. Each write is
+        transaction-recorded, so the whole batch reverses with one `batch_undo`.
+
+        DESTRUCTIVE-annotated because a transition can park or defer pre-existing work
+        (`#someday`, `#hold`), which changes what surfaces in every view.
+
+        Args:
+            items: the task ids to transition.
+            add_tags / remove_tags: applied uniformly; at least one must be non-empty.
+
+        Returns (on success): {"results": [{id, applied, tags, signal_stamped}],
+            "applied_count", "requested_count", "applied", "errors", "message"}.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail, id}], …,
+            "applied_count": 0} where reason ∈ "invalid_input" | "missing_parameter" |
+            "task_not_found" | "strict_tag_rejected". Per-item failures are reported in that
+            flat `rejected[]` vector — this tool resolves ids itself, so it never returns the
+            nested {"error": {"code", "message"}} envelope form.
+        """
+        client: RTMClient = await get_client()
+        ids = [str(i).strip() for i in (coerce_json(items) or []) if str(i).strip()]
+        add = [t for t in (coerce_json(add_tags) or []) if str(t).strip()]
+        remove = [t for t in (coerce_json(remove_tags) or []) if str(t).strip()]
+
+        rejections: list[dict[str, Any]] = []
+        if not ids:
+            rejections.append(
+                {"reason": ErrorCode.MISSING_PARAMETER.value, "detail": "provide at least one item"}
+            )
+        parsed = await _getlist(client, "status:incomplete")
+        by_id = {str(t.get("id")): t for t in parsed}
+
+        targets: list[dict[str, Any]] = []
+        for tid in ids:
+            t = by_id.get(tid)
+            if not t:
+                rejections.append(
+                    {
+                        "reason": ErrorCode.TASK_NOT_FOUND.value,
+                        "detail": f"{tid} not found",
+                        "id": tid,
+                    }
+                )
+                continue
+            per_item = validate_transition(
+                add_tags=add, remove_tags=remove, existing=list(t.get("tags") or [])
+            )
+            for r in per_item:
+                rejections.append({**r, "id": tid})
+            targets.append(t)
+
+        if not rejections and add:
+            gate = await enforce_strict_tags(
+                client, sorted(collect_transition_tags(add)), tool="gtd_batch_transition"
+            )
+            if gate:
+                rejections.append(as_rejection(gate))
+
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "results": [],
+                    "applied_count": 0,
+                    "requested_count": len(ids),
+                    "applied": [],
+                    "errors": [],
+                    "message": "Batch rejected; nothing was written (all-or-nothing).",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        add_with_marker = sorted(set(add) | {AI_CONVERSATION})
+        results: list[dict[str, Any]] = []
+        stamped: set[str] = set()
+        for t in targets:
+            tid = str(t.get("id"))
+            tids = {
+                "task_id": t.get("id"),
+                "taskseries_id": t.get("taskseries_id"),
+                "list_id": t.get("list_id"),
+            }
+            if remove:
+                await _write(
+                    "rtm.tasks.removeTags", "batch:remove", tid, tags=",".join(remove), **tids
+                )
+            await _write(
+                "rtm.tasks.addTags", "batch:add", tid, tags=",".join(add_with_marker), **tids
+            )
+            # The per-item signal — the thing the generic bulk path silently drops.
+            proj = _nearest_project(t, by_id)
+            pid = str(proj.get("id"))
+            if pid not in stamped:
+                await _write(
+                    "rtm.tasks.addTags",
+                    "batch:overlay-refresh",
+                    pid,
+                    tags=OVERLAY_REFRESH,
+                    task_id=proj.get("id"),
+                    taskseries_id=proj.get("taskseries_id"),
+                    list_id=proj.get("list_id"),
+                )
+                stamped.add(pid)
+            results.append(
+                {
+                    "id": tid,
+                    "applied": True,
+                    "tags": sorted((set(t.get("tags") or []) - set(remove)) | set(add_with_marker)),
+                    "signal_stamped": OVERLAY_REFRESH,
+                }
+            )
+        return build_response(
+            data={
+                "results": results,
+                "applied_count": len(results),
+                "requested_count": len(ids),
+                "applied": applied,
+                "errors": errors,
+                "message": f"Transitioned {len(results)} item(s); signal stamped on {len(stamped)} project(s).",
             },
             timeline_id=client.timeline_id,
         )

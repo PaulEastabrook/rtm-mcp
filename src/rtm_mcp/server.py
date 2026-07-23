@@ -283,6 +283,25 @@ energy, comms, MoSCoW priority, note_type) are now server-owned advisory enums.
   so the caller no longer carries the remembered-fire responsibility. Guards the "exactly one per
   task" invariants over the RESULTING tag set.
 
+### GTD Phase 2 writes (density, dependency, bulk)
+- gtd_complete_action: DESTRUCTIVE — the dense completion. Writes the COMPLETION note (or an
+  OUTCOME note for a #calendar_entry) BEFORE completing, resolves #ai_output_review_needed →
+  #ai_output_approved, completes the task, writes a CASCADE note on the parent project, and stamps
+  #ai_overlay_refresh_needed. RETURNS `fanout_events` (completed / waiting_for_resolved /
+  calendar_entry_completed / decided) as DATA — those are gtd progression-fanout EVENT names, not
+  RTM tags, and a server cannot invoke an agent. Undo via batch_undo.
+- gtd_close_inbox_item: DESTRUCTIVE — closes the clarify loop: a COMPLETION note listing every
+  derived item, then completes the source. The item is COMPLETED, never deleted (audit record).
+  Refuses to close if a derived id cannot be resolved.
+- gtd_set_properties: batch scalar edits in one call. Applies the SERIES GUARD — priority and
+  estimate are taskseries-level in RTM, so the write collapses to one per series and is redirected
+  to the nearest-active occurrence; divergent bands are surfaced, never silently picked.
+- gtd_link_dependency: writes a conforming DEPENDS-ON note on the DEPENDENT task + stamps the
+  overlay-refresh signal. The context.md mirror is a VAULT write and stays gtd-side (the membrane).
+- gtd_batch_transition: DESTRUCTIVE — bulk state transition, ALL-OR-NOTHING, stamping the
+  orchestration signal for every item. Closes the silent per-item fan-out gap the generic bulk tag
+  path leaves.
+
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
   mapping 1:1 to an RTM API method.

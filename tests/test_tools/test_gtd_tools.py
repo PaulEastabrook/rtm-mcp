@@ -3412,6 +3412,281 @@ class TestGtdTransitionState:
         assert not (set(_methods(client)) & WRITE_METHODS)
 
 
+class TestGtdPhase2Writes:
+    """Completion, dependency, properties, bulk — incl. the all-or-nothing bulk guarantee."""
+
+    @pytest.mark.asyncio
+    async def test_complete_action_note_before_complete(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_complete_action"](
+            FakeContext(), task_ref="1001", completion="did it", cascade="project impact"
+        )
+        data = res["data"]
+        assert data["completed"] is True and data["note_type"] == "COMPLETION"
+        methods = _methods(client)
+        # ordering invariant: the note is written BEFORE the completion
+        assert methods.index("rtm.tasks.notes.add") < methods.index("rtm.tasks.complete")
+        # CASCADE lands on the parent project
+        casc = [k for k in _kw_for(client, "rtm.tasks.notes.add") if "CASCADE" in k["note_title"]]
+        assert casc and casc[0]["task_id"] == PROJECT_ID
+        assert data["signal_stamped"] == "ai_overlay_refresh_needed"
+        assert client.record_transaction.called
+
+    @pytest.mark.asyncio
+    async def test_complete_action_returns_events_and_stamps_no_event_tags(self, gtd_tools):
+        """The four fan-out signals are EVENT names, not tags — returned, never stamped."""
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts(
+                    "tsW",
+                    "2001",
+                    "Waiting for Bob",
+                    parent=PROJECT_ID,
+                    tags=["work", "waiting_for"],
+                ),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_complete_action"](
+            FakeContext(), task_ref="2001", completion="arrived"
+        )
+        events = res["data"]["fanout_events"]
+        assert events == ["completed", "waiting_for_resolved"]
+        written_tags = " ".join(k.get("tags", "") for k in _kw_for(client, "rtm.tasks.addTags"))
+        for ev in ("completed", "waiting_for_resolved", "calendar_entry_completed", "decided"):
+            assert ev not in written_tags.split(",")
+
+    @pytest.mark.asyncio
+    async def test_complete_calendar_entry_requires_outcome(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts(
+                    "tsC",
+                    "3001",
+                    "Board meeting",
+                    parent=PROJECT_ID,
+                    tags=["work", "action", "calendar_entry"],
+                ),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_complete_action"](
+            FakeContext(), task_ref="3001", completion="went well"
+        )
+        assert "missing_parameter" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+        # with an outcome it writes an OUTCOME note instead of COMPLETION
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        ok = await tools["gtd_complete_action"](
+            FakeContext(), task_ref="3001", outcome="Decisions: ship it"
+        )
+        assert ok["data"]["note_type"] == "OUTCOME"
+
+    @pytest.mark.asyncio
+    async def test_complete_resolves_review_to_approved(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts(
+                    "tsA",
+                    "4001",
+                    "Drafted thing",
+                    parent=PROJECT_ID,
+                    tags=["work", "action", "ai_output_review_needed"],
+                ),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_complete_action"](FakeContext(), task_ref="4001", completion="done")
+        assert res["data"]["approval_transition"] is True
+        assert any(
+            "ai_output_approved" in k.get("tags", "") for k in _kw_for(client, "rtm.tasks.addTags")
+        )
+        assert any(
+            "ai_output_review_needed" in k.get("tags", "")
+            for k in _kw_for(client, "rtm.tasks.removeTags")
+        )
+
+    @pytest.mark.asyncio
+    async def test_close_inbox_item_lists_derived_and_completes(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsI", "5001", "raw capture", tags=["ai_conversation"]),
+                _ts("tsD", "5002", "Derived action", tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_close_inbox_item"](
+            FakeContext(), inbox_item_ref="5001", derived_refs=["5002"]
+        )
+        data = res["data"]
+        assert data["completed"] is True and data["derived_count"] == 1
+        assert data["note_title"].endswith("— COMPLETION — Processed into GTD system")
+        note = _kw_for(client, "rtm.tasks.notes.add")[0]
+        assert "Derived action" in note["note_text"] and "SOURCE:" in note["note_text"]
+        # completed, never deleted — it stays as the audit record
+        assert "rtm.tasks.delete" not in _methods(client)
+
+    @pytest.mark.asyncio
+    async def test_close_inbox_refuses_when_derived_missing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            side_effect=_write_dispatch(_getlist([_ts("tsI", "5001", "raw capture")]))
+        )
+        res = await tools["gtd_close_inbox_item"](
+            FakeContext(), inbox_item_ref="5001", derived_refs=["nope"]
+        )
+        assert "task_not_found" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_set_properties_series_guard_redirects(self, gtd_tools):
+        """priority/estimate are taskseries-level — the write redirects to nearest-active."""
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts(
+                    "tsR",
+                    "6002",
+                    "Recurring",
+                    parent=PROJECT_ID,
+                    tags=["work", "action"],
+                    due="2026-09-01T00:00:00Z",
+                ),
+                _ts(
+                    "tsR",
+                    "6001",
+                    "Recurring",
+                    parent=PROJECT_ID,
+                    tags=["work", "action"],
+                    due="2026-08-01T00:00:00Z",
+                ),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_set_properties"](FakeContext(), task_ref="6002", priority="must")
+        data = res["data"]
+        assert data["series_collapsed"] is True
+        assert data["written_to_task_id"] == "6001"  # soonest-due open occurrence
+        assert _kw_for(client, "rtm.tasks.setPriority")[0]["task_id"] == "6001"
+
+    @pytest.mark.asyncio
+    async def test_set_properties_one_off_not_redirected(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_set_properties"](FakeContext(), task_ref="1001", priority="should")
+        assert res["data"]["series_collapsed"] is False
+        assert _kw_for(client, "rtm.tasks.setPriority")[0]["priority"] == "2"
+
+    @pytest.mark.asyncio
+    async def test_set_properties_bad_date_rejects_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account(), parsed_time=None))
+        res = await tools["gtd_set_properties"](
+            FakeContext(), task_ref="1001", due="the 32nd of Smarch"
+        )
+        assert "bad_date" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_link_dependency_writes_conforming_note(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("tsA", "7001", "Send it", parent=PROJECT_ID, tags=["work", "action"]),
+                _ts("tsB", "7002", "Draft it", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_link_dependency"](
+            FakeContext(), dependent_ref="7001", upstream_ref="7002", why="payload"
+        )
+        data = res["data"]
+        assert data["dependent_id"] == "7001" and data["upstream_id"] == "7002"
+        note = _kw_for(client, "rtm.tasks.notes.add")[0]
+        # the note lands on the DEPENDENT, not the upstream
+        assert note["task_id"] == "7001"
+        for required in ("Depends on:", "task_id:", "taskseries_id:", "list_id:", "Status:"):
+            assert required in note["note_text"]
+        assert "Status: active" in note["note_text"]
+
+    @pytest.mark.asyncio
+    async def test_link_dependency_self_dep_rejected(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_link_dependency"](
+            FakeContext(), dependent_ref="1001", upstream_ref="1001", why="x"
+        )
+        assert "self_dep" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_batch_transition_applies_and_stamps_per_item(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("t1", "8001", "A", parent=PROJECT_ID, tags=["work", "action"]),
+                _ts("t2", "8002", "B", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_batch_transition"](
+            FakeContext(), items=["8001", "8002"], add_tags=["someday"], remove_tags=["action"]
+        )
+        data = res["data"]
+        assert data["applied_count"] == 2 and data["requested_count"] == 2
+        assert all(r["signal_stamped"] == "ai_overlay_refresh_needed" for r in data["results"])
+        assert len(_kw_for(client, "rtm.tasks.addTags")) >= 3  # 2 items + the project stamp
+
+    @pytest.mark.asyncio
+    async def test_batch_transition_all_or_nothing(self, gtd_tools):
+        """D9: ONE invalid item ⇒ zero applied, nothing written."""
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("t1", "8001", "A", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_batch_transition"](
+            FakeContext(),
+            items=["8001", "does-not-exist"],
+            add_tags=["someday"],
+            remove_tags=["action"],
+        )
+        data = res["data"]
+        assert data["applied_count"] == 0 and data["results"] == []
+        assert "task_not_found" in {r["reason"] for r in data["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_batch_transition_invalid_cardinality_blocks_whole_batch(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("t1", "8001", "A", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        # adding `someday` without removing `action` would leave two workflow states
+        res = await tools["gtd_batch_transition"](
+            FakeContext(), items=["8001"], add_tags=["someday"]
+        )
+        assert res["data"]["applied_count"] == 0
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+
 class TestGtdPhase0Reads:
     """Phase 0 typed read tools — read-only call surface + representative output shapes."""
 
