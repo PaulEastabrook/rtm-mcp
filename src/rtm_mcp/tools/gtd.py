@@ -121,7 +121,7 @@ from ..gtd_writes import (
     validate_create_item,
     validate_transition,
 )
-from ..lookup import resolve_list_id
+from ..lookup import resolve_list_id, resolve_system_list_id
 from ..models import (
     ADD_NOTE_OUTPUT,
     CALENDAR_PREP_OUTPUT,
@@ -3196,7 +3196,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         parent = ref["task"]
         by_id = {str(t.get("id")): t for t in ref["parsed"]}
 
-        processed = await resolve_list_id(client, PROCESSED_LIST)
+        processed = await resolve_system_list_id(client, PROCESSED_LIST)
         processed_ok = "error" not in processed and not (processed.get("list") or {}).get("smart")
 
         val = validate_create_item(
@@ -3512,7 +3512,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         client: RTMClient = await get_client()
         rejections = validate_capture(text=text)
 
-        inbox = await resolve_list_id(client, INBOX_LIST)
+        inbox = await resolve_system_list_id(client, INBOX_LIST)
         if "error" in inbox:
             rejections.append(
                 {"reason": ErrorCode.LIST_NOT_FOUND.value, "detail": f"{INBOX_LIST} not found"}

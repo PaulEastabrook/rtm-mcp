@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from rtm_mcp.client import ACCOUNT_TAGS_TTL_SECONDS, RTMClient, TransactionEntry
+from rtm_mcp.client import ACCOUNT_TAGS_TTL_SECONDS, LISTS_TTL_SECONDS, RTMClient, TransactionEntry
 from rtm_mcp.config import RTM_API_URL, RTMConfig
 from rtm_mcp.exceptions import RTMAuthError, RTMError, RTMNetworkError, RTMRateLimitError
 from rtm_mcp.rate_limiter import RateLimitStats, TokenBucket
@@ -99,6 +99,55 @@ class TestRTMClient:
         )
 
         assert await client.get_default_list_id() is None
+
+        await client.close()
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_lists_cache_ttl_and_invalidation(self, client: RTMClient) -> None:
+        """The system-list set is cached with a TTL (Phase 2 create-path optimisation) and any
+        list MUTATION invalidates it centrally, so a stale id can never be written to."""
+        route = respx.get(RTM_API_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "rsp": {
+                        "stat": "ok",
+                        "lists": {
+                            "list": [
+                                {"id": "49657585", "name": "Processed", "smart": "0"},
+                                {"id": "51526642", "name": "Inbox_Stuff", "smart": "0"},
+                            ]
+                        },
+                    }
+                },
+            )
+        )
+
+        lists = await client.get_lists_cached()
+        assert {lst["name"] for lst in lists} == {"Processed", "Inbox_Stuff"}
+        assert route.call_count == 1
+
+        # Within TTL → served from cache (this is the saved call per governed write).
+        await client.get_lists_cached()
+        assert route.call_count == 1
+
+        # A list mutation invalidates centrally (keyed on the METHOD, whatever the transport) —
+        # so a renamed/deleted list can never be resolved from a stale cache.
+        await client.call("rtm.lists.add", name="New")
+        assert route.call_count == 2
+        assert client._cached_lists is None  # invalidated
+        await client.get_lists_cached()
+        assert route.call_count == 3
+
+        # A non-mutating call does NOT invalidate.
+        await client.call("rtm.test.echo")
+        assert client._cached_lists is not None
+
+        # Expire the TTL → next call refetches.
+        client._lists_fetched_at = time.monotonic() - (LISTS_TTL_SECONDS + 1)
+        await client.get_lists_cached()
+        assert route.call_count == 5  # echo + the refetch
 
         await client.close()
 

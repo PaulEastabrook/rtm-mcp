@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 
 # Strict-tag mode: how long the account tag set is cached before a refetch.
 ACCOUNT_TAGS_TTL_SECONDS = 300
+LISTS_TTL_SECONDS = 300
+
+#: RTM methods that change the list set — each invalidates the cached lists (see call()).
+_LIST_MUTATIONS = frozenset(
+    {
+        "rtm.lists.add",
+        "rtm.lists.setName",
+        "rtm.lists.delete",
+        "rtm.lists.archive",
+        "rtm.lists.unarchive",
+    }
+)
 
 
 def _is_tls_cert_error(exc: Exception) -> bool:
@@ -90,6 +102,9 @@ class RTMClient:
         # Cached account tag set for strict-tag mode (short TTL; see get_account_tags)
         self._cached_account_tags: set[str] | None = None
         self._account_tags_fetched_at: float = 0.0
+        # Cached parsed list set (short TTL; see get_lists_cached)
+        self._cached_lists: list[dict[str, Any]] | None = None
+        self._lists_fetched_at: float = 0.0
 
     async def _get_http(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
@@ -213,6 +228,11 @@ class RTMClient:
                     code = int(err.get("code", 0))
                     msg = err.get("msg", "Unknown error")
                     raise_for_error(code, msg)
+
+                # A list mutation invalidates the cached list set centrally, so a future list
+                # tool cannot forget to do it (see get_lists_cached).
+                if method in _LIST_MUTATIONS:
+                    self.invalidate_lists_cache()
 
                 return rsp
 
@@ -398,6 +418,34 @@ class RTMClient:
                 if self._cached_account_tags is None:
                     self._cached_account_tags = set()
         return self._cached_account_tags
+
+    async def get_lists_cached(self, *, force_refresh: bool = False) -> list[dict[str, Any]]:
+        """Parsed ``rtm.lists.getList``, cached for ``LISTS_TTL_SECONDS``.
+
+        The GTD governed writes resolve a fixed system list (``Processed`` / ``Inbox_Stuff``) on
+        every call. Those ids are stable, so re-fetching per write is pure rate-limiter cost — on
+        RTM's ~0.9 RPS sustain that read *is* a second of wall-clock. Cached like the account-tag
+        allow-list; a failed fetch is NOT cached (the next caller retries), mirroring the settings
+        cache, and any list *write* invalidates it (see ``invalidate_lists_cache``).
+
+        Deliberately a separate method rather than caching inside ``lookup.resolve_list_id``: that
+        resolver is shared with the list-management tools, where a stale cache would be a
+        correctness bug rather than a saving.
+        """
+        from .parsers import parse_lists_response
+
+        now = time.monotonic()
+        expired = now - self._lists_fetched_at > LISTS_TTL_SECONDS
+        if force_refresh or self._cached_lists is None or expired:
+            result = await self.call("rtm.lists.getList")
+            self._cached_lists = parse_lists_response(result)
+            self._lists_fetched_at = now
+        return self._cached_lists
+
+    def invalidate_lists_cache(self) -> None:
+        """Drop the cached list set — call after any list create/rename/archive/delete."""
+        self._cached_lists = None
+        self._lists_fetched_at = 0.0
 
     @property
     def timeline_id(self) -> str | None:

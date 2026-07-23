@@ -141,3 +141,24 @@ async def resolve_list_id(
         f"List '{list_name}' not found. Use get_lists to see available list names.",
         query=list_name,
     )
+
+
+async def resolve_system_list_id(client: Any, list_name: str) -> dict[str, Any]:
+    """Resolve a STABLE system list (``Processed`` / ``Inbox_Stuff``) via the client's cached
+    list set — same return shape as :func:`resolve_list_id`.
+
+    Only for the fixed GTD system lists whose ids never change within a session: it saves one
+    ``rtm.lists.getList`` per governed write (a full second on RTM's rate limiter). Use the
+    uncached :func:`resolve_list_id` for any caller-named list, where staleness would be a bug.
+    """
+    lists = await client.get_lists_cached()
+    name_lower = list_name.lower()
+    for lst in lists:
+        if lst["name"].lower() == name_lower:
+            return {"list_id": lst["id"], "list": lst}
+
+    return build_error(
+        ErrorCode.LIST_NOT_FOUND,
+        f"List '{list_name}' not found. Use get_lists to see available list names.",
+        query=list_name,
+    )

@@ -81,6 +81,22 @@ def mock_client():
     # Realistic account tz (cached settings read in the real client; here a plain stub so the
     # envelope's date localisation runs — get_timezone never routes through client.call).
     client.get_timezone = AsyncMock(return_value="Europe/London")
+    # Cached system-list set (Phase 2 create-path optimisation) — the governed writes resolve
+    # Processed / Inbox_Stuff through this instead of a per-write rtm.lists.getList.
+    _lf = {
+        "deleted": False,
+        "locked": False,
+        "archived": False,
+        "position": 0,
+        "filter": "",
+        "sort_order": 0,
+    }
+    client.get_lists_cached = AsyncMock(
+        return_value=[
+            {"id": LIST_ID, "name": "Processed", "smart": False, **_lf},
+            {"id": "51526642", "name": "Inbox_Stuff", "smart": False, **_lf},
+        ]
+    )
     return client
 
 
@@ -3142,6 +3158,27 @@ class TestGtdCreateItem:
         ]
         assert stamps and stamps[0]["task_id"] == PROJECT_ID
         assert client.record_transaction.called
+
+    @pytest.mark.asyncio
+    async def test_create_path_issues_no_list_read(self, gtd_tools):
+        """Phase 2 create-path optimisation: Processed resolves through the client's cached
+        system-list set, so a governed create no longer pays an rtm.lists.getList per write."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        await tools["gtd_create_item"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="action",
+            name="X",
+            life_context="work",
+            priority="must",
+            energy="low_energy",
+            estimate="5 minutes",
+        )
+        assert "rtm.lists.getList" not in _methods(client)
+        # exactly one task read (the parent resolution) before the writes
+        assert _methods(client).count("rtm.tasks.getList") == 1
+        assert _methods(client)[0] == "rtm.tasks.getList"
 
     @pytest.mark.asyncio
     async def test_calendar_entry_carries_action_and_calendar_tag(self, gtd_tools):
