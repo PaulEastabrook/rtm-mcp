@@ -17,6 +17,7 @@ from rtm_mcp.canvas_commit import COMMIT_REJECT_REASONS, VALID_EXECUTE_COMMIT, V
 from rtm_mcp.canvas_create import CREATE_REJECT_REASONS
 from rtm_mcp.engage_commit import ENGAGE_REJECT_REASONS, VERDICT_FAMILY
 from rtm_mcp.gtd_chat import VALID_MODES, VALID_ROLES
+from rtm_mcp.gtd_reads import VALID_DEPTHS, VALID_PERSPECTIVES
 from rtm_mcp.parsers import PRIORITY_INPUT_CODES
 from rtm_mcp.server import mcp
 from rtm_mcp.tools.tasks import MOVE_DIRECTIONS
@@ -57,6 +58,19 @@ READ_ONLY_TOOLS = {
     "gtd_chat_thread",
     "gtd_chat_inflight",
     "gtd_engage_seed",
+    "gtd_reassessment_candidates",
+    "gtd_unblock_candidates",
+    "gtd_decision_candidates",
+    "gtd_deliverable_candidates",
+    "gtd_research_candidates",
+    "gtd_calendar_prep_candidates",
+    "gtd_capture_candidates",
+    "gtd_topic_clusters",
+    "gtd_health_check",
+    "gtd_query",
+    "gtd_inbox_state",
+    "gtd_waiting_for_queue",
+    "gtd_context",
 }
 DESTRUCTIVE_TOOLS = {
     "delete_task",
@@ -273,6 +287,12 @@ class TestClosedVocabularyEnums:
     async def test_engage_commit_items_verdict_enum(self):
         items = (await _props("gtd_apply_engage_commit"))["items"]
         assert items["items"]["properties"]["verdict"]["enum"] == sorted(VERDICT_FAMILY)
+
+    async def test_query_perspective_enum(self):
+        assert (await _props("gtd_query"))["perspective"]["enum"] == sorted(VALID_PERSPECTIVES)
+
+    async def test_context_depth_enum(self):
+        assert (await _props("gtd_context"))["depth"]["enum"] == sorted(VALID_DEPTHS)
 
 
 class TestStructuredParams:

@@ -39,6 +39,25 @@ from ..canvas_overlay import apply_graph, lean_seed
 from ..canvas_seed import build_seed
 from ..client import RTMClient
 from ..companion import enrich_files, resolve_vault_root
+from ..detectors import (
+    ACTION_QUERY,
+    CALENDAR_PREP_QUERY,
+    CAPTURE_INCOMPLETE_QUERIES,
+    HEALTH_CHECK_QUERY,
+    REASSESSMENT_QUERIES,
+    TOPIC_CLUSTER_QUERY,
+    UNBLOCK_QUERIES,
+    build_calendar_prep_candidates,
+    build_capture_candidates,
+    build_decision_candidates,
+    build_deliverable_candidates,
+    build_health_check,
+    build_reassessment_candidates,
+    build_research_candidates,
+    build_topic_clusters,
+    build_unblock_candidates,
+    capture_completed_queries,
+)
 from ..engage_commit import (
     CALENDAR_ENTRY_TAG,
     SOMEDAY_TAG,
@@ -69,20 +88,44 @@ from ..gtd_chat import (
     local_stamp,
     project_descendants,
 )
+from ..gtd_reads import (
+    VALID_DEPTHS,
+    VALID_PERSPECTIVES,
+    build_context,
+    build_inbox_state,
+    build_query_focus_projects,
+    build_query_next_actions,
+    build_query_todays_field,
+    build_waiting_for_queue,
+    resolve_task_ref,
+)
 from ..lookup import resolve_list_id
 from ..models import (
+    CALENDAR_PREP_OUTPUT,
     CANVAS_COMMIT_OUTPUT,
+    CAPTURE_OUTPUT,
     CHAT_INFLIGHT_OUTPUT,
     CHAT_POST_OUTPUT,
     CHAT_THREAD_OUTPUT,
     CREATE_PROJECT_OUTPUT,
+    DECISION_OUTPUT,
+    DELIVERABLE_OUTPUT,
     ENGAGE_COMMIT_OUTPUT,
     ENGAGE_SEED_OUTPUT,
+    GTD_CONTEXT_OUTPUT,
+    GTD_QUERY_OUTPUT,
+    HEALTH_CHECK_OUTPUT,
+    INBOX_STATE_OUTPUT,
     PROJECT_CANVAS_OUTPUT,
     PROJECT_INDEX_OUTPUT,
     PROJECT_PLAN_OUTPUT,
+    REASSESSMENT_OUTPUT,
+    RESEARCH_OUTPUT,
     SET_REDACTION_OUTPUT,
     STAMP_TOKENS_OUTPUT,
+    TOPIC_CLUSTERS_OUTPUT,
+    UNBLOCK_OUTPUT,
+    WAITING_FOR_OUTPUT,
 )
 from ..order_note import from_envelope as resolve_order_note
 from ..order_note import make as make_order_note
@@ -123,6 +166,15 @@ def _utc_today() -> str:
     return datetime.now(UTC).date().isoformat()
 
 
+def _account_today(tz: str | None) -> str:
+    """Today's calendar date in the account timezone (the clock the pure detector builders need),
+    falling back to UTC when the tz is unknown/invalid (never raises)."""
+    try:
+        return datetime.now(ZoneInfo(tz)).date().isoformat() if tz else _utc_today()
+    except Exception:
+        return _utc_today()
+
+
 # Advisory input-constraint metadata (surface 4) — every enum is sourced from the canonical
 # constant it validates against (VALID_SCOPES / VALID_ROLES / VALID_MODES / VALID_EXECUTE_COMMIT /
 # VERDICT_FAMILY), so the advertised set can never drift from the handler. Typed dict[str, Any]
@@ -145,6 +197,9 @@ _ENGAGE_ITEM_SCHEMA: dict[str, Any] = {
     },
     "required": ["id", "verdict"],
 }
+# Phase 0 read tools — advisory enums, sourced from the canonical frozensets in gtd_reads.
+_PERSPECTIVE_ENUM: dict[str, Any] = {"enum": sorted(VALID_PERSPECTIVES)}
+_DEPTH_ENUM: dict[str, Any] = {"enum": sorted(VALID_DEPTHS)}
 
 
 def register_gtd_tools(mcp: Any, get_client: Any) -> None:
@@ -2380,4 +2435,554 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "message": f"Applied {len(applied)} write(s); {len(errors)} error(s).",
             },
             timeline_id=client.timeline_id,
+        )
+
+    # ======================================================================= #
+    # Phase 0 reads — typed GTD detectors (ports of the *-candidates.ms scripts)
+    # ======================================================================= #
+
+    async def _getlist(client: RTMClient, filter_str: str) -> list[dict[str, Any]]:
+        """One read-only rtm.tasks.getList(filter=...) → parsed task rows (keeps the read-only
+        call surface at exactly ["rtm.tasks.getList"])."""
+        return parse_tasks_response(await client.call("rtm.tasks.getList", filter=filter_str))
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=REASSESSMENT_OUTPUT)
+    async def gtd_reassessment_candidates(
+        ctx: Context,
+        stale_threshold_days: Annotated[
+            int,
+            Field(
+                description="Minimum days since the task's last RTM modification before it is "
+                "eligible (default 1 — let a just-produced artefact settle)."
+            ),
+        ] = 1,
+    ) -> dict[str, Any]:
+        """GTD — open AI contributions (`#ai_contrib_drafted` / `#ai_prep_drafted`) that may be
+        due for reassessment. A faithful native port of `reassessment-candidates.ms`.
+
+        Read-only: two signed `rtm.tasks.getList` reads (the two contribution tags, OR'd and
+        deduped) plus a session-cached settings read for the timezone; no write, no timeline.
+        The cheap RTM-side filter only — the calling agent applies the per-artefact
+        frontmatter check (phase / freshness / cadence) that RTM can't see.
+
+        Args:
+            stale_threshold_days: skip items modified within this many days (default 1).
+
+        Returns (on success): {"candidates": [{id, name, modified, tag_set, kind, priority,
+            tags, deep_link, ...}], "skipped": [{name, reason}], "stale_threshold_days", "count"}
+            — candidates sorted oldest-modified first. Then read each candidate's artefact.
+        This tool cannot fail (no resolution): it always returns a success payload.
+        """
+        client: RTMClient = await get_client()
+        contrib = await _getlist(client, REASSESSMENT_QUERIES[0])
+        prep = await _getlist(client, REASSESSMENT_QUERIES[1])
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_reassessment_candidates(
+                contrib,
+                prep,
+                stale_threshold_days=stale_threshold_days,
+                today=_account_today(tz),
+                timezone=tz,
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=UNBLOCK_OUTPUT)
+    async def gtd_unblock_candidates(
+        ctx: Context,
+        max_candidates: Annotated[
+            int, Field(description="Cap on returned candidates (default 50; 0 = no cap).")
+        ] = 50,
+        include_speculative_stale: Annotated[
+            bool,
+            Field(
+                description="Include stale `#ai_speculative` items as a source class (default True)."
+            ),
+        ] = True,
+        stale_speculative_days: Annotated[
+            int,
+            Field(
+                description="Age (days) after which a speculative item counts as stale (default 14)."
+            ),
+        ] = 14,
+    ) -> dict[str, Any]:
+        """GTD — actions that may now be unblockable, across five source classes (deferred,
+        overdue waiting-fors, active BLOCKER / DEPENDS-ON notes, stale speculative). A faithful
+        native port of `unblock-candidates.ms`.
+
+        Read-only: one signed `rtm.tasks.getList` per source class (all on the same method) plus
+        a cached timezone read; no write, no timeline. `#test` / `#do_not_auto_progress` /
+        `#someday` are disqualified; the merged set is deduped (class order = precedence) and
+        capped last.
+
+        Args:
+            max_candidates: cap on the merged result (0 = no cap).
+            include_speculative_stale: include the stale-speculative class.
+            stale_speculative_days: staleness threshold for that class.
+
+        Returns (on success): {"candidates": [{id, name, source_class, taskseries_id, list_id,
+            kind, tags, deep_link, ...}], "skipped": [{id, name, reason, source}], "cap",
+            "stale_speculative_days", "count"}. This tool cannot fail — always a success payload.
+        """
+        client: RTMClient = await get_client()
+        class_results: dict[str, list[dict[str, Any]]] = {}
+        for source_class, filt in UNBLOCK_QUERIES:
+            if source_class == "speculative_stale" and not include_speculative_stale:
+                continue
+            class_results[source_class] = await _getlist(client, filt)
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_unblock_candidates(
+                class_results,
+                max_candidates=max_candidates,
+                include_speculative_stale=include_speculative_stale,
+                stale_speculative_days=stale_speculative_days,
+                today=_account_today(tz),
+                timezone=tz,
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=DECISION_OUTPUT)
+    async def gtd_decision_candidates(
+        ctx: Context,
+        horizon_days: Annotated[
+            int,
+            Field(description="Days-forward date window (default 0 = no horizon; scan all)."),
+        ] = 0,
+        exclude_drafted: Annotated[
+            bool, Field(description="Exclude items already `#ai_contrib_drafted` (default True).")
+        ] = True,
+    ) -> dict[str, Any]:
+        """GTD — incomplete actions whose name reads as a decision to be made. A faithful native
+        port of `decision-candidates.ms` (lexical decision-pattern match, anti-pattern exclusion).
+
+        Read-only: one signed `rtm.tasks.getList` plus a cached timezone read; no write, no
+        timeline. Personal items are skipped unless `#ai_decide_optin`; a lexical or
+        out-of-horizon miss is silent (not listed in `skipped`).
+
+        Args:
+            horizon_days: 0 (default) scans all; a positive value date-bounds via start-or-due.
+            exclude_drafted: skip already-drafted items.
+
+        Returns (on success): {"candidates": [{id, name, date, kind, priority, tags, deep_link}],
+            "skipped": [{name, reason}], "horizon_days", "count"} — sorted by effective date.
+        Cannot fail — always a success payload.
+        """
+        client: RTMClient = await get_client()
+        tasks = await _getlist(client, ACTION_QUERY)
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_decision_candidates(
+                tasks,
+                horizon_days=horizon_days,
+                exclude_drafted=exclude_drafted,
+                today=_account_today(tz),
+                timezone=tz,
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=DELIVERABLE_OUTPUT)
+    async def gtd_deliverable_candidates(
+        ctx: Context,
+        horizon_days: Annotated[
+            int, Field(description="Days-forward date window (default 0 = no horizon; scan all).")
+        ] = 0,
+        exclude_drafted: Annotated[
+            bool, Field(description="Exclude items already `#ai_contrib_drafted` (default True).")
+        ] = True,
+    ) -> dict[str, Any]:
+        """GTD — incomplete actions whose name reads as a deliverable to produce (draft / email /
+        document / spec / report). A faithful native port of `deliverable-candidates.ms`.
+
+        Read-only: one signed `rtm.tasks.getList` plus a cached timezone read; no write, no
+        timeline. Personal items skipped unless `#ai_draft_optin`; lexical/out-of-horizon
+        misses are silent.
+
+        Args:
+            horizon_days: 0 (default) scans all; a positive value date-bounds via start-or-due.
+            exclude_drafted: skip already-drafted items.
+
+        Returns (on success): {"candidates": [{id, name, date, kind, priority, tags, deep_link}],
+            "skipped": [{name, reason}], "horizon_days", "count"}. Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        tasks = await _getlist(client, ACTION_QUERY)
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_deliverable_candidates(
+                tasks,
+                horizon_days=horizon_days,
+                exclude_drafted=exclude_drafted,
+                today=_account_today(tz),
+                timezone=tz,
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=RESEARCH_OUTPUT)
+    async def gtd_research_candidates(
+        ctx: Context,
+        horizon_days: Annotated[
+            int,
+            Field(description="Days-forward date window (default 2; pass 0 for no horizon)."),
+        ] = 2,
+        exclude_drafted: Annotated[
+            bool, Field(description="Exclude items already `#ai_contrib_drafted` (default True).")
+        ] = True,
+    ) -> dict[str, Any]:
+        """GTD — incomplete actions whose name reads as research / investigation to run. A faithful
+        native port of `research-candidates.ms`.
+
+        Read-only: one signed `rtm.tasks.getList` plus a cached timezone read; no write, no
+        timeline. Personal items skipped unless `#ai_research_optin`. NOTE the default horizon
+        is 2 days (the .ms default) — the date filter is ACTIVE by default; pass horizon_days=0
+        to scan all.
+
+        Args:
+            horizon_days: default 2 (date-bounded); 0 disables the horizon.
+            exclude_drafted: skip already-drafted items.
+
+        Returns (on success): {"candidates": [{id, name, date, kind, priority, tags, deep_link}],
+            "skipped": [{name, reason}], "horizon_days", "count"}. Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        tasks = await _getlist(client, ACTION_QUERY)
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_research_candidates(
+                tasks,
+                horizon_days=horizon_days,
+                exclude_drafted=exclude_drafted,
+                today=_account_today(tz),
+                timezone=tz,
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CALENDAR_PREP_OUTPUT)
+    async def gtd_calendar_prep_candidates(
+        ctx: Context,
+        horizon_days: Annotated[
+            int,
+            Field(
+                description="Days-forward window over start-or-due (default 2; 0 is treated as 2)."
+            ),
+        ] = 2,
+        exclude_drafted: Annotated[
+            bool, Field(description="Exclude items already `#ai_prep_drafted` (default True).")
+        ] = True,
+    ) -> dict[str, Any]:
+        """GTD — upcoming `#calendar_entry` items (a start-or-due date inside the horizon) needing
+        prep. A faithful native port of `calendar-prep-candidates.ms`.
+
+        Read-only: one signed `rtm.tasks.getList` plus a cached timezone read; no write, no
+        timeline. No personal-context filter (the calling agent owns that); skips
+        `#do_not_auto_progress` and (by default) already-prepped items. Emits a wall-clock time.
+        NOTE: horizon_days is `value or 2`, so 0 is treated as 2 (0 cannot disable the horizon).
+
+        Args:
+            horizon_days: days-forward window (default 2; 0 → 2).
+            exclude_drafted: skip already-prepped items.
+
+        Returns (on success): {"candidates": [{id, name, date, time, start, due, kind, tags,
+            deep_link}], "skipped": [{name, reason}], "horizon_days", "count"}. Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        tasks = await _getlist(client, CALENDAR_PREP_QUERY)
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_calendar_prep_candidates(
+                tasks,
+                horizon_days=horizon_days,
+                exclude_drafted=exclude_drafted,
+                today=_account_today(tz),
+                timezone=tz,
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CAPTURE_OUTPUT)
+    async def gtd_capture_candidates(
+        ctx: Context,
+        window_days: Annotated[
+            int, Field(description="Look-back window in days (default 7; 0 = full scan).")
+        ] = 7,
+        include_completed: Annotated[
+            bool,
+            Field(
+                description="Also include contributions completed within the window (default True)."
+            ),
+        ] = True,
+    ) -> dict[str, Any]:
+        """GTD — recent AI contributions whose artefact bodies may hold promotion candidates. A
+        faithful native port of `capture-candidates.ms`.
+
+        Read-only: two-to-four signed `rtm.tasks.getList` reads (incomplete + optionally
+        completed-within-window) plus a cached timezone read; no write, no timeline. Personal
+        items skipped unless `#ai_research_optin`; sorted newest-modified first.
+
+        Args:
+            window_days: look-back window (0 = no window).
+            include_completed: add the completed-within-window queries.
+
+        Returns (on success): {"candidates": [{id, name, modified, status, tag_set, kind, tags,
+            deep_link}], "skipped": [{name, reason}], "window_days", "count"}. Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        incomplete = [await _getlist(client, q) for q in CAPTURE_INCOMPLETE_QUERIES]
+        completed: list[list[dict[str, Any]]] = []
+        if include_completed:
+            completed = [await _getlist(client, q) for q in capture_completed_queries(window_days)]
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_capture_candidates(
+                incomplete,
+                completed,
+                window_days=window_days,
+                today=_account_today(tz),
+                timezone=tz,
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TOPIC_CLUSTERS_OUTPUT)
+    async def gtd_topic_clusters(
+        ctx: Context,
+        threshold: Annotated[
+            int, Field(description="Minimum items sharing a tag to form a cluster (default 5).")
+        ] = 5,
+        max_clusters: Annotated[
+            int, Field(description="Cap on returned clusters (default 20; 0 = no cap).")
+        ] = 20,
+        exclude_personal: Annotated[
+            bool, Field(description="Exclude `#personal` items from clustering (default True).")
+        ] = True,
+    ) -> dict[str, Any]:
+        """GTD — cross-project topic/person clusters: a non-trivial tag carried by many workflow
+        items spanning ≥2 projects (a candidate emergent project or theme). A faithful native
+        port of `topic-cluster-detector.ms`.
+
+        Read-only: one signed `rtm.tasks.getList` plus a cached timezone read; no write, no
+        timeline. Trivial workflow/system tags (and `q_*` / `ai_*optin`) never anchor a cluster.
+
+        Args:
+            threshold: minimum item count per cluster.
+            max_clusters: cap on returned clusters (0 = no cap).
+            exclude_personal: drop personal-context items.
+
+        Returns (on success): {"clusters": [{anchor, anchor_type, item_count, distinct_projects,
+            sample_items:[{id, name}]}], "threshold", "exclude_personal", "cap", "count"}. Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        tasks = await _getlist(client, TOPIC_CLUSTER_QUERY)
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_topic_clusters(
+                tasks,
+                threshold=threshold,
+                max_clusters=max_clusters,
+                exclude_personal=exclude_personal,
+                timezone=tz,
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=HEALTH_CHECK_OUTPUT)
+    async def gtd_health_check(ctx: Context) -> dict[str, Any]:
+        """GTD — systemic health audit: stuck projects (no next action), items missing a life or
+        workflow-state tag, stale waiting-fors, and actions carrying due dates. A faithful native
+        port of `health-check.ms`.
+
+        Read-only: ONE broad signed `rtm.tasks.getList(status:incomplete)` plus a cached
+        timezone read; no write, no timeline. (The .ms ran a per-project child sub-query — this
+        derives the parent→children map client-side from the one read, avoiding that N+1, for
+        the same result.)
+
+        Returns (on success): {"issues": [{category, name, task_id, deep_link}], "count",
+            "current_date"} where category ∈ {stuck_project, missing_life_context,
+            missing_workflow_state, stale_waiting_for, action_with_due_date}. Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        tasks = await _getlist(client, HEALTH_CHECK_QUERY)
+        tz = await client.get_timezone()
+        return build_response(data=build_health_check(tasks, today=_account_today(tz), timezone=tz))
+
+    # ======================================================================= #
+    # Phase 0 reads — collection / context tools
+    # ======================================================================= #
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GTD_QUERY_OUTPUT)
+    async def gtd_query(
+        ctx: Context,
+        perspective: Annotated[
+            str,
+            Field(
+                description="Which view: 'next_actions_by_context' | 'todays_field' | "
+                "'focus_projects'.",
+                json_schema_extra=_PERSPECTIVE_ENUM,
+            ),
+        ] = "todays_field",
+        context: Annotated[
+            str | None,
+            optional_string(
+                "For next_actions_by_context: filter to one action-context tag (e.g. "
+                "'location_home', 'using_device', 'conversation_email'). Omit for all contexts."
+            ),
+        ] = None,
+        focus: Annotated[
+            str | None,
+            optional_string(
+                "For focus_projects: an Area-of-Focus id or name to scope to. Omit for all foci."
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — a GTD-shaped collection view in one read: next actions grouped by context, today's
+        field (due-today + overdue + untagged capture), or a focus area's projects.
+
+        Read-only: one signed `rtm.tasks.getList` plus a cached timezone read; no write, no
+        timeline. `focus_projects` with a `focus` name resolves it server-side (ambiguous name →
+        candidates; a miss → an error).
+
+        Args:
+            perspective: the view to return (advisory enum).
+            context: next_actions_by_context only — scope to one action-context tag.
+            focus: focus_projects only — an area id or name to scope to.
+
+        Returns (on success): {"perspective", "rows": [{id, name, kind, priority, due, tags,
+            deep_link, ...}], "count"} (rows carry `context` / `focus` per perspective).
+        Returns (on ambiguity, focus name): {"candidates": [{id, name, list_id}]} — call again
+            with focus set to an id.
+        Returns (on bad input / focus miss): {"error": {"code": "invalid_input" (unknown
+            perspective) | "focus_not_found" | "missing_parameter", "message": ...}} — branch on
+            `error.code`, never the prose.
+        """
+        if perspective not in VALID_PERSPECTIVES:
+            return build_response(
+                data=build_error(
+                    ErrorCode.INVALID_INPUT,
+                    f"Unknown perspective '{perspective}'. Use one of {sorted(VALID_PERSPECTIVES)}.",
+                    perspective=perspective,
+                )
+            )
+        client: RTMClient = await get_client()
+        tz = await client.get_timezone()
+        if perspective == "next_actions_by_context":
+            tasks = await _getlist(client, "tag:action AND status:incomplete AND NOT tag:test")
+            return build_response(
+                data=build_query_next_actions(tasks, context=context, timezone=tz)
+            )
+        if perspective == "todays_field":
+            tasks = await _getlist(
+                client,
+                "(dueBefore:today OR due:today) OR (isTagged:false AND isSubtask:false) "
+                "AND NOT tag:test",
+            )
+            return build_response(data=build_query_todays_field(tasks, timezone=tz))
+        # focus_projects
+        parsed = await _getlist(client, "status:incomplete")
+        focus_id: str | None = None
+        if focus:
+            resolved = resolve_focus(parsed, focus)
+            if "focus" not in resolved:
+                return build_response(data=resolved)  # error or candidates
+            focus_id = str(resolved["focus"]["id"])
+        return build_response(
+            data=build_query_focus_projects(parsed, focus_id=focus_id, timezone=tz)
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=INBOX_STATE_OUTPUT)
+    async def gtd_inbox_state(ctx: Context) -> dict[str, Any]:
+        """GTD — the three inbox-health signals for Inbox_Stuff in one read: depth, unprocessed
+        (no pipeline tag), awaiting-review (`#ai_review`), and approved-but-unapplied
+        (`#ai_approved`).
+
+        Read-only: ONE signed `rtm.tasks.getList(list:Inbox_Stuff)` plus a cached timezone read
+        (the three signals are subsets of the one read); no write, no timeline.
+
+        Returns (on success): {"depth", "unprocessed_count", "awaiting_review_count",
+            "approved_unapplied_count", "unprocessed": [...], "awaiting_review": [...],
+            "approved_unapplied": [...]} — each list carries typed rows. Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        tasks = await _getlist(client, "list:Inbox_Stuff AND status:incomplete AND NOT tag:test")
+        tz = await client.get_timezone()
+        return build_response(data=build_inbox_state(tasks, timezone=tz))
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=WAITING_FOR_OUTPUT)
+    async def gtd_waiting_for_queue(ctx: Context) -> dict[str, Any]:
+        """GTD — the waiting-for chase queue: incomplete `#waiting_for` items with their due tickle
+        (chase prompt), last-updated age, and a `stale` flag (updated >14 days ago).
+
+        Read-only: ONE signed `rtm.tasks.getList` plus a cached timezone read; no write, no
+        timeline. Sorted stale-first, then by earliest due tickle.
+
+        Returns (on success): {"rows": [{id, name, due, updated, stale, kind, tags, deep_link}],
+            "count", "stale_count", "current_date"}. Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        tasks = await _getlist(client, "tag:waiting_for AND status:incomplete AND NOT tag:test")
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_waiting_for_queue(tasks, today=_account_today(tz), timezone=tz)
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GTD_CONTEXT_OUTPUT)
+    async def gtd_context(
+        ctx: Context,
+        task_ref: Annotated[
+            str,
+            Field(description="The task to bundle context for — a task id (preferred) or a name."),
+        ],
+        depth: Annotated[
+            str,
+            Field(
+                description="Bundle breadth: 'shallow' (task + own notes) | 'medium' (+ parent + "
+                "immediate siblings) | 'deep' (+ full note bodies, all siblings, full ancestry).",
+                json_schema_extra=_DEPTH_ENUM,
+            ),
+        ] = "medium",
+    ) -> dict[str, Any]:
+        """GTD — the note-reading-protocol context bundle for one task: the gtd-interpreted task,
+        its notes ordered STATE-first, its siblings, and the parent chain to the Area of Focus —
+        in one read, so a session can orient without re-reading the whole project.
+
+        Read-only: ONE signed `rtm.tasks.getList` (incomplete OR completed) plus a cached
+        timezone read; no write, no timeline. `task_ref` is resolved server-side by id or name.
+
+        Args:
+            task_ref: a task id (preferred) or a name (fuzzy; ambiguous → candidates).
+            depth: how far the bundle reaches (advisory enum; default 'medium').
+
+        Returns (on success): {"task": {...}, "notes": [{type, date, summary, body}],
+            "siblings": [...], "ancestors": [...], "depth"} — notes STATE-first.
+        Returns (on ambiguity): {"candidates": [{id, name, list_id}]} — call again with an id.
+        Returns (on bad input / miss): {"error": {"code": "task_not_found" | "missing_parameter"
+            | "invalid_input", "message": ...}} — branch on `error.code`, never the prose.
+        """
+        if not task_ref or not task_ref.strip():
+            return build_response(
+                data=build_error(
+                    ErrorCode.MISSING_PARAMETER, "Provide task_ref — a task id or name."
+                )
+            )
+        if depth not in VALID_DEPTHS:
+            return build_response(
+                data=build_error(
+                    ErrorCode.INVALID_INPUT,
+                    f"Unknown depth '{depth}'. Use one of {sorted(VALID_DEPTHS)}.",
+                    depth=depth,
+                )
+            )
+        client: RTMClient = await get_client()
+        parsed = await _getlist(client, "status:incomplete OR status:completed")
+        resolved = resolve_task_ref(parsed, task_ref)
+        if "task" not in resolved:
+            if "candidates" in resolved:
+                return build_response(data=resolved)
+            return build_response(
+                data=build_error(
+                    ErrorCode.TASK_NOT_FOUND,
+                    f"No task matching '{task_ref}'. Pass a task id, or check the name with "
+                    "list_tasks.",
+                    query=task_ref,
+                )
+            )
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_context(parsed, resolved["task"], depth=depth, timezone=tz)
         )

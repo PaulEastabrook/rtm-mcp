@@ -651,6 +651,192 @@ class EngageCommitResult(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Phase 0 reads — detector candidate tools (gtd_*_candidates / clusters / health)
+# --------------------------------------------------------------------------- #
+
+
+class CandidateRow(BaseModel):
+    """A typed detector-candidate row. Common projection fields are named; per-detector extras
+    (modified / tag_set / source_class / due / start / date / time / status / taskseries_id /
+    list_id) ride under the permissive config so one model serves every candidate detector."""
+
+    model_config = ConfigDict(extra="allow")
+    id: str
+    name: str
+    kind: str  # action | waiting_for | calendar
+    priority: str  # "1" | "2" | "3" | ""
+    tags: list[str] = []
+    parent_id: str | None = None
+    deep_link: str
+
+
+class SkippedItem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str
+    reason: str
+
+
+class ReassessmentResult(BaseModel):
+    candidates: list[CandidateRow]
+    skipped: list[SkippedItem]
+    stale_threshold_days: int
+    count: int
+
+
+class UnblockResult(BaseModel):
+    candidates: list[CandidateRow]
+    skipped: list[SkippedItem]
+    cap: int
+    stale_speculative_days: int
+    count: int
+
+
+class LexicalCandidatesResult(BaseModel):
+    """decision / deliverable / research / calendar-prep — {candidates, skipped, horizon_days}."""
+
+    candidates: list[CandidateRow]
+    skipped: list[SkippedItem]
+    horizon_days: int
+    count: int
+
+
+class CaptureResult(BaseModel):
+    candidates: list[CandidateRow]
+    skipped: list[SkippedItem]
+    window_days: int
+    count: int
+
+
+class ClusterSample(BaseModel):
+    id: str
+    name: str
+
+
+class TopicClusterRow(BaseModel):
+    anchor: str
+    anchor_type: str  # person | theme
+    item_count: int
+    distinct_projects: int
+    sample_items: list[ClusterSample]
+
+
+class TopicClustersResult(BaseModel):
+    clusters: list[TopicClusterRow]
+    threshold: int
+    exclude_personal: bool
+    cap: int
+    count: int
+
+
+class HealthIssue(BaseModel):
+    category: str
+    name: str
+    task_id: str
+    deep_link: str
+
+
+class HealthCheckResult(BaseModel):
+    issues: list[HealthIssue]
+    count: int
+    current_date: str
+
+
+# --------------------------------------------------------------------------- #
+# Phase 0 reads — collection / context tools
+# --------------------------------------------------------------------------- #
+
+
+class QueryRow(BaseModel):
+    model_config = ConfigDict(extra="allow")  # context / focus / focus_id per perspective
+    id: str
+    name: str
+    kind: str
+    priority: str
+    due: str
+    tags: list[str] = []
+    parent_id: str | None = None
+    deep_link: str
+
+
+class QueryResult(BaseModel):
+    model_config = ConfigDict(extra="allow")  # context / focus_id echo per perspective
+    perspective: str
+    rows: list[QueryRow]
+    count: int
+
+
+class InboxStateResult(BaseModel):
+    depth: int
+    unprocessed_count: int
+    awaiting_review_count: int
+    approved_unapplied_count: int
+    unprocessed: list[QueryRow]
+    awaiting_review: list[QueryRow]
+    approved_unapplied: list[QueryRow]
+
+
+class WaitingForRow(QueryRow):
+    updated: str
+    stale: bool
+
+
+class WaitingForResult(BaseModel):
+    rows: list[WaitingForRow]
+    count: int
+    stale_count: int
+    current_date: str
+
+
+class ContextTaskView(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str
+    name: str
+    list_id: str
+    taskseries_id: str
+    gtd_type: str
+    kind: str
+    priority: str
+    due: str
+    start: str
+    tags: list[str] = []
+    parent_id: str | None = None
+    notes_count: int
+    deep_link: str
+
+
+class ContextNote(BaseModel):
+    id: str
+    type: str
+    date: str
+    summary: str
+    body: str
+
+
+class SiblingRef(BaseModel):
+    id: str
+    name: str
+    gtd_type: str
+    completed: bool
+    deep_link: str
+
+
+class AncestorRef(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str
+    name: str
+    gtd_type: str
+    deep_link: str
+
+
+class ContextResult(BaseModel):
+    task: ContextTaskView
+    notes: list[ContextNote]
+    siblings: list[SiblingRef]
+    ancestors: list[AncestorRef]
+    depth: str
+
+
+# --------------------------------------------------------------------------- #
 # Envelope schema builder — {data: <Success…> | ErrorData, metadata, analysis?}
 # --------------------------------------------------------------------------- #
 
@@ -717,3 +903,20 @@ CHAT_INFLIGHT_OUTPUT = _envelope_schema("ChatInflightEnvelope", ChatInflightResu
 SET_REDACTION_OUTPUT = _envelope_schema("SetRedactionEnvelope", RedactionResult)
 ENGAGE_SEED_OUTPUT = _envelope_schema("EngageSeedEnvelope", EngageSeedResult)
 ENGAGE_COMMIT_OUTPUT = _envelope_schema("EngageCommitEnvelope", EngageCommitResult)
+
+# GTD Phase 0 reads — detector candidates
+REASSESSMENT_OUTPUT = _envelope_schema("ReassessmentEnvelope", ReassessmentResult)
+UNBLOCK_OUTPUT = _envelope_schema("UnblockEnvelope", UnblockResult)
+DECISION_OUTPUT = _envelope_schema("DecisionEnvelope", LexicalCandidatesResult)
+DELIVERABLE_OUTPUT = _envelope_schema("DeliverableEnvelope", LexicalCandidatesResult)
+RESEARCH_OUTPUT = _envelope_schema("ResearchEnvelope", LexicalCandidatesResult)
+CALENDAR_PREP_OUTPUT = _envelope_schema("CalendarPrepEnvelope", LexicalCandidatesResult)
+CAPTURE_OUTPUT = _envelope_schema("CaptureEnvelope", CaptureResult)
+TOPIC_CLUSTERS_OUTPUT = _envelope_schema("TopicClustersEnvelope", TopicClustersResult)
+HEALTH_CHECK_OUTPUT = _envelope_schema("HealthCheckEnvelope", HealthCheckResult)
+
+# GTD Phase 0 reads — collection / context
+GTD_QUERY_OUTPUT = _envelope_schema("GtdQueryEnvelope", QueryResult, Candidates)
+INBOX_STATE_OUTPUT = _envelope_schema("InboxStateEnvelope", InboxStateResult)
+WAITING_FOR_OUTPUT = _envelope_schema("WaitingForEnvelope", WaitingForResult)
+GTD_CONTEXT_OUTPUT = _envelope_schema("GtdContextEnvelope", ContextResult, Candidates)

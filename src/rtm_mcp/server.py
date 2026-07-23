@@ -241,6 +241,27 @@ This server provides full access to Remember The Milk's task management features
   type-illegal / hallucinated-date / not-found item rejects the whole batch with nothing written. One
   undoable batch. No new tag.
 
+### GTD Phase 0 reads (typed detectors + collection/context — all read-only)
+Native typed ports of the hidden MilkScript detectors, plus new collection/context reads. Each
+returns a compact GTD-shaped projection (typed rows with kind / priority / deep link) instead of a
+raw list_tasks echo; all read-only (only rtm.tasks.getList + the cached settings read).
+- gtd_reassessment_candidates: open #ai_contrib_drafted/#ai_prep_drafted contributions due for
+  reassessment (port of reassessment-candidates.ms).
+- gtd_unblock_candidates: actions that may now be unblockable across five source classes (deferred,
+  overdue waiting-fors, active BLOCKER/DEPENDS-ON notes, stale speculative) — port of unblock-candidates.ms.
+- gtd_decision_candidates / gtd_deliverable_candidates / gtd_research_candidates: incomplete actions
+  whose names read as a decision / deliverable / research task (lexical ports; research defaults to a
+  2-day horizon).
+- gtd_calendar_prep_candidates: upcoming #calendar_entry items needing prep (port of calendar-prep-candidates.ms).
+- gtd_capture_candidates: recent AI contributions whose artefacts may hold promotion candidates.
+- gtd_topic_clusters: cross-project tag/person clusters (candidate emergent projects/themes).
+- gtd_health_check: systemic health audit (stuck projects, missing tags, stale waiting-fors, dated actions).
+- gtd_query: one GTD collection view — next actions by context, today's field, or a focus area's projects.
+- gtd_inbox_state: the three Inbox_Stuff health signals (depth / unprocessed / awaiting-review) in one read.
+- gtd_waiting_for_queue: the waiting-for chase queue with a >14-day staleness flag.
+- gtd_context: the STATE-first note-reading-protocol bundle for one task (task + notes + siblings +
+  ancestry) resolved by id or name.
+
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
   mapping 1:1 to an RTM API method.

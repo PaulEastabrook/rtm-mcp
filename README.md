@@ -460,6 +460,31 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   re-commit of the same steer is idempotent. Every write is transaction-recorded (undoable via
   `batch_undo`); the success echo names each item by id + op only (a redacted item leaks nothing).
 
+##### GTD Phase 0 reads (typed detectors + collection/context — all read-only)
+Native typed ports of the hidden MilkScript detectors (previously run via
+`rtm_run_script_ephemeral`) plus four new collection/context reads. Each returns a **compact,
+GTD-shaped typed projection** (rows carrying `kind` / `priority` / a deep link) rather than a raw
+`list_tasks` echo — ending the large-payload context cost — and each is read-only (only
+`rtm.tasks.getList` + the cached settings read), with a versioned output envelope.
+- `gtd_reassessment_candidates` - open `#ai_contrib_drafted`/`#ai_prep_drafted` contributions due
+  for reassessment (port of `reassessment-candidates.ms`).
+- `gtd_unblock_candidates` - actions that may now be unblockable across five source classes (port of
+  `unblock-candidates.ms`).
+- `gtd_decision_candidates` / `gtd_deliverable_candidates` / `gtd_research_candidates` - incomplete
+  actions whose names read as a decision / deliverable / research task (lexical ports; `research`
+  defaults to a 2-day horizon).
+- `gtd_calendar_prep_candidates` - upcoming `#calendar_entry` items needing prep.
+- `gtd_capture_candidates` - recent AI contributions whose artefacts may hold promotion candidates.
+- `gtd_topic_clusters` - cross-project tag/person clusters (candidate emergent projects/themes).
+- `gtd_health_check` - systemic health audit (stuck projects, missing tags, stale waiting-fors,
+  dated actions) — one broad read (the `.ms` N+1 consolidated).
+- `gtd_query` - one GTD collection view: `next_actions_by_context` | `todays_field` | `focus_projects`.
+- `gtd_inbox_state` - the three `Inbox_Stuff` health signals (depth / unprocessed / awaiting-review)
+  in one read.
+- `gtd_waiting_for_queue` - the waiting-for chase queue with a >14-day staleness flag.
+- `gtd_context` - the STATE-first note-reading-protocol bundle for one task (task + notes + siblings
+  + ancestry), resolved by id or name, breadth controlled by `depth`.
+
 #### Tool naming convention
 Bare verbs (`add_task`, `list_tasks`, `get_task_notes`) are **generic RTM primitives** —
 each maps 1:1 to an RTM API method (RTM's own language). A **`gtd_` prefix** marks a

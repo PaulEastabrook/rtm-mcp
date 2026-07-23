@@ -3000,6 +3000,137 @@ class TestGtdEngageSeed:
         assert data["current_date"]  # today stamped
 
 
+_PHASE0_ARGS: dict[str, dict[str, Any]] = {
+    "gtd_reassessment_candidates": {},
+    "gtd_unblock_candidates": {},
+    "gtd_decision_candidates": {},
+    "gtd_deliverable_candidates": {},
+    "gtd_research_candidates": {},
+    "gtd_calendar_prep_candidates": {},
+    "gtd_capture_candidates": {},
+    "gtd_topic_clusters": {},
+    "gtd_health_check": {},
+    "gtd_query": {},
+    "gtd_inbox_state": {},
+    "gtd_waiting_for_queue": {},
+    "gtd_context": {"task_ref": "Alpha"},
+}
+
+
+class TestGtdPhase0Reads:
+    """Phase 0 typed read tools — read-only call surface + representative output shapes."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name", sorted(_PHASE0_ARGS))
+    async def test_read_only_call_surface(self, gtd_tools, tool_name):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([_ts("s", "10", "Alpha", tags=["action"])]))
+        await tools[tool_name](FakeContext(), **_PHASE0_ARGS[tool_name])
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert methods == {"rtm.tasks.getList"}  # no write, no timeline
+        assert client.record_transaction.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_decision_candidates_shape(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts("t1", "1", "Decide between A and B", tags=["action"]),
+                    _ts("t2", "2", "Buy milk", tags=["action"]),
+                ]
+            )
+        )
+        data = (await tools["gtd_decision_candidates"](FakeContext()))["data"]
+        assert data["count"] == 1
+        row = data["candidates"][0]
+        assert row["name"] == "Decide between A and B"
+        assert row["deep_link"].startswith("http") and row["kind"] == "action"
+
+    @pytest.mark.asyncio
+    async def test_health_check_shape(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([_ts("tp", "p", "Proj", tags=["project"])]))
+        data = (await tools["gtd_health_check"](FakeContext()))["data"]
+        assert data["issues"][0]["category"] == "stuck_project"
+        assert data["current_date"]
+
+    @pytest.mark.asyncio
+    async def test_topic_clusters_shape(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts(f"ts{i}", str(i), f"n{i}", parent=str(i % 3), tags=["action", "acme"])
+                    for i in range(5)
+                ]
+            )
+        )
+        data = (await tools["gtd_topic_clusters"](FakeContext(), threshold=5))["data"]
+        assert data["count"] == 1 and data["clusters"][0]["anchor"] == "acme"
+
+    @pytest.mark.asyncio
+    async def test_query_bad_perspective_typed_error(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([]))
+        res = await tools["gtd_query"](FakeContext(), perspective="nonsense")
+        assert res["data"]["error"]["code"] == "invalid_input"
+
+    @pytest.mark.asyncio
+    async def test_query_todays_field_shape(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [_ts("t1", "1", "Overdue thing", tags=["action"], due="2026-07-20T00:00:00Z")]
+            )
+        )
+        data = (await tools["gtd_query"](FakeContext(), perspective="todays_field"))["data"]
+        assert data["perspective"] == "todays_field" and data["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_inbox_state_shape(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts("t1", "1", "raw"),
+                    _ts("t2", "2", "reviewing", tags=["ai_review"]),
+                    _ts("t3", "3", "approved", tags=["ai_approved"]),
+                ]
+            )
+        )
+        data = (await tools["gtd_inbox_state"](FakeContext()))["data"]
+        assert data["depth"] == 3
+        assert data["unprocessed_count"] == 1
+        assert data["awaiting_review_count"] == 1
+        assert data["approved_unapplied_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_context_miss_typed_error(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist([_ts("t1", "1", "Something", tags=["action"])])
+        )
+        res = await tools["gtd_context"](FakeContext(), task_ref="does-not-exist")
+        assert res["data"]["error"]["code"] == "task_not_found"
+
+    @pytest.mark.asyncio
+    async def test_context_bundle_shape(self, gtd_tools):
+        tools, client = gtd_tools
+        note = {
+            "id": "n1",
+            "created": "2026-07-15T00:00:00Z",
+            "title": "2026-07-15 — STATE — snap",
+            "$t": "b",
+        }
+        client.call = AsyncMock(
+            return_value=_getlist([_ts("t1", "1", "My Task", tags=["action"], notes=[note])])
+        )
+        data = (await tools["gtd_context"](FakeContext(), task_ref="1", depth="shallow"))["data"]
+        assert data["task"]["gtd_type"] == "action"
+        assert data["notes"][0]["type"] == "STATE"
+
+
 class TestGtdApplyEngageCommit:
     @pytest.mark.asyncio
     async def test_next_actions_clears_due(self, gtd_tools):
