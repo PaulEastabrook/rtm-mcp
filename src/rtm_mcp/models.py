@@ -32,6 +32,7 @@ from .canvas_commit import COMMIT_REJECT_REASONS
 from .canvas_create import CREATE_REJECT_REASONS
 from .engage_commit import ENGAGE_REJECT_REASONS
 from .error_codes import ErrorCode
+from .gtd_writes import GTD_WRITE_REJECT_REASONS
 
 
 def _enum_extra(reasons: frozenset[ErrorCode]) -> dict[str, Any]:
@@ -651,6 +652,80 @@ class EngageCommitResult(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Phase 1 writes — the four everyday governed write tools
+# --------------------------------------------------------------------------- #
+
+
+class GtdWriteRejection(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    reason: str = Field(json_schema_extra=_enum_extra(GTD_WRITE_REJECT_REASONS))
+    detail: str = ""
+
+
+class CreateItemResult(BaseModel):
+    """TRUE post-state of the created item — the real id triple RTM returned, never an echo."""
+
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    taskseries_id: str = ""
+    list_id: str = ""
+    name: str = ""
+    kind: str = ""
+    tags: list[str] = []
+    priority: str = ""
+    due: str = ""
+    deep_link: str = ""
+    ready: bool = False
+    missing: list[str] = []
+    advisory: list[str] = []
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+class AddNoteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    note_title: str = ""
+    note_type: str = ""
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+class GtdCaptureResult(BaseModel):
+    """gtd_capture — the TRUE post-state of a raw Inbox_Stuff capture."""
+
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    taskseries_id: str = ""
+    list_id: str = ""
+    name: str = ""
+    list_name: str = ""
+    tags: list[str] = []
+    deep_link: str = ""
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+class TransitionResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    tags: list[str] = []
+    added: list[str] = []
+    removed: list[str] = []
+    signal_stamped: str = ""
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+# --------------------------------------------------------------------------- #
 # Phase 0 reads — detector candidate tools (gtd_*_candidates / clusters / health)
 # --------------------------------------------------------------------------- #
 
@@ -903,6 +978,12 @@ CHAT_INFLIGHT_OUTPUT = _envelope_schema("ChatInflightEnvelope", ChatInflightResu
 SET_REDACTION_OUTPUT = _envelope_schema("SetRedactionEnvelope", RedactionResult)
 ENGAGE_SEED_OUTPUT = _envelope_schema("EngageSeedEnvelope", EngageSeedResult)
 ENGAGE_COMMIT_OUTPUT = _envelope_schema("EngageCommitEnvelope", EngageCommitResult)
+
+# GTD Phase 1 writes
+CREATE_ITEM_OUTPUT = _envelope_schema("CreateItemEnvelope", CreateItemResult, Candidates)
+ADD_NOTE_OUTPUT = _envelope_schema("GtdAddNoteEnvelope", AddNoteResult, Candidates)
+CAPTURE_OUTPUT_SCHEMA = _envelope_schema("GtdCaptureEnvelope", GtdCaptureResult)
+TRANSITION_OUTPUT = _envelope_schema("TransitionEnvelope", TransitionResult, Candidates)
 
 # GTD Phase 0 reads — detector candidates
 REASSESSMENT_OUTPUT = _envelope_schema("ReassessmentEnvelope", ReassessmentResult)

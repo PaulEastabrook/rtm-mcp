@@ -99,14 +99,39 @@ from ..gtd_reads import (
     build_waiting_for_queue,
     resolve_task_ref,
 )
+from ..gtd_writes import (
+    ACTION_CONTEXTS,
+    AI_REVIEW,
+    COMMS_MODES,
+    ENERGY_LEVELS,
+    INBOX_LIST,
+    ITEM_KINDS,
+    JOURNAL_NOTE_TYPES,
+    LIFE_CONTEXTS,
+    MOSCOW_BANDS,
+    MOSCOW_TO_PRIORITY,
+    PROCESSED_LIST,
+    collect_item_tags,
+    collect_transition_tags,
+    format_note_title,
+    item_tags,
+    state_body,
+    validate_add_note,
+    validate_capture,
+    validate_create_item,
+    validate_transition,
+)
 from ..lookup import resolve_list_id
 from ..models import (
+    ADD_NOTE_OUTPUT,
     CALENDAR_PREP_OUTPUT,
     CANVAS_COMMIT_OUTPUT,
     CAPTURE_OUTPUT,
+    CAPTURE_OUTPUT_SCHEMA,
     CHAT_INFLIGHT_OUTPUT,
     CHAT_POST_OUTPUT,
     CHAT_THREAD_OUTPUT,
+    CREATE_ITEM_OUTPUT,
     CREATE_PROJECT_OUTPUT,
     DECISION_OUTPUT,
     DELIVERABLE_OUTPUT,
@@ -124,6 +149,7 @@ from ..models import (
     SET_REDACTION_OUTPUT,
     STAMP_TOKENS_OUTPUT,
     TOPIC_CLUSTERS_OUTPUT,
+    TRANSITION_OUTPUT,
     UNBLOCK_OUTPUT,
     WAITING_FOR_OUTPUT,
 )
@@ -136,6 +162,7 @@ from ..project_plan import (
     _PROJECT_TAG,
     _TEST_TAG,
     REDACTED_TAG,
+    _norm_date,
     build_envelope,
     resolve_focus,
     resolve_project,
@@ -200,6 +227,15 @@ _ENGAGE_ITEM_SCHEMA: dict[str, Any] = {
 # Phase 0 read tools — advisory enums, sourced from the canonical frozensets in gtd_reads.
 _PERSPECTIVE_ENUM: dict[str, Any] = {"enum": sorted(VALID_PERSPECTIVES)}
 _DEPTH_ENUM: dict[str, Any] = {"enum": sorted(VALID_DEPTHS)}
+# Phase 1 write tools — the SEVEN Tier-1 structural vocabularies (D1 shared-kernel promotion),
+# each sourced from its canonical frozenset in gtd_writes so the advertised set cannot drift.
+_LIFE_ENUM: dict[str, Any] = {"enum": sorted(LIFE_CONTEXTS)}
+_KIND_ENUM: dict[str, Any] = {"enum": sorted(ITEM_KINDS)}
+_ACTION_CONTEXT_ENUM: dict[str, Any] = {"enum": sorted(ACTION_CONTEXTS)}
+_ENERGY_ENUM: dict[str, Any] = {"enum": sorted(ENERGY_LEVELS)}
+_COMMS_ENUM: dict[str, Any] = {"enum": sorted(COMMS_MODES)}
+_MOSCOW_ENUM: dict[str, Any] = {"enum": sorted(MOSCOW_BANDS)}
+_NOTE_TYPE_ENUM: dict[str, Any] = {"enum": sorted(JOURNAL_NOTE_TYPES)}
 
 
 def register_gtd_tools(mcp: Any, get_client: Any) -> None:
@@ -2988,4 +3024,716 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         tz = await client.get_timezone()
         return build_response(
             data=build_context(parsed, resolved["task"], depth=depth, timezone=tz)
+        )
+
+    # ======================================================================= #
+    # Phase 1 writes — the four everyday governed write tools
+    # ======================================================================= #
+
+    def _writer(applied: list[dict[str, Any]], errors: list[dict[str, Any]], client: RTMClient):
+        """Build the batch-resilient write closure (the canvas-commit `_write` contract)."""
+
+        async def _write(
+            method: str, label: str, _id: str | None = None, **kwargs: Any
+        ) -> dict[str, Any] | None:
+            try:
+                res = await client.call(method, require_timeline=True, **kwargs)
+                tx_id, undoable = get_transaction_info(res)
+                if tx_id:
+                    client.record_transaction(tx_id, method, undoable, label)
+                applied.append({"op": label, "id": _id, "transaction_id": tx_id})
+                return res
+            except Exception as exc:  # batch resilience: record and continue
+                errors.append({"op": label, "id": _id, "error": str(exc)})
+                return None
+
+        return _write
+
+    def _nearest_project(task: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        """The item's nearest `#project` ancestor (the plan-graph overlay is per project), falling
+        back to the item itself when it is loose."""
+        cur = task
+        for _ in range(10):
+            if _PROJECT_TAG in (cur.get("tags") or []):
+                return cur
+            nxt = by_id.get(str(cur.get("parent_task_id") or ""))
+            if not nxt:
+                return task
+            cur = nxt
+        return task
+
+    async def _resolve_ref(client: RTMClient, task_ref: str, filter_str: str) -> dict[str, Any]:
+        """One read + id-or-name resolution → {"task":…, "parsed":…} | {"candidates":…} | {"error":…}."""
+        parsed = await _getlist(client, filter_str)
+        res = resolve_task_ref(parsed, task_ref)
+        if "task" in res:
+            return {"task": res["task"], "parsed": parsed}
+        if "candidates" in res:
+            return res
+        return build_error(
+            ErrorCode.TASK_NOT_FOUND,
+            f"No task matching '{task_ref}'. Pass a task id, or find it with gtd_query / list_tasks.",
+            query=task_ref,
+        )
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CREATE_ITEM_OUTPUT)
+    async def gtd_create_item(
+        ctx: Context,
+        parent_ref: Annotated[
+            str, Field(description="The parent project/task — a task id (preferred) or a name.")
+        ],
+        kind: Annotated[
+            str,
+            Field(
+                description="What to create: 'action' | 'waiting_for' | 'calendar_entry'. "
+                "(A project is created with gtd_create_project.)",
+                json_schema_extra=_KIND_ENUM,
+            ),
+        ],
+        name: Annotated[
+            str, Field(description="The item's name (written verbatim; never SmartAdd-parsed).")
+        ],
+        life_context: Annotated[
+            str,
+            Field(description="Life context — exactly one per task.", json_schema_extra=_LIFE_ENUM),
+        ],
+        priority: Annotated[
+            str,
+            Field(
+                description="MoSCoW band (RTM's priority field): must | should | could.",
+                json_schema_extra=_MOSCOW_ENUM,
+            ),
+        ],
+        action_context: Annotated[
+            str | None,
+            optional_string(
+                "Action context for an action/calendar entry. Defaults to 'using_device'.",
+                **_ACTION_CONTEXT_ENUM,
+            ),
+        ] = None,
+        energy: Annotated[
+            str | None,
+            optional_string("Energy rating — required for an action.", **_ENERGY_ENUM),
+        ] = None,
+        comms: Annotated[
+            str | None,
+            optional_string(
+                "Mode of communication, when the item is a conversation.", **_COMMS_ENUM
+            ),
+        ] = None,
+        estimate: Annotated[
+            str | None,
+            optional_string("Time estimate (e.g. '30 minutes') — required for an action."),
+        ] = None,
+        due: Annotated[
+            str | None,
+            optional_string(
+                "Due date phrase — resolved server-side via rtm.time.parse. Required for a "
+                "waiting_for (the chase tickle) and a calendar_entry."
+            ),
+        ] = None,
+        context_note: Annotated[
+            str | None, optional_string("Optional CONTEXT note body written on the new item.")
+        ] = None,
+        extra_tags: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema(
+                    "Genuinely-open extra tags. Existence-gated by strict-tag mode; the server "
+                    "never mints a tag, and structural tags are materialised from the typed "
+                    "facets above — do not pass them here."
+                )
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — create ONE clarified item (action / waiting-for / calendar entry) under a parent,
+        atomically: the server materialises the structural tags from typed facets, sets the
+        MoSCoW band, resolves the due phrase, writes an optional CONTEXT note, and stamps the
+        overlay-refresh signal — replacing a 5-6 call generic dance.
+
+        Governed write. Validate-then-apply: enum membership, list writability, the
+        Definition-of-Ready for the kind, and the strict-tag existence gate all run BEFORE any
+        mutation — a rejected create writes NOTHING. Every write is transaction-recorded, so the
+        whole item is revertible with batch_undo. Stamps `#ai_conversation` on the item and
+        `#ai_overlay_refresh_needed` on its nearest `#project` ancestor so the gtd engine
+        refreshes the plan-graph overlay on its next scan (the server stamps the durable signal;
+        it never invokes a gtd agent).
+
+        DoR is HARD-GATED (Paul's decision 2026-07-23; note gtd's own catalogue treats DoR as
+        report-and-resolve). Required per kind — action: life_context + estimate + energy +
+        priority; waiting_for: life_context + priority + due; calendar_entry: life_context +
+        priority + due. `action_context` is satisfied by the documented 'using_device' default.
+        The `relational` axis is REPORTED in `advisory`, not gated (DEPENDS-ON authoring is a
+        later phase).
+
+        Args:
+            parent_ref: the parent project/task (id preferred; a name resolves, ambiguous →
+                candidates).
+            kind: action | waiting_for | calendar_entry. A calendar entry is materialised as
+                `action` + `calendar_entry` (calendar_entry is a Special Tag, not a workflow state).
+            name: the item name, written verbatim (parse is disabled so a '#token' cannot mint a tag).
+            life_context / priority: required structural facets.
+            action_context / energy / comms / estimate / due / context_note / extra_tags: see each.
+
+        Returns (on success): the TRUE post-state — {"task_id", "taskseries_id", "list_id",
+            "name", "kind", "tags", "priority", "due", "deep_link", "ready", "missing",
+            "advisory", "applied", "errors", "message"} — the real id triple RTM returned,
+            never an echo of the request.
+        Returns (on ambiguity): {"candidates": [{id, name, list_id}]} — call again with an id.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail, …}], …} where
+            reason ∈ "invalid_input" | "invalid_life" | "missing_name" | "dor_not_met" |
+            "smart_list_target" | "strict_tag_rejected" | "bad_date" | "list_not_found".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}} — branch on
+            `error.code`, never the prose.
+        """
+        client: RTMClient = await get_client()
+        extra = coerce_json(extra_tags) or []
+
+        ref = await _resolve_ref(client, parent_ref, "status:incomplete")
+        if "task" not in ref:
+            return build_response(data=ref)
+        parent = ref["task"]
+        by_id = {str(t.get("id")): t for t in ref["parsed"]}
+
+        processed = await resolve_list_id(client, PROCESSED_LIST)
+        processed_ok = "error" not in processed and not (processed.get("list") or {}).get("smart")
+
+        val = validate_create_item(
+            kind=kind,
+            name=name,
+            life_context=life_context,
+            action_context=action_context,
+            energy=energy,
+            comms=comms,
+            priority=priority,
+            estimate=estimate,
+            due=due,
+            processed_ok=processed_ok,
+        )
+        rejections = list(val["rejections"])
+
+        # Dates resolve through rtm.time.parse BEFORE any write — a hallucinated phrase is a
+        # bad_date rejection, never a written date.
+        tz = await client.get_timezone()
+        due_iso = ""
+        if due and not rejections:
+            params: dict[str, Any] = {"text": due}
+            if tz:
+                params["timezone"] = tz
+            try:
+                pres = await client.call("rtm.time.parse", **params)
+                due_iso = ((pres.get("time") or {}) if isinstance(pres, dict) else {}).get(
+                    "$t"
+                ) or ""
+            except Exception:
+                due_iso = ""
+            if not due_iso:
+                rejections.append(
+                    {"reason": ErrorCode.BAD_DATE.value, "detail": f"could not resolve due '{due}'"}
+                )
+
+        tags = item_tags(
+            kind,
+            life_context,
+            action_context=action_context,
+            energy=energy,
+            comms=comms,
+            extra_tags=extra,
+        )
+        if not rejections:
+            gate = await enforce_strict_tags(
+                client,
+                sorted(
+                    collect_item_tags(
+                        kind,
+                        life_context,
+                        action_context=action_context,
+                        energy=energy,
+                        comms=comms,
+                        extra_tags=extra,
+                    )
+                    | {OVERLAY_REFRESH}
+                ),
+                tool="gtd_create_item",
+            )
+            if gate:
+                rejections.append(as_rejection(gate))
+
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "ready": not val["missing"],
+                    "missing": val["missing"],
+                    "advisory": val["advisory"],
+                    "message": "Create rejected; nothing was written.",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+
+        res = await _write(
+            "rtm.tasks.add",
+            f"create:{name[:40]}",
+            None,
+            name=name,
+            parse="0",
+            parent_task_id=parent.get("id"),
+        )
+        new = (parse_tasks_response(res) if res else [{}]) or [{}]
+        created = new[0]
+        cid = created.get("id")
+        if not cid:
+            return build_response(
+                data={
+                    "applied": applied,
+                    "errors": errors or [{"op": "create", "error": "no id returned"}],
+                    "ready": False,
+                    "missing": val["missing"],
+                    "advisory": val["advisory"],
+                    "message": "Create failed; no task id returned.",
+                },
+                timeline_id=client.timeline_id,
+            )
+        nid = {
+            "task_id": cid,
+            "taskseries_id": created.get("taskseries_id"),
+            "list_id": created.get("list_id"),
+        }
+
+        await _write("rtm.tasks.setTags", "create:tags", cid, tags=",".join(tags), **nid)
+        await _write(
+            "rtm.tasks.setPriority",
+            "create:priority",
+            cid,
+            priority=MOSCOW_TO_PRIORITY[priority],
+            **nid,
+        )
+        if estimate:
+            await _write("rtm.tasks.setEstimate", "create:estimate", cid, estimate=estimate, **nid)
+        if due_iso:
+            await _write("rtm.tasks.setDueDate", "create:due", cid, due=due_iso, parse="0", **nid)
+        if context_note:
+            today = _account_today(tz)
+            await _write(
+                "rtm.tasks.notes.add",
+                "create:context-note",
+                cid,
+                note_title=format_note_title("CONTEXT", name[:60], date=today),
+                note_text=context_note,
+                **nid,
+            )
+
+        # Durable orchestration signal — stamped, never fired (the server cannot run a gtd agent).
+        proj = _nearest_project(parent, by_id)
+        await _write(
+            "rtm.tasks.addTags",
+            "create:overlay-refresh",
+            str(proj.get("id")),
+            tags=OVERLAY_REFRESH,
+            task_id=proj.get("id"),
+            taskseries_id=proj.get("taskseries_id"),
+            list_id=proj.get("list_id"),
+        )
+
+        return build_response(
+            data={
+                "task_id": cid,
+                "taskseries_id": str(nid["taskseries_id"] or ""),
+                "list_id": str(nid["list_id"] or ""),
+                "name": name,
+                "kind": kind,
+                "tags": tags,
+                "priority": MOSCOW_TO_PRIORITY[priority],
+                "due": _norm_date(due_iso, tz) if due_iso else "",
+                "deep_link": build_task_url(
+                    str(nid["list_id"] or ""), [str(parent.get("id")), str(cid)]
+                ),
+                "ready": True,
+                "missing": [],
+                "advisory": val["advisory"],
+                "applied": applied,
+                "errors": errors,
+                "message": f"Created {kind} '{name}' with {len(applied)} write(s).",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ADD_NOTE_OUTPUT)
+    async def gtd_add_note(
+        ctx: Context,
+        task_ref: Annotated[
+            str, Field(description="The task to journal against — a task id (preferred) or a name.")
+        ],
+        note_type: Annotated[
+            str,
+            Field(
+                description="The journalling note TYPE. Side-effect types (DEPENDS-ON, OUTPUT, "
+                "CHAT, ORDER) have their own tools and are not accepted here.",
+                json_schema_extra=_NOTE_TYPE_ENUM,
+            ),
+        ],
+        summary: Annotated[str, Field(description="The title's brief summary (after the TYPE).")],
+        body: Annotated[str, Field(description="The note body (the narrative).")] = "",
+        timestamp: Annotated[
+            bool,
+            Field(description="Include HH:MM in the title (default False — date only)."),
+        ] = False,
+    ) -> dict[str, Any]:
+        """GTD — write a conforming journal note on a task: the server builds the
+        `YYYY-MM-DD [HH:MM] — TYPE — summary` title and validates the body's block order, so a
+        malformed note can't reach RTM.
+
+        Governed write. Validate-then-apply — an unknown TYPE, an empty summary or an
+        out-of-order body block rejects with NOTHING written. The write is
+        transaction-recorded (revert with undo / batch_undo).
+
+        Note shape enforced: the em-dash title grammar (never en-dash), and the fixed body block
+        order narrative → `--- Sources ---` → `--- AI Context ---`. A STATE note additionally
+        gets its `Snapshot as of: <date>` marker prepended; STATE is LATEST-WINS — the prior
+        STATE note is never deleted or retitled (older snapshots remain as history).
+
+        Args:
+            task_ref: the task (id preferred; a name resolves, ambiguous → candidates).
+            note_type / summary / body / timestamp: see each.
+
+        Returns (on success): {"task_id", "note_title", "note_type", "applied", "errors",
+            "message"} — the title the server actually wrote.
+        Returns (on ambiguity): {"candidates": [{id, name, list_id}]} — call again with an id.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "invalid_note_type" | "invalid_block_order" | "missing_parameter".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}} — branch on
+            `error.code`, never the prose.
+        """
+        client: RTMClient = await get_client()
+        rejections = validate_add_note(note_type=note_type, summary=summary, body=body)
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "message": "Note rejected; nothing was written.",
+                }
+            )
+        ref = await _resolve_ref(client, task_ref, "status:incomplete OR status:completed")
+        if "task" not in ref:
+            return build_response(data=ref)
+        task = ref["task"]
+
+        tz = await client.get_timezone()
+        today = _account_today(tz)
+        time_part = None
+        if timestamp:
+            try:
+                time_part = datetime.now(ZoneInfo(tz)).strftime("%H:%M") if tz else None
+            except Exception:
+                time_part = None
+        title = format_note_title(note_type, summary, date=today, time=time_part)
+        text = state_body(body, date=today) if note_type == "STATE" else body
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        await _write(
+            "rtm.tasks.notes.add",
+            f"note:{note_type}",
+            str(task.get("id")),
+            note_title=title,
+            note_text=text,
+            task_id=task.get("id"),
+            taskseries_id=task.get("taskseries_id"),
+            list_id=task.get("list_id"),
+        )
+        return build_response(
+            data={
+                "task_id": str(task.get("id")),
+                "note_title": title,
+                "note_type": note_type,
+                "applied": applied,
+                "errors": errors,
+                "message": f"Wrote a {note_type} note.",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CAPTURE_OUTPUT_SCHEMA)
+    async def gtd_capture(
+        ctx: Context,
+        text: Annotated[str, Field(description="The raw capture text, written verbatim.")],
+        source_type: Annotated[
+            str | None,
+            optional_string(
+                "What the capture came from (default 'conversational capture') — becomes the "
+                "SOURCE note's summary."
+            ),
+        ] = None,
+        source_body: Annotated[
+            str | None,
+            optional_string(
+                "SOURCE note body — the verbatim trigger/provenance. Defaults to `text`."
+            ),
+        ] = None,
+        pre_analysis: Annotated[
+            str | None,
+            optional_string(
+                "Programmatic-submission variant: a pre-filled analysis body. Adds an AI ANALYSIS "
+                "note and the `ai_review` pipeline tag so the item enters the review queue."
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — capture raw stuff onto Inbox_Stuff atomically: the task (verbatim, never
+        SmartAdd-parsed) + its SOURCE provenance note + the pipeline tag, in one call.
+
+        Governed write. Capture-first: the item is staged RAW — the server applies
+        `#ai_conversation` (plus `ai_review` only for the pre-analysis variant) and
+        deliberately NO life-context or workflow-state tags. Classifying a capture is the
+        Inbox_Stuff Executor's job at clarify time, so this tool cannot do it: there is no
+        tag parameter to pass. Every write is transaction-recorded (revert with batch_undo).
+
+        Args:
+            text: the raw capture, written verbatim (parse disabled).
+            source_type / source_body / pre_analysis: see each.
+
+        Returns (on success): the TRUE post-state — {"task_id", "taskseries_id", "list_id",
+            "name", "list_name", "tags", "deep_link", "applied", "errors", "message"}.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "missing_parameter" | "strict_tag_rejected" | "list_not_found" |
+            "smart_list_target". Note a list-resolution failure is folded into `rejected[]` as
+            "list_not_found" rather than surfacing as a nested {"error": {"code", "message"}}
+            envelope — this tool has no name-resolution miss path, so branch on
+            `rejected[].reason`.
+        """
+        client: RTMClient = await get_client()
+        rejections = validate_capture(text=text)
+
+        inbox = await resolve_list_id(client, INBOX_LIST)
+        if "error" in inbox:
+            rejections.append(
+                {"reason": ErrorCode.LIST_NOT_FOUND.value, "detail": f"{INBOX_LIST} not found"}
+            )
+        elif (inbox.get("list") or {}).get("smart"):
+            rejections.append(
+                {
+                    "reason": ErrorCode.SMART_LIST_TARGET.value,
+                    "detail": f"{INBOX_LIST} is a smart list",
+                }
+            )
+
+        tags = [AI_CONVERSATION] + ([AI_REVIEW] if pre_analysis else [])
+        if not rejections:
+            gate = await enforce_strict_tags(client, sorted(tags), tool="gtd_capture")
+            if gate:
+                rejections.append(as_rejection(gate))
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "message": "Capture rejected; nothing was written.",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        tz = await client.get_timezone()
+        today = _account_today(tz)
+
+        res = await _write(
+            "rtm.tasks.add",
+            f"capture:{text[:40]}",
+            None,
+            name=text,
+            parse="0",
+            list_id=inbox["list_id"],
+        )
+        new = (parse_tasks_response(res) if res else [{}]) or [{}]
+        created = new[0]
+        cid = created.get("id")
+        if not cid:
+            return build_response(
+                data={
+                    "applied": applied,
+                    "errors": errors or [{"op": "capture", "error": "no id returned"}],
+                    "message": "Capture failed; no task id returned.",
+                },
+                timeline_id=client.timeline_id,
+            )
+        nid = {
+            "task_id": cid,
+            "taskseries_id": created.get("taskseries_id"),
+            "list_id": created.get("list_id"),
+        }
+        await _write(
+            "rtm.tasks.notes.add",
+            "capture:source",
+            cid,
+            note_title=format_note_title(
+                "SOURCE", source_type or "conversational capture", date=today
+            ),
+            note_text=source_body or text,
+            **nid,
+        )
+        if pre_analysis:
+            await _write(
+                "rtm.tasks.notes.add",
+                "capture:analysis",
+                cid,
+                note_title=format_note_title("AI ANALYSIS", "proposed disposition", date=today),
+                note_text=pre_analysis,
+                **nid,
+            )
+        await _write("rtm.tasks.setTags", "capture:tags", cid, tags=",".join(tags), **nid)
+
+        return build_response(
+            data={
+                "task_id": cid,
+                "taskseries_id": str(nid["taskseries_id"] or ""),
+                "list_id": str(nid["list_id"] or ""),
+                "name": text,
+                "list_name": INBOX_LIST,
+                "tags": tags,
+                "deep_link": build_task_url(str(nid["list_id"] or ""), [str(cid)]),
+                "applied": applied,
+                "errors": errors,
+                "message": f"Captured to {INBOX_LIST} with {len(applied)} write(s).",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TRANSITION_OUTPUT)
+    async def gtd_transition_state(
+        ctx: Context,
+        task_ref: Annotated[
+            str, Field(description="The task to transition — a task id (preferred) or a name.")
+        ],
+        add_tags: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema(
+                    "Tags to add. Existence-gated by strict-tag mode — the server never mints a tag."
+                )
+            ),
+        ] = None,
+        remove_tags: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema("Tags to remove. Never gated — removal reduces entropy.")
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — apply a validated tag transition AND stamp the durable orchestration signal in the
+        same governed call, so the caller no longer carries the remembered-fire responsibility.
+
+        Governed write. Validate-then-apply — the transition is checked against the structural
+        "exactly one per task" invariants (workflow state, life context, action context, energy)
+        computed over the RESULTING tag set, and additions pass the strict-tag existence gate.
+        A rejected transition writes NOTHING. Each write is transaction-recorded (batch_undo).
+
+        The signal: `#ai_overlay_refresh_needed` is stamped on the item's nearest `#project`
+        ancestor on EVERY successful transition (the simple, safe form — mildly over-eager
+        rather than depending on a progress-ability tag set that is not fully canonical
+        account-side). The server stamps the durable signal; the gtd engine drains it on its
+        next scan. The server never invokes a gtd agent.
+
+        Args:
+            task_ref: the task (id preferred; a name resolves, ambiguous → candidates).
+            add_tags / remove_tags: at least one must be non-empty.
+
+        Returns (on success): the TRUE post-state — {"task_id", "tags" (resulting), "added",
+            "removed", "signal_stamped", "applied", "errors", "message"}.
+        Returns (on ambiguity): {"candidates": [{id, name, list_id}]} — call again with an id.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "invalid_input" | "missing_parameter" | "strict_tag_rejected".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}} — branch on
+            `error.code`, never the prose.
+        """
+        client: RTMClient = await get_client()
+        add = [t for t in (coerce_json(add_tags) or []) if str(t).strip()]
+        remove = [t for t in (coerce_json(remove_tags) or []) if str(t).strip()]
+
+        ref = await _resolve_ref(client, task_ref, "status:incomplete OR status:completed")
+        if "task" not in ref:
+            return build_response(data=ref)
+        task = ref["task"]
+        by_id = {str(t.get("id")): t for t in ref["parsed"]}
+        existing = list(task.get("tags") or [])
+
+        rejections = validate_transition(add_tags=add, remove_tags=remove, existing=existing)
+        if not rejections and add:
+            gate = await enforce_strict_tags(
+                client, sorted(collect_transition_tags(add)), tool="gtd_transition_state"
+            )
+            if gate:
+                rejections.append(as_rejection(gate))
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "task_id": str(task.get("id")),
+                    "tags": existing,
+                    "message": "Transition rejected; nothing was written.",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        ids = {
+            "task_id": task.get("id"),
+            "taskseries_id": task.get("taskseries_id"),
+            "list_id": task.get("list_id"),
+        }
+        if remove:
+            await _write(
+                "rtm.tasks.removeTags",
+                "transition:remove",
+                str(task.get("id")),
+                tags=",".join(remove),
+                **ids,
+            )
+        add_with_marker = sorted(set(add) | {AI_CONVERSATION})
+        await _write(
+            "rtm.tasks.addTags",
+            "transition:add",
+            str(task.get("id")),
+            tags=",".join(add_with_marker),
+            **ids,
+        )
+
+        proj = _nearest_project(task, by_id)
+        await _write(
+            "rtm.tasks.addTags",
+            "transition:overlay-refresh",
+            str(proj.get("id")),
+            tags=OVERLAY_REFRESH,
+            task_id=proj.get("id"),
+            taskseries_id=proj.get("taskseries_id"),
+            list_id=proj.get("list_id"),
+        )
+
+        resulting = sorted((set(existing) - set(remove)) | set(add_with_marker))
+        return build_response(
+            data={
+                "task_id": str(task.get("id")),
+                "tags": resulting,
+                "added": add_with_marker,
+                "removed": sorted(remove),
+                "signal_stamped": OVERLAY_REFRESH,
+                "applied": applied,
+                "errors": errors,
+                "message": f"Transition applied with {len(applied)} write(s).",
+            },
+            timeline_id=client.timeline_id,
         )

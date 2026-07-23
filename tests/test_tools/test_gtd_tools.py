@@ -3017,6 +3017,364 @@ _PHASE0_ARGS: dict[str, dict[str, Any]] = {
 }
 
 
+INBOX_ID = "51526642"
+
+
+def _write_lists():
+    """Both lists the Phase-1 write tools resolve."""
+    base = {
+        "deleted": "0",
+        "locked": "0",
+        "archived": "0",
+        "position": "0",
+        "filter": "",
+        "sort_order": "0",
+    }
+    return {
+        "lists": {
+            "list": [
+                {"id": LIST_ID, "name": "Processed", "smart": "0", **base},
+                {"id": INBOX_ID, "name": "Inbox_Stuff", "smart": "0", **base},
+            ]
+        }
+    }
+
+
+def _write_account():
+    """A project with one child — the parent a create/transition targets."""
+    return _getlist(
+        [
+            _ts("tsP", PROJECT_ID, "Some Project", parent=AREA_ID, tags=["work", "project"]),
+            _ts("ts1", "1001", "Existing action", parent=PROJECT_ID, tags=["work", "action"]),
+        ]
+    )
+
+
+def _write_dispatch(tree, *, parsed_time="2026-08-01T09:00:00Z", new_id="new1"):
+    """Route reads to the tree/lists, rtm.tasks.add to a fresh id, parse to a fixed ISO."""
+    calls = {"n": 0}
+
+    async def dispatch(method, **kwargs):
+        if method == "rtm.tasks.getList":
+            return tree
+        if method == "rtm.lists.getList":
+            return _write_lists()
+        if method == "rtm.time.parse":
+            return {"time": {"$t": parsed_time}} if parsed_time else {"time": {}}
+        if method == "rtm.tasks.add":
+            calls["n"] += 1
+            return {
+                "transaction": {"id": f"tx_add{calls['n']}", "undoable": "1"},
+                "list": {
+                    "id": kwargs.get("list_id") or LIST_ID,
+                    "taskseries": {
+                        "id": f"ts_{new_id}",
+                        "name": kwargs.get("name", ""),
+                        "created": "2026-07-23T00:00:00Z",
+                        "modified": "2026-07-23T00:00:00Z",
+                        "tags": [],
+                        "notes": [],
+                        "parent_task_id": kwargs.get("parent_task_id", ""),
+                        "task": {
+                            "id": new_id,
+                            "due": "",
+                            "completed": "",
+                            "priority": "N",
+                            "postponed": "0",
+                            "estimate": "",
+                            "start": "",
+                            "has_due_time": "0",
+                            "has_start_time": "0",
+                            "deleted": "",
+                        },
+                    },
+                },
+            }
+        return {"transaction": {"id": f"tx_{method.rsplit('.', 1)[-1]}", "undoable": "1"}}
+
+    return dispatch
+
+
+def _methods(client):
+    return [c.args[0] for c in client.call.call_args_list if c.args]
+
+
+def _kw_for(client, method):
+    return [c.kwargs for c in client.call.call_args_list if c.args and c.args[0] == method]
+
+
+class TestGtdCreateItem:
+    @pytest.mark.asyncio
+    async def test_creates_action_with_materialised_tags_and_true_post_state(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+
+        res = await tools["gtd_create_item"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="action",
+            name="Write the thing",
+            life_context="work",
+            priority="must",
+            energy="low_energy",
+            estimate="30 minutes",
+        )
+        data = res["data"]
+        assert "rejected" not in data
+        # TRUE post-state: the real id triple RTM returned
+        assert data["task_id"] == "new1" and data["taskseries_id"] == "ts_new1"
+        assert data["ready"] is True and data["deep_link"].startswith("http")
+        # structural tags materialised from typed facets
+        assert {"action", "work", "using_device", "low_energy", "ai_conversation"} <= set(
+            data["tags"]
+        )
+        # created under the parent, name verbatim, SmartAdd disabled
+        add = _kw_for(client, "rtm.tasks.add")[0]
+        assert add["parent_task_id"] == PROJECT_ID and add["parse"] == "0"
+        assert add["name"] == "Write the thing"
+        # MoSCoW must -> RTM priority 1
+        assert _kw_for(client, "rtm.tasks.setPriority")[0]["priority"] == "1"
+        # durable orchestration signal on the nearest #project ancestor
+        stamps = [
+            k
+            for k in _kw_for(client, "rtm.tasks.addTags")
+            if k["tags"] == "ai_overlay_refresh_needed"
+        ]
+        assert stamps and stamps[0]["task_id"] == PROJECT_ID
+        assert client.record_transaction.called
+
+    @pytest.mark.asyncio
+    async def test_calendar_entry_carries_action_and_calendar_tag(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_create_item"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="calendar_entry",
+            name="Board meeting",
+            life_context="work",
+            priority="should",
+            due="1 August",
+        )
+        tags = set(res["data"]["tags"])
+        assert {"action", "calendar_entry"} <= tags
+
+    @pytest.mark.asyncio
+    async def test_dor_gap_rejects_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_create_item"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="action",
+            name="Half-baked",
+            life_context="work",
+            priority="must",  # no estimate, no energy
+        )
+        data = res["data"]
+        assert "dor_not_met" in {r["reason"] for r in data["rejected"]}
+        assert set(data["missing"]) == {"estimate", "energy"}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_off_enum_rejects_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_create_item"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="action",
+            name="X",
+            life_context="urgent",
+            priority="must",
+            energy="low_energy",
+            estimate="5 minutes",
+        )
+        assert "invalid_life" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_due_rejects_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account(), parsed_time=None))
+        res = await tools["gtd_create_item"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="waiting_for",
+            name="Waiting for Bob",
+            life_context="work",
+            priority="must",
+            due="the 32nd of Smarch",
+        )
+        assert "bad_date" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_unknown_parent_errors_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_create_item"](
+            FakeContext(),
+            parent_ref="no-such-parent",
+            kind="action",
+            name="X",
+            life_context="work",
+            priority="must",
+            energy="low_energy",
+            estimate="5 minutes",
+        )
+        assert res["data"]["error"]["code"] == "task_not_found"
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+
+class TestGtdAddNote:
+    @pytest.mark.asyncio
+    async def test_writes_conforming_title(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_add_note"](
+            FakeContext(),
+            task_ref="1001",
+            note_type="PROGRESS",
+            summary="did a thing",
+            body="narrative",
+        )
+        title = res["data"]["note_title"]
+        assert " — PROGRESS — did a thing" in title
+        note = _kw_for(client, "rtm.tasks.notes.add")[0]
+        assert note["task_id"] == "1001" and note["note_title"] == title
+        assert client.record_transaction.called
+
+    @pytest.mark.asyncio
+    async def test_state_note_gets_snapshot_marker(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        await tools["gtd_add_note"](
+            FakeContext(), task_ref="1001", note_type="STATE", summary="snap", body="where we are"
+        )
+        note = _kw_for(client, "rtm.tasks.notes.add")[0]
+        assert note["note_text"].startswith("Snapshot as of: ")
+        # latest-wins: the prior STATE note is never deleted
+        assert "rtm.tasks.notes.delete" not in _methods(client)
+
+    @pytest.mark.asyncio
+    async def test_side_effect_note_type_rejected_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_add_note"](
+            FakeContext(), task_ref="1001", note_type="DEPENDS-ON", summary="x", body=""
+        )
+        assert "invalid_note_type" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_bad_block_order_rejected_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_add_note"](
+            FakeContext(),
+            task_ref="1001",
+            note_type="PROGRESS",
+            summary="x",
+            body="n\n--- AI Context ---\nk: v\n--- Sources ---\n- a",
+        )
+        assert "invalid_block_order" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+
+class TestGtdCapture:
+    @pytest.mark.asyncio
+    async def test_captures_raw_with_source_note_and_no_classification(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_capture"](FakeContext(), text="Remember the thing")
+        data = res["data"]
+        assert data["list_name"] == "Inbox_Stuff" and data["task_id"] == "new1"
+        # staged RAW: pipeline provenance only, no life-context / workflow-state tag
+        assert data["tags"] == ["ai_conversation"]
+        add = _kw_for(client, "rtm.tasks.add")[0]
+        assert add["list_id"] == INBOX_ID and add["parse"] == "0"
+        src = _kw_for(client, "rtm.tasks.notes.add")[0]
+        assert " — SOURCE — conversational capture" in src["note_title"]
+        assert src["note_text"] == "Remember the thing"
+
+    @pytest.mark.asyncio
+    async def test_pre_analysis_adds_ai_analysis_note_and_review_tag(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_capture"](
+            FakeContext(),
+            text="Batch remediation",
+            source_type="consumer remediation",
+            pre_analysis="proposed: do X",
+        )
+        assert set(res["data"]["tags"]) == {"ai_conversation", "ai_review"}
+        titles = [k["note_title"] for k in _kw_for(client, "rtm.tasks.notes.add")]
+        assert any(" — AI ANALYSIS — proposed disposition" in t for t in titles)
+        assert any(" — SOURCE — consumer remediation" in t for t in titles)
+
+    @pytest.mark.asyncio
+    async def test_empty_text_rejected_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_capture"](FakeContext(), text="   ")
+        assert "missing_parameter" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+
+class TestGtdTransitionState:
+    @pytest.mark.asyncio
+    async def test_applies_transition_and_stamps_signal(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_transition_state"](
+            FakeContext(), task_ref="1001", add_tags=["someday"], remove_tags=["action"]
+        )
+        data = res["data"]
+        assert data["signal_stamped"] == "ai_overlay_refresh_needed"
+        assert "someday" in data["tags"] and "action" not in data["tags"]
+        assert _kw_for(client, "rtm.tasks.removeTags")[0]["tags"] == "action"
+        stamps = [
+            k
+            for k in _kw_for(client, "rtm.tasks.addTags")
+            if k["tags"] == "ai_overlay_refresh_needed"
+        ]
+        assert stamps and stamps[0]["task_id"] == PROJECT_ID  # nearest #project ancestor
+        assert client.record_transaction.called
+
+    @pytest.mark.asyncio
+    async def test_double_workflow_state_rejected_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_transition_state"](
+            FakeContext(),
+            task_ref="1001",
+            add_tags=["someday"],  # existing already has `action`
+        )
+        assert "invalid_input" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_empty_transition_rejected_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_transition_state"](FakeContext(), task_ref="1001")
+        assert "missing_parameter" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_strict_tag_rejection_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=True)
+        client.get_account_tags = AsyncMock(return_value={"action", "ai_conversation"})
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_transition_state"](
+            FakeContext(), task_ref="1001", add_tags=["brand_new_tag"], remove_tags=["action"]
+        )
+        assert "strict_tag_rejected" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+
 class TestGtdPhase0Reads:
     """Phase 0 typed read tools — read-only call surface + representative output shapes."""
 

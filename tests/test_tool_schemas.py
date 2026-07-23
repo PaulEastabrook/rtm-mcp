@@ -18,6 +18,16 @@ from rtm_mcp.canvas_create import CREATE_REJECT_REASONS
 from rtm_mcp.engage_commit import ENGAGE_REJECT_REASONS, VERDICT_FAMILY
 from rtm_mcp.gtd_chat import VALID_MODES, VALID_ROLES
 from rtm_mcp.gtd_reads import VALID_DEPTHS, VALID_PERSPECTIVES
+from rtm_mcp.gtd_writes import (
+    ACTION_CONTEXTS,
+    COMMS_MODES,
+    ENERGY_LEVELS,
+    GTD_WRITE_REJECT_REASONS,
+    ITEM_KINDS,
+    JOURNAL_NOTE_TYPES,
+    LIFE_CONTEXTS,
+    MOSCOW_BANDS,
+)
 from rtm_mcp.parsers import PRIORITY_INPUT_CODES
 from rtm_mcp.server import mcp
 from rtm_mcp.tools.tasks import MOVE_DIRECTIONS
@@ -294,6 +304,19 @@ class TestClosedVocabularyEnums:
     async def test_context_depth_enum(self):
         assert (await _props("gtd_context"))["depth"]["enum"] == sorted(VALID_DEPTHS)
 
+    async def test_tier1_vocabulary_enums_match_canonical_constants(self):
+        """The D1 shared-kernel promotion: all SEVEN structural GTD vocabularies are now
+        server-owned, and every advertised enum EQUALS its canonical frozenset — so the schema
+        can never drift from what the handler validates."""
+        create = await _props("gtd_create_item")
+        assert create["life_context"]["enum"] == sorted(LIFE_CONTEXTS)
+        assert create["kind"]["enum"] == sorted(ITEM_KINDS)
+        assert create["action_context"]["enum"] == sorted(ACTION_CONTEXTS)
+        assert create["energy"]["enum"] == sorted(ENERGY_LEVELS)
+        assert create["comms"]["enum"] == sorted(COMMS_MODES)
+        assert create["priority"]["enum"] == sorted(MOSCOW_BANDS)
+        assert (await _props("gtd_add_note"))["note_type"]["enum"] == sorted(JOURNAL_NOTE_TYPES)
+
 
 class TestStructuredParams:
     """Complex coercion params still advertise a clean single-typed schema (no anyOf/null) AND a
@@ -355,6 +378,9 @@ class TestOutputSchemas:
         assert reason_enum("gtd_create_project", "CreateRejection") == sorted(CREATE_REJECT_REASONS)
         assert reason_enum("gtd_apply_engage_commit", "EngageRejection") == sorted(
             ENGAGE_REJECT_REASONS
+        )
+        assert reason_enum("gtd_create_item", "GtdWriteRejection") == sorted(
+            GTD_WRITE_REJECT_REASONS
         )
 
 

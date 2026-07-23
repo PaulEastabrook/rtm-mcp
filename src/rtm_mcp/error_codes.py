@@ -98,6 +98,9 @@ class ErrorCode(str, Enum):
     BAD_DATE = "bad_date"  # a date phrase rtm.time.parse could not resolve
     OFF_ENUM = "off_enum"  # LOCKSTEP: engage verdict outside the enum
     UNKNOWN_KIND = "unknown_kind"  # LOCKSTEP: engage item kind unrecognised
+    DOR_NOT_MET = "dor_not_met"  # Phase 1: a create missing a Definition-of-Ready axis
+    INVALID_NOTE_TYPE = "invalid_note_type"  # note_type outside the journalling vocabulary
+    INVALID_BLOCK_ORDER = "invalid_block_order"  # note body blocks out of the fixed order
     TYPE_ILLEGAL = "type_illegal"  # LOCKSTEP: verdict illegal for this item's kind
 
     # --------------------------------------------------------------------- state

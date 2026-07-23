@@ -485,6 +485,30 @@ GTD-shaped typed projection** (rows carrying `kind` / `priority` / a deep link) 
 - `gtd_context` - the STATE-first note-reading-protocol bundle for one task (task + notes + siblings
   + ancestry), resolved by id or name, breadth controlled by `depth`.
 
+##### GTD Phase 1 writes (governed, additive — the everyday write path)
+Four governed write tools collapsing the generic multi-call dance into one atomic call:
+validate-then-apply (**a rejected write mutates nothing**), **true post-state** (the real id triple
+RTM returned, never a pre-write echo — the `move_task` stale-echo class of bug), and the durable
+orchestration signal stamped atomically. These carry the **Tier-1 shared-kernel promotion**: the
+seven structural GTD vocabularies (`life_context`, `kind`, `action_context`, `energy`, `comms`,
+MoSCoW `priority`, `note_type`) are now **server-owned** advisory enums, asserted drift-proof.
+- `gtd_create_item` - create one clarified `action` / `waiting_for` / `calendar_entry` under a
+  parent. The server materialises the structural tags from typed facets (a calendar entry gets
+  `action` **+** `calendar_entry` — `calendar_entry` is a Special Tag, not a workflow state), sets
+  the MoSCoW band on RTM's priority field, resolves the due phrase via `parse_time` **before** any
+  write, writes an optional CONTEXT note, and stamps `#ai_overlay_refresh_needed` on the nearest
+  `#project` ancestor. **Definition-of-Ready is hard-gated** per kind.
+- `gtd_add_note` - write a conforming journal note; the server builds the
+  `YYYY-MM-DD [HH:MM] — TYPE — summary` title and validates body block order. Journalling types
+  only (side-effect types get their own tools). STATE is latest-wins — the prior STATE note is
+  never deleted.
+- `gtd_capture` - atomic `Inbox_Stuff` capture: task (verbatim, SmartAdd disabled) + SOURCE note +
+  `#ai_conversation`. Staged **raw** — there is no tag parameter, so a capture cannot be
+  "helpfully" classified; `pre_analysis` adds an AI ANALYSIS note + `#ai_review`.
+- `gtd_transition_state` - validated tag transition that stamps the orchestration signal
+  atomically, retiring the remembered-fire call-site discipline. Guards the "exactly one per task"
+  invariants over the resulting tag set.
+
 #### Tool naming convention
 Bare verbs (`add_task`, `list_tasks`, `get_task_notes`) are **generic RTM primitives** —
 each maps 1:1 to an RTM API method (RTM's own language). A **`gtd_` prefix** marks a

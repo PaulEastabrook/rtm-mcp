@@ -262,6 +262,27 @@ raw list_tasks echo; all read-only (only rtm.tasks.getList + the cached settings
 - gtd_context: the STATE-first note-reading-protocol bundle for one task (task + notes + siblings +
   ancestry) resolved by id or name.
 
+### GTD Phase 1 writes (governed, additive — the everyday write path)
+Four governed write tools that collapse the generic multi-call dance into one atomic call, with
+validate-then-apply (a rejected write mutates NOTHING), true post-state (the real id triple, never
+an echo), and the durable orchestration signal stamped atomically. They carry the Tier-1
+shared-kernel promotion: the seven structural GTD vocabularies (life_context, kind, action_context,
+energy, comms, MoSCoW priority, note_type) are now server-owned advisory enums.
+- gtd_create_item: create ONE clarified action / waiting_for / calendar_entry under a parent — the
+  server materialises the structural tags from typed facets (a calendar entry gets `action` +
+  `calendar_entry`), sets the MoSCoW band, resolves the due phrase via parse_time, writes an
+  optional CONTEXT note, and stamps `#ai_overlay_refresh_needed` on the nearest #project ancestor.
+  Definition-of-Ready is HARD-GATED per kind.
+- gtd_add_note: write a conforming journal note — the server builds the
+  `YYYY-MM-DD [HH:MM] — TYPE — summary` title and validates body block order. Journalling types
+  only; STATE gets its snapshot marker and is latest-wins (the prior STATE note is never deleted).
+- gtd_capture: atomic Inbox_Stuff capture — task (verbatim, parse disabled) + SOURCE note +
+  `#ai_conversation`. Staged RAW: no life-context/workflow-state tags (there is no tag parameter);
+  `pre_analysis` adds an AI ANALYSIS note + `#ai_review`.
+- gtd_transition_state: validated tag transition that stamps the orchestration signal atomically,
+  so the caller no longer carries the remembered-fire responsibility. Guards the "exactly one per
+  task" invariants over the RESULTING tag set.
+
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
   mapping 1:1 to an RTM API method.
