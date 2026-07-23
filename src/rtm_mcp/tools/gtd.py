@@ -2867,10 +2867,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 data=build_query_next_actions(tasks, context=context, timezone=tz)
             )
         if perspective == "todays_field":
+            # status:incomplete is REQUIRED here — the list-catalogue TODAY filter is a smart-list
+            # definition whose incomplete-scoping the UI implies; via the API its absence matches
+            # years of completed/recurring dated occurrences (measured: 39k+ rows live).
             tasks = await _getlist(
                 client,
-                "(dueBefore:today OR due:today) OR (isTagged:false AND isSubtask:false) "
-                "AND NOT tag:test",
+                "status:incomplete AND NOT tag:test AND "
+                "((dueBefore:today OR due:today) OR (isTagged:false AND isSubtask:false))",
             )
             return build_response(data=build_query_todays_field(tasks, timezone=tz))
         # focus_projects
