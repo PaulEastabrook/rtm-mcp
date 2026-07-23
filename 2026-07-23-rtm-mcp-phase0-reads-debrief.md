@@ -149,8 +149,8 @@ This phase **enables**, but does not perform, the gtd consumer migration:
   remains a parallel marketplace action; note the `gtd_<verb>_<noun>` vs `gtd_<noun>_candidates`
   tension for that decision. The write-tool codification gaps (`#hold`/`#do_not_auto_progress`,
   smart-list count) stay deferred to the write phases.
-- **Activation**: restart the MCP server on v2.3.0 to expose the 13 tools (they're additive; the
-  gtd side degrades cleanly until then).
+- **Activation**: ✅ DONE — server restarted on v2.3.0 (2026-07-23); all 13 tools live and
+  smoke-tested through the deployed connector (see the verification boundary below).
 
 ## 6. Follow-ups / open items
 - Live faithful-port sweep of the remaining 7 detectors (cheap; two representatives already identical).
@@ -165,5 +165,21 @@ This phase **enables**, but does not perform, the gtd consumer migration:
 Everything in §3 is machine-verified (suite + lint + fingerprints, reproducible via `make test` /
 `make lint` / `make fingerprints`). §4's benchmark and cross-checks are **live, one-shot measurements
 against Paul's account on 2026-07-23** — they will vary with account state, and only 2 of 9 detectors
-were live-cross-checked (the other 7 rest on unit tests). The tools have **not** yet run inside the
-deployed MCP server (still v2.2.0) — that needs the server restart in §5.
+were live-cross-checked (the other 7 rest on unit tests).
+
+**Deployed-server verification (added after the v2.3.0 restart).** Paul restarted the MCP server and
+Claude Desktop; all 13 tools are exposed and were smoke-tested **through the deployed connector**:
+- Advertised schemas correct end-to-end — enriched descriptions survived the FastMCP docstring shim,
+  both advisory enums (`perspective`, `depth`) present, typed-error contract documented.
+- `gtd_decision_candidates` → compact payload with the faithful `skipped` reasons
+  (personal-not-opted-in / already-contrib-drafted / matched-anti-pattern).
+- `gtd_context` (bad ref) → structured `task_not_found` (`code`/`message`/`rtm_code`/`details.query`).
+- `gtd_query focus_projects` (bad focus) → structured `focus_not_found`.
+- **`gtd_query todays_field` → 46 rows** (the pre-fix filter matched 39,225) — the fix is live, and
+  the payload is the intended typed projection (kind/priority/due/deep_link, overdue-first, with the
+  untagged capture-catch items trailing).
+
+One cosmetic defect found and fixed in that pass (`020ea6c`): `resolve_focus`'s `focus_not_found`
+recovery hint named only `frame.focus` (the `gtd_create_project` param), misdirecting a `gtd_query`
+caller; it now names both. Fingerprints unaffected (runtime prose is not part of the advertised
+schema); suite still 1140 green, lint clean.
