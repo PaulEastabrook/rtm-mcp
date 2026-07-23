@@ -104,10 +104,13 @@ from ..gtd_writes import (
     ACTION_CONTEXTS,
     AI_REVIEW,
     CALENDAR_TAG,
+    CHASE_VERDICTS,
     COMMS_MODES,
+    CONSOLIDATE_MOVES,
     ENERGY_LEVELS,
     INBOX_CLOSE_SUMMARY,
     INBOX_LIST,
+    INBOX_VERBS,
     ITEM_KINDS,
     JOURNAL_NOTE_TYPES,
     LIFE_CONTEXTS,
@@ -125,11 +128,15 @@ from ..gtd_writes import (
     inbox_close_body,
     item_tags,
     output_approval_transition,
+    split_batch,
     state_body,
     validate_add_note,
     validate_capture,
+    validate_chase_sweep,
     validate_complete,
+    validate_consolidate,
     validate_create_item,
+    validate_inbox_zero,
     validate_link_dependency,
     validate_set_properties,
     validate_transition,
@@ -142,11 +149,13 @@ from ..models import (
     CANVAS_COMMIT_OUTPUT,
     CAPTURE_OUTPUT,
     CAPTURE_OUTPUT_SCHEMA,
+    CHASE_SWEEP_OUTPUT,
     CHAT_INFLIGHT_OUTPUT,
     CHAT_POST_OUTPUT,
     CHAT_THREAD_OUTPUT,
     CLOSE_INBOX_OUTPUT,
     COMPLETE_ACTION_OUTPUT,
+    CONSOLIDATE_OUTPUT,
     CREATE_ITEM_OUTPUT,
     CREATE_PROJECT_OUTPUT,
     DECISION_OUTPUT,
@@ -157,6 +166,7 @@ from ..models import (
     GTD_QUERY_OUTPUT,
     HEALTH_CHECK_OUTPUT,
     INBOX_STATE_OUTPUT,
+    INBOX_ZERO_OUTPUT,
     LINK_DEPENDENCY_OUTPUT,
     PROJECT_CANVAS_OUTPUT,
     PROJECT_INDEX_OUTPUT,
@@ -257,6 +267,36 @@ _MOSCOW_ENUM: dict[str, Any] = {"enum": sorted(MOSCOW_BANDS)}
 _NOTE_TYPE_ENUM: dict[str, Any] = {"enum": sorted(JOURNAL_NOTE_TYPES)}
 _UPSTREAM_TYPE_ENUM: dict[str, Any] = {"enum": sorted(UPSTREAM_TYPES)}
 _BATCH_ITEM_SCHEMA: dict[str, Any] = {"type": "string", "description": "A task id."}
+_INBOX_DISP_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "item_ref": {"type": "string"},
+        "verb": {"type": "string", "enum": sorted(INBOX_VERBS)},
+        "args": {"type": "object"},
+    },
+    "required": ["item_ref", "verb"],
+}
+_CHASE_VERDICT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "waiting_for_ref": {"type": "string"},
+        "verdict": {"type": "string", "enum": sorted(CHASE_VERDICTS)},
+        "new_due": {"type": "string"},
+    },
+    "required": ["waiting_for_ref", "verdict"],
+}
+_CONSOLIDATE_MOVE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "move_type": {"type": "string", "enum": sorted(CONSOLIDATE_MOVES)},
+        "task_ref": {"type": "string"},
+        "new_parent_ref": {"type": "string"},
+        "dependent_ref": {"type": "string"},
+        "upstream_ref": {"type": "string"},
+        "why": {"type": "string"},
+    },
+    "required": ["move_type"],
+}
 
 
 def register_gtd_tools(mcp: Any, get_client: Any) -> None:
@@ -4566,4 +4606,485 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "message": f"Transitioned {len(results)} item(s); signal stamped on {len(stamped)} project(s).",
             },
             timeline_id=client.timeline_id,
+        )
+
+    # ======================================================================= #
+    # Phase 3 writes — process ops (apply a reviewed verdict set)
+    # ======================================================================= #
+
+    async def _apply_process_set(
+        client: RTMClient,
+        raw_items: list[dict[str, Any]],
+        *,
+        rejections: list[dict[str, Any]],
+        ref_keys: tuple[str, ...],
+        tool: str,
+        applier,
+        gate_tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Shared skeleton for the three process ops.
+
+        Atomicity: the WHOLE reviewed set is validated (shape + every ref resolvable + the
+        strict-tag gate) BEFORE anything is written — one invalid item rejects the call with
+        nothing applied. Then items are applied in order; if RTM fails mid-apply the
+        `results` / `remaining` split tells the caller exactly where to resume.
+
+        Bounded input: at most PROCESS_BATCH_CAP items per call; the tail comes back as
+        `remaining`. RTM has no multi-task write endpoint (measured), so N items cost N
+        rate-limited calls — the cap is what keeps one call's wall-clock predictable.
+        """
+        to_apply, overflow = split_batch(raw_items)
+        parsed = await _getlist(client, "status:incomplete")
+        by_id = {str(t.get("id")): t for t in parsed}
+
+        # Resolve every ref up front — an unresolvable ref rejects the whole set.
+        resolved: list[tuple[dict[str, Any], dict[str, dict[str, Any]]]] = []
+        for i, item in enumerate(to_apply):
+            refs: dict[str, dict[str, Any]] = {}
+            for key in ref_keys:
+                val = str(item.get(key) or "").strip()
+                if not val:
+                    continue
+                found = resolve_task_ref(parsed, val)
+                if "task" not in found:
+                    rejections.append(
+                        {
+                            "reason": ErrorCode.TASK_NOT_FOUND.value,
+                            "detail": f"[{i}] {key} '{val}' did not resolve",
+                            "ref": val,
+                        }
+                    )
+                    continue
+                refs[key] = found["task"]
+            resolved.append((item, refs))
+
+        if not rejections and gate_tags:
+            gate = await enforce_strict_tags(client, sorted(set(gate_tags)), tool=tool)
+            if gate:
+                rejections.append(as_rejection(gate))
+
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "results": [],
+                    "applied_count": 0,
+                    "requested_count": len(raw_items),
+                    "remaining": [],
+                    "projects_signalled": [],
+                    "fanout_events": [],
+                    "applied": [],
+                    "errors": [],
+                    "message": "Rejected; nothing was written (the whole set is validated first).",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        tz = await client.get_timezone()
+        results: list[dict[str, Any]] = []
+        projects: dict[str, dict[str, Any]] = {}
+        events: list[str] = []
+        remaining: list[str] = []
+
+        for idx, (item, refs) in enumerate(resolved):
+            try:
+                outcome = await applier(item, refs, _write, by_id, projects, events, tz)
+            except Exception as exc:  # mid-apply API failure — report a resumable split
+                errors.append({"op": tool, "error": str(exc)})
+                remaining = [str(_it.get(ref_keys[0]) or "") for _it, _ in resolved[idx:]]
+                break
+            results.append(outcome)
+
+        # Consolidated signal: ONCE per affected project, never per item (Phase 2 § 2a lesson).
+        for pid, proj in projects.items():
+            await _write(
+                "rtm.tasks.addTags",
+                f"{tool}:overlay-refresh",
+                pid,
+                tags=OVERLAY_REFRESH,
+                task_id=proj.get("id"),
+                taskseries_id=proj.get("taskseries_id"),
+                list_id=proj.get("list_id"),
+            )
+
+        remaining += [str(i.get(ref_keys[0]) or "") for i in overflow]
+        return build_response(
+            data={
+                "results": results,
+                "applied_count": sum(1 for r in results if r.get("applied")),
+                "requested_count": len(raw_items),
+                "remaining": remaining,
+                "projects_signalled": sorted(projects),
+                "fanout_events": sorted(set(events)),
+                "applied": applied,
+                "errors": errors,
+                "message": (
+                    f"Applied {sum(1 for r in results if r.get('applied'))} of {len(raw_items)}"
+                    + (f"; {len(remaining)} remaining (call again)." if remaining else ".")
+                ),
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    def _ids_of(t: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "task_id": t.get("id"),
+            "taskseries_id": t.get("taskseries_id"),
+            "list_id": t.get("list_id"),
+        }
+
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=INBOX_ZERO_OUTPUT)
+    async def gtd_inbox_zero(
+        ctx: Context,
+        dispositions: Annotated[
+            list[dict[str, Any]] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_obj_array_schema(
+                    "The REVIEWED disposition set: [{item_ref, verb, args}] where verb is "
+                    "'tag' (args.tags) | 'move' (args.list_name) | 'complete' | 'leave'.",
+                    item_schema=_INBOX_DISP_SCHEMA,
+                )
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — apply an APPROVED Inbox_Stuff disposition set in one governed call.
+
+        This tool APPLIES; it does not decide. Review the inbox with `gtd_inbox_state`, agree
+        the dispositions, then pass them here. DESTRUCTIVE (move/complete mutate pre-existing
+        items); every write is transaction-recorded and reversible via `batch_undo`.
+
+        Atomicity: the whole set is validated first — every ref resolvable, every verb legal,
+        every verb's args present, plus one strict-tag gate over all tags. ONE invalid item
+        rejects the call with nothing written. If RTM then fails mid-apply, `results` and
+        `remaining` give the exact resumable split.
+
+        Throughput (measured, be aware): RTM has NO multi-task write endpoint, so N items cost
+        N rate-limited calls (~1 s each). At most {cap} items are applied per call; a longer
+        set returns its tail in `remaining` for a follow-up call.
+
+        Args:
+            dispositions: the reviewed set (see the item schema).
+
+        Returns (on success): {"results": [{ref, verb, applied, task_id, detail}],
+            "applied_count", "requested_count", "remaining", "projects_signalled",
+            "fanout_events", "applied", "errors", "message"}.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail, ref}], …,
+            "applied_count": 0} where reason ∈ "invalid_input" | "missing_parameter" |
+            "task_not_found" | "strict_tag_rejected". Per-item failures use that flat
+            `rejected[]` vector, never a nested {"error": {...}} envelope.
+        """
+        client: RTMClient = await get_client()
+        items = coerce_json(dispositions) or []
+        rejections = validate_inbox_zero(items)
+        gate_tags: list[str] = [AI_CONVERSATION]
+        for d in items:
+            gate_tags += [str(t) for t in ((d.get("args") or {}).get("tags") or [])]
+
+        async def _apply(item, refs, _write, by_id, projects, events, tz):
+            task = refs.get("item_ref")
+            verb = item.get("verb")
+            ids = _ids_of(task)
+            args = item.get("args") or {}
+            tid = str(task.get("id"))
+            if verb == "leave":
+                return {
+                    "ref": tid,
+                    "verb": verb,
+                    "applied": False,
+                    "task_id": tid,
+                    "detail": "left in place",
+                }
+            if verb == "tag":
+                tags = sorted({str(t) for t in (args.get("tags") or [])} | {AI_CONVERSATION})
+                await _write("rtm.tasks.addTags", "inbox:tag", tid, tags=",".join(tags), **ids)
+            elif verb == "move":
+                target = await resolve_system_list_id(client, str(args.get("list_name")))
+                if "error" in target:
+                    raise RuntimeError(f"list '{args.get('list_name')}' not found")
+                await _write(
+                    "rtm.tasks.moveTo",
+                    "inbox:move",
+                    tid,
+                    from_list_id=task.get("list_id"),
+                    to_list_id=target["list_id"],
+                    taskseries_id=task.get("taskseries_id"),
+                    task_id=task.get("id"),
+                )
+            elif verb == "complete":
+                await _write("rtm.tasks.complete", "inbox:complete", tid, **ids)
+                events.append("completed")
+            proj = _nearest_project(task, by_id)
+            if str(proj.get("id")) != tid:
+                projects[str(proj.get("id"))] = proj
+            return {"ref": tid, "verb": verb, "applied": True, "task_id": tid, "detail": ""}
+
+        return await _apply_process_set(
+            client,
+            items,
+            rejections=rejections,
+            ref_keys=("item_ref",),
+            tool="gtd_inbox_zero",
+            applier=_apply,
+            gate_tags=gate_tags,
+        )
+
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CHASE_SWEEP_OUTPUT)
+    async def gtd_chase_sweep(
+        ctx: Context,
+        verdicts: Annotated[
+            list[dict[str, Any]] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_obj_array_schema(
+                    "The REVIEWED chase verdict set: [{waiting_for_ref, verdict, new_due?}] where "
+                    "verdict is 'retickle' (needs new_due) | 'convert_to_action' | 'complete' | "
+                    "'leave'.",
+                    item_schema=_CHASE_VERDICT_SCHEMA,
+                )
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — apply an APPROVED chase-queue verdict set over waiting-fors in one governed call.
+
+        This tool APPLIES; it does not decide. Review the queue with `gtd_waiting_for_queue`,
+        agree the verdicts, then pass them here. DESTRUCTIVE (complete/convert mutate
+        pre-existing items); transaction-recorded and reversible via `batch_undo`.
+
+        Verdict → write: `retickle` sets the due to `new_due` (resolved via rtm.time.parse
+        BEFORE any write, so a bad phrase rejects rather than writes); `convert_to_action`
+        swaps `#waiting_for` → `#action` AND clears the due (a next action lives undated — the
+        tickle no longer applies); `complete` completes it and contributes the `completed`
+        fan-out event; `leave` is a counted no-op.
+
+        Atomicity: whole-set validation first — one invalid item writes nothing. A mid-apply
+        API failure returns the resumable `results` / `remaining` split.
+
+        Throughput (measured): RTM has no multi-task write endpoint, so N items cost N
+        rate-limited calls; at most {cap} per call, tail returned in `remaining`.
+
+        Args:
+            verdicts: the reviewed set (see the item schema).
+
+        Returns (on success): {"results", "applied_count", "requested_count", "remaining",
+            "projects_signalled", "fanout_events", "applied", "errors", "message"}.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail, ref}], …}
+            where reason ∈ "invalid_input" | "missing_parameter" | "task_not_found" |
+            "bad_date" | "strict_tag_rejected". Flat vector, never a nested {"error": {...}}.
+        """
+        client: RTMClient = await get_client()
+        items = coerce_json(verdicts) or []
+        rejections = validate_chase_sweep(items)
+
+        # Resolve every date phrase up front — a hallucinated one must never reach a write.
+        tz = await client.get_timezone()
+        dates: dict[str, str] = {}
+        if not rejections:
+            for v in items:
+                if str(v.get("verdict")) != "retickle":
+                    continue
+                phrase = str(v.get("new_due") or "")
+                params: dict[str, Any] = {"text": phrase}
+                if tz:
+                    params["timezone"] = tz
+                try:
+                    pres = await client.call("rtm.time.parse", **params)
+                    iso = ((pres.get("time") or {}) if isinstance(pres, dict) else {}).get(
+                        "$t"
+                    ) or ""
+                except Exception:
+                    iso = ""
+                if not iso:
+                    rejections.append(
+                        {
+                            "reason": ErrorCode.BAD_DATE.value,
+                            "detail": f"could not resolve new_due '{phrase}'",
+                            "ref": str(v.get("waiting_for_ref") or ""),
+                        }
+                    )
+                else:
+                    dates[str(v.get("waiting_for_ref"))] = iso
+
+        async def _apply(item, refs, _write, by_id, projects, events, tz):
+            task = refs.get("waiting_for_ref")
+            verdict = item.get("verdict")
+            tid = str(task.get("id"))
+            ids = _ids_of(task)
+            if verdict == "leave":
+                return {
+                    "ref": tid,
+                    "verb": verdict,
+                    "applied": False,
+                    "task_id": tid,
+                    "detail": "still waiting",
+                }
+            if verdict == "retickle":
+                await _write(
+                    "rtm.tasks.setDueDate",
+                    "chase:retickle",
+                    tid,
+                    due=dates.get(tid, ""),
+                    parse="0",
+                    **ids,
+                )
+            elif verdict == "convert_to_action":
+                await _write("rtm.tasks.removeTags", "chase:unwait", tid, tags="waiting_for", **ids)
+                await _write(
+                    "rtm.tasks.addTags",
+                    "chase:action",
+                    tid,
+                    tags=f"action,{AI_CONVERSATION}",
+                    **ids,
+                )
+                # a next action lives undated — the chase tickle no longer applies
+                await _write(
+                    "rtm.tasks.setDueDate", "chase:clear-due", tid, due="", parse="0", **ids
+                )
+            elif verdict == "complete":
+                await _write("rtm.tasks.complete", "chase:complete", tid, **ids)
+                events += ["completed", "waiting_for_resolved"]
+            proj = _nearest_project(task, by_id)
+            if str(proj.get("id")) != tid:
+                projects[str(proj.get("id"))] = proj
+            return {"ref": tid, "verb": verdict, "applied": True, "task_id": tid, "detail": ""}
+
+        return await _apply_process_set(
+            client,
+            items,
+            rejections=rejections,
+            ref_keys=("waiting_for_ref",),
+            tool="gtd_chase_sweep",
+            applier=_apply,
+            gate_tags=[AI_CONVERSATION, "action", OVERLAY_REFRESH],
+        )
+
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CONSOLIDATE_OUTPUT)
+    async def gtd_consolidate_apply(
+        ctx: Context,
+        moves: Annotated[
+            list[dict[str, Any]] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_obj_array_schema(
+                    "The REVIEWED consolidation move set: [{move_type, ...refs}] where move_type "
+                    "is 'reparent' (task_ref + new_parent_ref) | 'link_dependency' "
+                    "(dependent_ref + upstream_ref + why) | 'complete' (task_ref) | 'promote' "
+                    "(task_ref — to top level).",
+                    item_schema=_CONSOLIDATE_MOVE_SCHEMA,
+                )
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — apply an APPROVED cluster-consolidation move set in one governed call.
+
+        This tool APPLIES; it does not decide. Review clusters with `gtd_topic_clusters`, agree
+        the moves, then pass them here. DESTRUCTIVE (reparent/complete/promote mutate
+        pre-existing structure); transaction-recorded and reversible via `batch_undo`.
+
+        Move → write: `reparent` moves a task under a new parent (RTM implicitly moves it to
+        the parent's list); `link_dependency` writes a conforming DEPENDS-ON note on the
+        DEPENDENT; `complete` completes; `promote` lifts a task to top level.
+
+        Atomicity: whole-set validation first — one invalid move writes nothing. A mid-apply
+        API failure returns the resumable `results` / `remaining` split.
+
+        Throughput (measured): RTM has no multi-task write endpoint — reparent/promote are
+        inherently per-task — so N moves cost N rate-limited calls; at most {cap} per call.
+
+        Args:
+            moves: the reviewed set (see the item schema).
+
+        Returns (on success): {"results", "applied_count", "requested_count", "remaining",
+            "projects_signalled", "fanout_events", "applied", "errors", "message"}.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "invalid_input" | "missing_parameter" | "self_dep" | "task_not_found" |
+            "strict_tag_rejected". Flat vector, never a nested {"error": {...}}.
+        """
+        client: RTMClient = await get_client()
+        items = coerce_json(moves) or []
+        rejections = validate_consolidate(items)
+
+        async def _apply(item, refs, _write, by_id, projects, events, tz):
+            mt = item.get("move_type")
+            today = _account_today(tz)
+            if mt == "reparent":
+                task, parent = refs.get("task_ref"), refs.get("new_parent_ref")
+                tid = str(task.get("id"))
+                await _write(
+                    "rtm.tasks.setParentTask",
+                    "consolidate:reparent",
+                    tid,
+                    parent_task_id=parent.get("id"),
+                    **_ids_of(task),
+                )
+                proj = _nearest_project(parent, by_id)
+                projects[str(proj.get("id"))] = proj
+                return {
+                    "ref": tid,
+                    "verb": mt,
+                    "applied": True,
+                    "task_id": tid,
+                    "detail": f"under {parent.get('id')}",
+                }
+            if mt == "link_dependency":
+                dep, up = refs.get("dependent_ref"), refs.get("upstream_ref")
+                tid, uid = str(dep.get("id")), str(up.get("id"))
+                await _write(
+                    "rtm.tasks.notes.add",
+                    "consolidate:dep-note",
+                    tid,
+                    note_title=format_note_title(
+                        "DEPENDS-ON", f"depends on {(up.get('name') or '')[:50]}", date=today
+                    ),
+                    note_text=depends_on_note(
+                        upstream_name=up.get("name") or "",
+                        upstream_ids={
+                            "task_id": uid,
+                            "taskseries_id": str(up.get("taskseries_id") or ""),
+                            "list_id": str(up.get("list_id") or ""),
+                        },
+                        upstream_type=str(item.get("upstream_type") or "action"),
+                        why=str(item.get("why") or ""),
+                        upstream_url=_permalink(uid, by_id, up.get("list_id")),
+                        captured_at=today,
+                    ),
+                    **_ids_of(dep),
+                )
+                proj = _nearest_project(dep, by_id)
+                projects[str(proj.get("id"))] = proj
+                return {
+                    "ref": tid,
+                    "verb": mt,
+                    "applied": True,
+                    "task_id": tid,
+                    "detail": f"upstream {uid}",
+                }
+            task = refs.get("task_ref")
+            tid = str(task.get("id"))
+            if mt == "complete":
+                await _write("rtm.tasks.complete", "consolidate:complete", tid, **_ids_of(task))
+                events.append("completed")
+            elif mt == "promote":
+                await _write(
+                    "rtm.tasks.setParentTask",
+                    "consolidate:promote",
+                    tid,
+                    parent_task_id="",
+                    **_ids_of(task),
+                )
+            proj = _nearest_project(task, by_id)
+            if str(proj.get("id")) != tid:
+                projects[str(proj.get("id"))] = proj
+            return {"ref": tid, "verb": mt, "applied": True, "task_id": tid, "detail": ""}
+
+        return await _apply_process_set(
+            client,
+            items,
+            rejections=rejections,
+            ref_keys=("task_ref", "new_parent_ref", "dependent_ref", "upstream_ref"),
+            tool="gtd_consolidate_apply",
+            applier=_apply,
+            gate_tags=[OVERLAY_REFRESH],
         )

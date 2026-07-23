@@ -3687,6 +3687,256 @@ class TestGtdPhase2Writes:
         assert not (set(_methods(client)) & WRITE_METHODS)
 
 
+class TestGtdPhase3ProcessOps:
+    """Apply-a-reviewed-set: whole-set atomicity, once-per-project signal, bounded input."""
+
+    @pytest.mark.asyncio
+    async def test_inbox_zero_applies_mixed_verbs(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("i1", "9001", "raw one"),
+                _ts("i2", "9002", "raw two"),
+                _ts("i3", "9003", "raw three"),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_inbox_zero"](
+            FakeContext(),
+            dispositions=[
+                {"item_ref": "9001", "verb": "tag", "args": {"tags": ["note"]}},
+                {"item_ref": "9002", "verb": "complete"},
+                {"item_ref": "9003", "verb": "leave"},
+            ],
+        )
+        data = res["data"]
+        assert data["applied_count"] == 2  # `leave` is a counted no-op
+        assert data["requested_count"] == 3 and data["remaining"] == []
+        assert "completed" in data["fanout_events"]
+        assert any(
+            k["tags"].startswith("note") or "note" in k["tags"]
+            for k in _kw_for(client, "rtm.tasks.addTags")
+        )
+        assert client.record_transaction.called
+
+    @pytest.mark.asyncio
+    async def test_inbox_zero_one_bad_item_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            side_effect=_write_dispatch(_getlist([_ts("i1", "9001", "raw one")]))
+        )
+        res = await tools["gtd_inbox_zero"](
+            FakeContext(),
+            dispositions=[
+                {"item_ref": "9001", "verb": "complete"},
+                {"item_ref": "9001", "verb": "nuke"},  # illegal verb
+            ],
+        )
+        assert res["data"]["applied_count"] == 0
+        assert "invalid_input" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_inbox_zero_unresolvable_ref_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            side_effect=_write_dispatch(_getlist([_ts("i1", "9001", "raw one")]))
+        )
+        res = await tools["gtd_inbox_zero"](
+            FakeContext(),
+            dispositions=[
+                {"item_ref": "9001", "verb": "complete"},
+                {"item_ref": "nope", "verb": "complete"},
+            ],
+        )
+        assert res["data"]["applied_count"] == 0
+        assert "task_not_found" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_bounded_input_returns_remaining(self, gtd_tools):
+        """More than the cap ⇒ apply the first N, hand the tail back for a follow-up call."""
+        from rtm_mcp.gtd_writes import PROCESS_BATCH_CAP
+
+        tools, client = gtd_tools
+        n = PROCESS_BATCH_CAP + 3
+        tree = _getlist([_ts(f"i{i}", str(9000 + i), f"raw {i}") for i in range(n)])
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_inbox_zero"](
+            FakeContext(),
+            dispositions=[{"item_ref": str(9000 + i), "verb": "leave"} for i in range(n)],
+        )
+        data = res["data"]
+        assert data["requested_count"] == n
+        assert len(data["results"]) == PROCESS_BATCH_CAP
+        assert len(data["remaining"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_chase_sweep_verdict_writes(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("w1", "9101", "Waiting A", parent=PROJECT_ID, tags=["work", "waiting_for"]),
+                _ts("w2", "9102", "Waiting B", parent=PROJECT_ID, tags=["work", "waiting_for"]),
+                _ts("w3", "9103", "Waiting C", parent=PROJECT_ID, tags=["work", "waiting_for"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_chase_sweep"](
+            FakeContext(),
+            verdicts=[
+                {"waiting_for_ref": "9101", "verdict": "retickle", "new_due": "next monday"},
+                {"waiting_for_ref": "9102", "verdict": "convert_to_action"},
+                {"waiting_for_ref": "9103", "verdict": "complete"},
+            ],
+        )
+        data = res["data"]
+        assert data["applied_count"] == 3
+        # retickle uses the parse_time result, not the caller's text
+        due = _kw_for(client, "rtm.tasks.setDueDate")
+        assert any(k["due"] == "2026-08-01T09:00:00Z" for k in due)
+        # convert_to_action swaps the workflow state AND clears the tickle
+        assert any("waiting_for" in k["tags"] for k in _kw_for(client, "rtm.tasks.removeTags"))
+        assert any(k["due"] == "" for k in due)
+        assert {"completed", "waiting_for_resolved"} <= set(data["fanout_events"])
+
+    @pytest.mark.asyncio
+    async def test_chase_sweep_bad_date_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist([_ts("w1", "9101", "Waiting A", tags=["work", "waiting_for"])])
+        client.call = AsyncMock(side_effect=_write_dispatch(tree, parsed_time=None))
+        res = await tools["gtd_chase_sweep"](
+            FakeContext(),
+            verdicts=[
+                {"waiting_for_ref": "9101", "verdict": "retickle", "new_due": "the 32nd of Smarch"},
+            ],
+        )
+        assert res["data"]["applied_count"] == 0
+        assert "bad_date" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_signal_stamped_once_per_project_not_per_item(self, gtd_tools):
+        """Phase 2 § 2a lesson: consolidated signal — one stamp per affected project."""
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("w1", "9101", "A", parent=PROJECT_ID, tags=["work", "waiting_for"]),
+                _ts("w2", "9102", "B", parent=PROJECT_ID, tags=["work", "waiting_for"]),
+                _ts("w3", "9103", "C", parent=PROJECT_ID, tags=["work", "waiting_for"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_chase_sweep"](
+            FakeContext(),
+            verdicts=[
+                {"waiting_for_ref": r, "verdict": "complete"} for r in ("9101", "9102", "9103")
+            ],
+        )
+        assert res["data"]["projects_signalled"] == [PROJECT_ID]
+        stamps = [
+            k
+            for k in _kw_for(client, "rtm.tasks.addTags")
+            if k.get("tags") == "ai_overlay_refresh_needed"
+        ]
+        assert len(stamps) == 1  # three items, ONE stamp
+
+    @pytest.mark.asyncio
+    async def test_no_fanout_event_is_written_as_a_tag(self, gtd_tools):
+        """The Phase 2 guard, re-asserted for the process ops."""
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("w1", "9101", "A", parent=PROJECT_ID, tags=["work", "waiting_for"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_chase_sweep"](
+            FakeContext(), verdicts=[{"waiting_for_ref": "9101", "verdict": "complete"}]
+        )
+        assert "completed" in res["data"]["fanout_events"]
+        written = set()
+        for k in _kw_for(client, "rtm.tasks.addTags"):
+            written |= set(k.get("tags", "").split(","))
+        for ev in ("completed", "waiting_for_resolved", "calendar_entry_completed", "decided"):
+            assert ev not in written
+
+    @pytest.mark.asyncio
+    async def test_consolidate_reparent_and_link(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("a1", "9201", "Orphan", tags=["work", "action"]),
+                _ts("a2", "9202", "Consumer", parent=PROJECT_ID, tags=["work", "action"]),
+                _ts("a3", "9203", "Producer", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_consolidate_apply"](
+            FakeContext(),
+            moves=[
+                {"move_type": "reparent", "task_ref": "9201", "new_parent_ref": PROJECT_ID},
+                {
+                    "move_type": "link_dependency",
+                    "dependent_ref": "9202",
+                    "upstream_ref": "9203",
+                    "why": "payload",
+                },
+            ],
+        )
+        data = res["data"]
+        assert data["applied_count"] == 2
+        rep = _kw_for(client, "rtm.tasks.setParentTask")[0]
+        assert rep["task_id"] == "9201" and rep["parent_task_id"] == PROJECT_ID
+        note = _kw_for(client, "rtm.tasks.notes.add")[0]
+        assert note["task_id"] == "9202"  # the DEPENDENT
+        for required in ("Depends on:", "task_id:", "taskseries_id:", "list_id:", "Status:"):
+            assert required in note["note_text"]
+
+    @pytest.mark.asyncio
+    async def test_consolidate_self_dep_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            side_effect=_write_dispatch(_getlist([_ts("a1", "9201", "X", tags=["work", "action"])]))
+        )
+        res = await tools["gtd_consolidate_apply"](
+            FakeContext(),
+            moves=[
+                {
+                    "move_type": "link_dependency",
+                    "dependent_ref": "9201",
+                    "upstream_ref": "9201",
+                    "why": "w",
+                },
+            ],
+        )
+        assert res["data"]["applied_count"] == 0
+        assert "self_dep" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_consolidate_promote_lifts_to_top_level(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("a1", "9201", "Child", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        await tools["gtd_consolidate_apply"](
+            FakeContext(),
+            moves=[
+                {"move_type": "promote", "task_ref": "9201"},
+            ],
+        )
+        assert _kw_for(client, "rtm.tasks.setParentTask")[0]["parent_task_id"] == ""
+
+
 class TestGtdPhase0Reads:
     """Phase 0 typed read tools — read-only call surface + representative output shapes."""
 

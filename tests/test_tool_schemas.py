@@ -91,6 +91,9 @@ DESTRUCTIVE_TOOLS = {
     "gtd_complete_action",
     "gtd_close_inbox_item",
     "gtd_batch_transition",
+    "gtd_inbox_zero",
+    "gtd_chase_sweep",
+    "gtd_consolidate_apply",
 }
 
 

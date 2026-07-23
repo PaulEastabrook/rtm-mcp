@@ -660,3 +660,147 @@ def divergent_band_proposals(
                 }
             )
     return sorted(conflicts, key=lambda c: c["taskseries_id"])
+
+
+# =========================================================================== #
+# Phase 3 — process ops (apply a reviewed verdict set)
+# =========================================================================== #
+# These tools APPLY a set the caller already reviewed and approved; they never fetch-and-decide.
+#
+# Throughput reality (measured 2026-07-23): RTM's API has NO multi-task write endpoint — a
+# comma-separated id list and a filter-based write are both rejected, so every item costs its own
+# rate-limited call. The official server's `rtm_batch_*` (max 20) resolve and loop internally; their
+# "bypasses the rate limiter" is a separate API-key budget, not a batch. So the mitigations here are
+# the bounded input cap below plus honest long-running — not an O(N/20) batch that does not exist.
+
+#: Max items applied per call. A larger reviewed set is applied in order and the tail is returned
+#: as `remaining` for a follow-up call (pagination-by-continuation), bounding one call's wall-clock.
+PROCESS_BATCH_CAP = 50
+
+INBOX_VERBS = frozenset({"tag", "move", "complete", "leave"})
+CHASE_VERDICTS = frozenset({"retickle", "convert_to_action", "complete", "leave"})
+CONSOLIDATE_MOVES = frozenset({"reparent", "link_dependency", "complete", "promote"})
+
+
+def split_batch(items: list[Any]) -> tuple[list[Any], list[Any]]:
+    """`(to_apply, remaining)` under the per-call cap."""
+    return items[:PROCESS_BATCH_CAP], items[PROCESS_BATCH_CAP:]
+
+
+def _ref_of(d: dict[str, Any], *keys: str) -> str:
+    for k in keys:
+        v = str(d.get(k) or "").strip()
+        if v:
+            return v
+    return ""
+
+
+def validate_inbox_zero(dispositions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every disposition must name a resolvable-shaped ref, a legal verb, and the args that verb
+    needs. Validated as a WHOLE SET — one bad item rejects the call (the D9 spirit)."""
+    rejections: list[dict[str, Any]] = []
+    if not dispositions:
+        rejections.append(_reject(ErrorCode.MISSING_PARAMETER, "provide at least one disposition"))
+    for i, d in enumerate(dispositions):
+        ref = _ref_of(d, "item_ref", "ref", "id")
+        verb = str(d.get("verb") or "").strip()
+        args = d.get("args") or {}
+        if not ref:
+            rejections.append(_reject(ErrorCode.MISSING_PARAMETER, f"[{i}] item_ref is required"))
+        if verb not in INBOX_VERBS:
+            rejections.append(
+                _reject(
+                    ErrorCode.INVALID_INPUT,
+                    f"[{i}] verb must be one of {sorted(INBOX_VERBS)}",
+                    ref=ref,
+                    verb=verb,
+                )
+            )
+            continue
+        if verb == "tag" and not (args.get("tags") or []):
+            rejections.append(
+                _reject(ErrorCode.MISSING_PARAMETER, f"[{i}] verb 'tag' needs args.tags", ref=ref)
+            )
+        if verb == "move" and not str(args.get("list_name") or "").strip():
+            rejections.append(
+                _reject(
+                    ErrorCode.MISSING_PARAMETER, f"[{i}] verb 'move' needs args.list_name", ref=ref
+                )
+            )
+    return rejections
+
+
+def validate_chase_sweep(verdicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rejections: list[dict[str, Any]] = []
+    if not verdicts:
+        rejections.append(_reject(ErrorCode.MISSING_PARAMETER, "provide at least one verdict"))
+    for i, v in enumerate(verdicts):
+        ref = _ref_of(v, "waiting_for_ref", "ref", "id")
+        verdict = str(v.get("verdict") or "").strip()
+        if not ref:
+            rejections.append(
+                _reject(ErrorCode.MISSING_PARAMETER, f"[{i}] waiting_for_ref is required")
+            )
+        if verdict not in CHASE_VERDICTS:
+            rejections.append(
+                _reject(
+                    ErrorCode.INVALID_INPUT,
+                    f"[{i}] verdict must be one of {sorted(CHASE_VERDICTS)}",
+                    ref=ref,
+                    verdict=verdict,
+                )
+            )
+            continue
+        if verdict == "retickle" and not str(v.get("new_due") or "").strip():
+            rejections.append(
+                _reject(
+                    ErrorCode.MISSING_PARAMETER,
+                    f"[{i}] verdict 'retickle' needs new_due (the new chase date)",
+                    ref=ref,
+                )
+            )
+    return rejections
+
+
+def validate_consolidate(moves: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rejections: list[dict[str, Any]] = []
+    if not moves:
+        rejections.append(_reject(ErrorCode.MISSING_PARAMETER, "provide at least one move"))
+    for i, m in enumerate(moves):
+        mt = str(m.get("move_type") or "").strip()
+        if mt not in CONSOLIDATE_MOVES:
+            rejections.append(
+                _reject(
+                    ErrorCode.INVALID_INPUT,
+                    f"[{i}] move_type must be one of {sorted(CONSOLIDATE_MOVES)}",
+                    move_type=mt,
+                )
+            )
+            continue
+        if mt == "reparent":
+            if not _ref_of(m, "task_ref") or not _ref_of(m, "new_parent_ref"):
+                rejections.append(
+                    _reject(
+                        ErrorCode.MISSING_PARAMETER,
+                        f"[{i}] 'reparent' needs task_ref and new_parent_ref",
+                    )
+                )
+        elif mt == "link_dependency":
+            if not _ref_of(m, "dependent_ref") or not _ref_of(m, "upstream_ref"):
+                rejections.append(
+                    _reject(
+                        ErrorCode.MISSING_PARAMETER,
+                        f"[{i}] 'link_dependency' needs dependent_ref and upstream_ref",
+                    )
+                )
+            elif _ref_of(m, "dependent_ref") == _ref_of(m, "upstream_ref"):
+                rejections.append(
+                    _reject(ErrorCode.SELF_DEP, f"[{i}] a task cannot depend on itself")
+                )
+            if not str(m.get("why") or "").strip():
+                rejections.append(
+                    _reject(ErrorCode.MISSING_PARAMETER, f"[{i}] 'link_dependency' needs why")
+                )
+        elif not _ref_of(m, "task_ref"):
+            rejections.append(_reject(ErrorCode.MISSING_PARAMETER, f"[{i}] '{mt}' needs task_ref"))
+    return rejections

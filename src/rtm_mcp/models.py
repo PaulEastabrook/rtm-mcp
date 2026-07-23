@@ -818,6 +818,44 @@ class BatchTransitionResult(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Phase 3 writes — process ops (apply a reviewed verdict set)
+# --------------------------------------------------------------------------- #
+
+
+class ProcessItemResult(BaseModel):
+    """One applied item's outcome + its true post-state."""
+
+    model_config = ConfigDict(extra="allow")
+    ref: str
+    verb: str = ""
+    applied: bool = False
+    task_id: str = ""
+    detail: str = ""
+
+
+class ProcessOpResult(BaseModel):
+    """Shared shape for the three process ops.
+
+    Atomicity contract: the WHOLE set is validated before anything is written — one invalid item
+    rejects the call with `applied_count: 0`. If the RTM API then fails mid-apply, the split
+    between `results` (applied) and `remaining` (not yet attempted) is returned so the caller can
+    resume safely rather than guess.
+    """
+
+    model_config = ConfigDict(extra="allow")
+    results: list[ProcessItemResult] = []
+    applied_count: int = 0
+    requested_count: int = 0
+    remaining: list[str] = []
+    projects_signalled: list[str] = []
+    fanout_events: list[str] = []
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+# --------------------------------------------------------------------------- #
 # Phase 0 reads — detector candidate tools (gtd_*_candidates / clusters / health)
 # --------------------------------------------------------------------------- #
 
@@ -1087,6 +1125,11 @@ LINK_DEPENDENCY_OUTPUT = _envelope_schema(
     "LinkDependencyEnvelope", LinkDependencyResult, Candidates
 )
 BATCH_TRANSITION_OUTPUT = _envelope_schema("BatchTransitionEnvelope", BatchTransitionResult)
+
+# GTD Phase 3 writes — process ops
+INBOX_ZERO_OUTPUT = _envelope_schema("InboxZeroEnvelope", ProcessOpResult)
+CHASE_SWEEP_OUTPUT = _envelope_schema("ChaseSweepEnvelope", ProcessOpResult)
+CONSOLIDATE_OUTPUT = _envelope_schema("ConsolidateEnvelope", ProcessOpResult)
 
 # GTD Phase 0 reads — detector candidates
 REASSESSMENT_OUTPUT = _envelope_schema("ReassessmentEnvelope", ReassessmentResult)

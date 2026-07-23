@@ -302,6 +302,21 @@ energy, comms, MoSCoW priority, note_type) are now server-owned advisory enums.
   orchestration signal for every item. Closes the silent per-item fan-out gap the generic bulk tag
   path leaves.
 
+### GTD Phase 3 writes (process ops — apply a REVIEWED verdict set)
+All three APPLY a set the caller already reviewed and approved; they never fetch-and-decide.
+DESTRUCTIVE, undoable via batch_undo. Whole-set validation first — one invalid item writes
+NOTHING; a mid-apply API failure returns a resumable results/remaining split. The orchestration
+signal is stamped ONCE per affected project, and fan-out EVENT names are returned as data, never
+written as tags. Throughput (measured): RTM has NO multi-task write endpoint, so N items cost N
+rate-limited calls; at most 50 items apply per call and the tail returns in `remaining`.
+- gtd_inbox_zero: apply an approved Inbox_Stuff disposition set (verb: tag | move | complete |
+  leave). Review with gtd_inbox_state.
+- gtd_chase_sweep: apply an approved chase verdict set over waiting-fors (retickle needs new_due,
+  resolved via parse_time before any write | convert_to_action swaps waiting_for→action AND clears
+  the tickle | complete | leave). Review with gtd_waiting_for_queue.
+- gtd_consolidate_apply: apply an approved consolidation move set (reparent | link_dependency |
+  complete | promote). Review with gtd_topic_clusters.
+
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
   mapping 1:1 to an RTM API method.

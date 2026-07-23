@@ -410,3 +410,94 @@ def test_validate_set_properties():
         w.validate_set_properties(priority="wont", energy=None, has_any=True)
     )
     assert w.validate_set_properties(priority="must", energy="low_energy", has_any=True) == []
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3 — process-op verdict grammars
+# --------------------------------------------------------------------------- #
+
+
+def test_process_batch_cap_and_split():
+    assert w.PROCESS_BATCH_CAP == 50
+    head, tail = w.split_batch(list(range(60)))
+    assert len(head) == 50 and len(tail) == 10
+    assert w.split_batch([1, 2]) == ([1, 2], [])
+
+
+def test_process_vocabularies():
+    assert sorted(w.INBOX_VERBS) == ["complete", "leave", "move", "tag"]
+    assert sorted(w.CHASE_VERDICTS) == ["complete", "convert_to_action", "leave", "retickle"]
+    assert sorted(w.CONSOLIDATE_MOVES) == ["complete", "link_dependency", "promote", "reparent"]
+
+
+def test_validate_inbox_zero_paths():
+    assert w.validate_inbox_zero([{"item_ref": "1", "verb": "complete"}]) == []
+    assert "missing_parameter" in _reasons(w.validate_inbox_zero([]))
+    assert "invalid_input" in _reasons(w.validate_inbox_zero([{"item_ref": "1", "verb": "x"}]))
+    assert "missing_parameter" in _reasons(w.validate_inbox_zero([{"verb": "complete"}]))
+    # verb-specific args
+    assert "missing_parameter" in _reasons(
+        w.validate_inbox_zero([{"item_ref": "1", "verb": "tag"}])
+    )
+    assert "missing_parameter" in _reasons(
+        w.validate_inbox_zero([{"item_ref": "1", "verb": "move"}])
+    )
+    assert (
+        w.validate_inbox_zero([{"item_ref": "1", "verb": "move", "args": {"list_name": "P"}}]) == []
+    )
+
+
+def test_validate_chase_sweep_paths():
+    assert w.validate_chase_sweep([{"waiting_for_ref": "1", "verdict": "complete"}]) == []
+    assert "invalid_input" in _reasons(
+        w.validate_chase_sweep([{"waiting_for_ref": "1", "verdict": "nudge"}])
+    )
+    # retickle must carry the new chase date
+    assert "missing_parameter" in _reasons(
+        w.validate_chase_sweep([{"waiting_for_ref": "1", "verdict": "retickle"}])
+    )
+    assert (
+        w.validate_chase_sweep(
+            [{"waiting_for_ref": "1", "verdict": "retickle", "new_due": "friday"}]
+        )
+        == []
+    )
+
+
+def test_validate_consolidate_paths():
+    assert w.validate_consolidate([{"move_type": "complete", "task_ref": "1"}]) == []
+    assert "invalid_input" in _reasons(w.validate_consolidate([{"move_type": "merge"}]))
+    assert "missing_parameter" in _reasons(
+        w.validate_consolidate([{"move_type": "reparent", "task_ref": "1"}])
+    )
+    assert "missing_parameter" in _reasons(w.validate_consolidate([{"move_type": "promote"}]))
+    assert "self_dep" in _reasons(
+        w.validate_consolidate(
+            [
+                {
+                    "move_type": "link_dependency",
+                    "dependent_ref": "1",
+                    "upstream_ref": "1",
+                    "why": "w",
+                }
+            ]
+        )
+    )
+    assert "missing_parameter" in _reasons(
+        w.validate_consolidate(
+            [{"move_type": "link_dependency", "dependent_ref": "1", "upstream_ref": "2"}]
+        )
+    )  # no why
+    assert (
+        w.validate_consolidate(
+            [
+                {
+                    "move_type": "link_dependency",
+                    "dependent_ref": "1",
+                    "upstream_ref": "2",
+                    "why": "w",
+                }
+            ]
+        )
+        == []
+    )
