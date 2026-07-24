@@ -3687,6 +3687,325 @@ class TestGtdPhase2Writes:
         assert not (set(_methods(client)) & WRITE_METHODS)
 
 
+def _note_dict(nid, title_line, body=""):
+    """A note as it comes back from getList: RTM stores title\\ntext and returns an empty title,
+    so the title is line 1 of the body."""
+    text = title_line if not body else f"{title_line}\n{body}"
+    return {"id": nid, "title": "", "$t": text, "created": "2026-07-20T00:00:00Z"}
+
+
+class TestGtdPhase4aNotes:
+    """Note family, the bounded note-edit verb, and the two additive extensions."""
+
+    @pytest.mark.asyncio
+    async def test_attach_output_writes_note_with_filing_line_and_register(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("a1", "1001", "Draft the spec", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_attach_output"](
+            FakeContext(),
+            task_ref="1001",
+            filing_path="work/p/spec.md",
+            output_summary="Spec drafted",
+        )
+        data = res["data"]
+        assert data["register_updated"] is True
+        note = next(
+            k for k in _kw_for(client, "rtm.tasks.notes.add") if "OUTPUT" in k.get("note_title", "")
+        )
+        assert "FILING: work/p/spec.md" in note["note_text"]
+        # register created on the project (no existing OUTPUTS note)
+        reg = next(
+            k
+            for k in _kw_for(client, "rtm.tasks.notes.add")
+            if k.get("note_title", "").startswith("OUTPUTS:")
+        )
+        assert reg["task_id"] == PROJECT_ID and "| filed |" in reg["note_text"]
+
+    @pytest.mark.asyncio
+    async def test_attach_output_bad_path_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            side_effect=_write_dispatch(_getlist([_ts("a1", "1001", "A", tags=["work", "action"])]))
+        )
+        res = await tools["gtd_attach_output"](
+            FakeContext(),
+            task_ref="1001",
+            filing_path="/absolute.md",
+            output_summary="x",
+        )
+        assert "invalid_input" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_attach_output_appends_to_existing_register(self, gtd_tools):
+        tools, client = gtd_tools
+        reg_body = (
+            "OUTPUTS: Proj\n\n| Date | Action | Output | Type | Status | Path |\n"
+            "|------|--------|--------|------|--------|------|\n"
+            "| 2026-07-20 | Old | T | doc | filed | p/old.md |\n\nLast updated: 2026-07-20"
+        )
+        tree = _getlist(
+            [
+                _ts(
+                    "tsP",
+                    PROJECT_ID,
+                    "Proj",
+                    parent=AREA_ID,
+                    tags=["work", "project"],
+                    notes=[_note_dict("nreg", "OUTPUTS: Proj", reg_body.split("\n", 1)[1])],
+                ),
+                _ts("a1", "1001", "A", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        await tools["gtd_attach_output"](
+            FakeContext(),
+            task_ref="1001",
+            filing_path="p/new.md",
+            output_summary="New out",
+        )
+        edit = next(
+            k for k in _kw_for(client, "rtm.tasks.notes.edit") if k.get("note_id") == "nreg"
+        )
+        assert "p/new.md" in edit["note_text"] and edit["note_text"].count("Last updated:") == 1
+
+    @pytest.mark.asyncio
+    async def test_attach_contribution_variants(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist([_ts("a1", "1001", "Research X", tags=["work", "action"])])
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_attach_contribution"](
+            FakeContext(),
+            task_ref="1001",
+            variant="contrib",
+            category="research",
+            contrib_body="Found X",
+            summary="the finding",
+        )
+        data = res["data"]
+        assert data["note_type"] == "CONTRIB" and data["tag"] == "ai_contrib_drafted"
+        note = _kw_for(client, "rtm.tasks.notes.add")[0]
+        assert "CONTRIB" in note["note_title"] and "research" in note["note_title"]
+        assert any("ai_contrib_drafted" in k["tags"] for k in _kw_for(client, "rtm.tasks.addTags"))
+
+    @pytest.mark.asyncio
+    async def test_attach_contribution_speculative_strict_gate(self, gtd_tools):
+        """The speculative variant needs #ai_speculative — rejected under strict-tag until provisioned."""
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=True)
+        client.get_account_tags = AsyncMock(return_value={"ai_conversation", "action", "work"})
+        client.call = AsyncMock(
+            side_effect=_write_dispatch(_getlist([_ts("a1", "1001", "X", tags=["work", "action"])]))
+        )
+        res = await tools["gtd_attach_contribution"](
+            FakeContext(),
+            task_ref="1001",
+            variant="speculative",
+            contrib_body="spec work",
+        )
+        assert "strict_tag_rejected" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_annotate_clarification_note_rename_and_review(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist([_ts("i1", "5001", "raw stuff", tags=["ai_conversation"])])
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_annotate_clarification"](
+            FakeContext(),
+            inbox_item_ref="5001",
+            analysis_body="2 items found",
+            questions=["Which project?"],
+            rename="Renew car insurance",
+        )
+        data = res["data"]
+        assert data["renamed"] is True and data["questions_count"] == 1
+        note = _kw_for(client, "rtm.tasks.notes.add")[0]
+        assert "AI ANALYSIS" in note["note_title"] and "CLARIFYING QUESTIONS" in note["note_text"]
+        assert _kw_for(client, "rtm.tasks.setName")[0]["name"] == "Renew car insurance"
+        assert any("ai_review" in k["tags"] for k in _kw_for(client, "rtm.tasks.addTags"))
+
+    @pytest.mark.asyncio
+    async def test_annotate_empty_body_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            side_effect=_write_dispatch(
+                _getlist([_ts("i1", "5001", "raw", tags=["ai_conversation"])])
+            )
+        )
+        res = await tools["gtd_annotate_clarification"](
+            FakeContext(),
+            inbox_item_ref="5001",
+            analysis_body="  ",
+        )
+        assert "missing_parameter" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_edit_note_each_bounded_op(self, gtd_tools):
+        tools, client = gtd_tools
+        note = _note_dict("n1", "2026-07-20 — DEPENDS-ON — x", "Depends on: Y\nStatus: active")
+        tree = _getlist([_ts("a1", "1001", "A", tags=["work", "action"], notes=[note])])
+        # replace_line: flip the status line
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_edit_note"](
+            FakeContext(),
+            task_ref="1001",
+            note_ref="n1",
+            edit={"op": "replace_line", "match": "Status:", "new": "Status: resolved"},
+        )
+        assert res["data"]["changed"] is True
+        edit = _kw_for(client, "rtm.tasks.notes.edit")[0]
+        assert "Status: resolved" in edit["note_text"] and edit["note_id"] == "n1"
+
+    @pytest.mark.asyncio
+    async def test_edit_note_retitle_grammar_reject(self, gtd_tools):
+        tools, client = gtd_tools
+        note = _note_dict("n1", "2026-07-20 — PROGRESS — x", "body")
+        tree = _getlist([_ts("a1", "1001", "A", tags=["work", "action"], notes=[note])])
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_edit_note"](
+            FakeContext(),
+            task_ref="1001",
+            note_ref="n1",
+            edit={"op": "retitle", "new_title": "not a valid title"},
+        )
+        assert "invalid_note_type" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_edit_note_no_match_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        note = _note_dict("n1", "2026-07-20 — PROGRESS — x", "hello")
+        tree = _getlist([_ts("a1", "1001", "A", tags=["work", "action"], notes=[note])])
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_edit_note"](
+            FakeContext(),
+            task_ref="1001",
+            note_ref="n1",
+            edit={"op": "replace_substring", "old": "not-present", "new": "y"},
+        )
+        assert res["data"]["changed"] is False
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_edit_note_unknown_note_ref_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist([_ts("a1", "1001", "A", tags=["work", "action"])])
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_edit_note"](
+            FakeContext(),
+            task_ref="1001",
+            note_ref="nope",
+            edit={"op": "replace_substring", "old": "x", "new": "y"},
+        )
+        assert "task_not_found" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    # ---- the two additive extensions: regression guards -------------------- #
+
+    @pytest.mark.asyncio
+    async def test_transition_accepts_ai_engine_tag(self, gtd_tools):
+        """Item 2.5: the #ai_* engine namespace already transitions (existence-gate, not allow-list)."""
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("a1", "1001", "A", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_transition_state"](
+            FakeContext(),
+            task_ref="1001",
+            add_tags=["ai_progress_requested"],
+        )
+        assert "rejected" not in res["data"]
+        assert "ai_progress_requested" in res["data"]["tags"]
+
+    @pytest.mark.asyncio
+    async def test_link_dependency_create_mode_unchanged(self, gtd_tools):
+        """Item 2.6 additive: the default mode='create' still writes the DEPENDS-ON note."""
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("a1", "7001", "Send", parent=PROJECT_ID, tags=["work", "action"]),
+                _ts("a2", "7002", "Draft", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_link_dependency"](
+            FakeContext(),
+            dependent_ref="7001",
+            upstream_ref="7002",
+            why="payload",
+        )
+        assert res["data"]["status"] == "active"
+        assert _kw_for(client, "rtm.tasks.notes.add")[0]["task_id"] == "7001"
+
+    @pytest.mark.asyncio
+    async def test_link_dependency_resolve_mode_flips_note(self, gtd_tools):
+        tools, client = gtd_tools
+        dep_note = _note_dict(
+            "nd",
+            "2026-07-20 — DEPENDS-ON — depends on Draft",
+            'Depends on: Draft\ntask_id: "7002"\nStatus: active',
+        )
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts(
+                    "a1",
+                    "7001",
+                    "Send",
+                    parent=PROJECT_ID,
+                    tags=["work", "action"],
+                    notes=[dep_note],
+                ),
+                _ts("a2", "7002", "Draft", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_link_dependency"](
+            FakeContext(),
+            dependent_ref="7001",
+            upstream_ref="7002",
+            why="",
+            mode="resolve",
+        )
+        data = res["data"]
+        assert data["status"] == "resolved"
+        edit = _kw_for(client, "rtm.tasks.notes.edit")[0]
+        assert "Status: resolved" in edit["note_text"] and "Resolved at:" in edit["note_text"]
+
+    @pytest.mark.asyncio
+    async def test_link_dependency_resolve_no_matching_note(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("a1", "7001", "Send", tags=["work", "action"]),
+                _ts("a2", "7002", "Draft", tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_link_dependency"](
+            FakeContext(),
+            dependent_ref="7001",
+            upstream_ref="7002",
+            why="",
+            mode="resolve",
+        )
+        assert "invalid_input" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+
 class TestGtdPhase3ProcessOps:
     """Apply-a-reviewed-set: whole-set atomicity, once-per-project signal, bounded input."""
 

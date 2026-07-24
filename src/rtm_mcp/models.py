@@ -856,6 +856,62 @@ class ProcessOpResult(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Phase 4a writes — note family, note-edit, dependency-flip
+# --------------------------------------------------------------------------- #
+
+
+class AttachOutputResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    output_note_title: str = ""
+    filing_path: str = ""
+    register_updated: bool = False
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+class AttachContributionResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    note_type: str = ""
+    note_title: str = ""
+    tag: str = ""
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+class AnnotateClarificationResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    note_title: str = ""
+    renamed: bool = False
+    new_name: str = ""
+    questions_count: int = 0
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+class EditNoteResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    note_id: str = ""
+    op: str = ""
+    changed: bool = False
+    detail: str = ""
+    note_title: str = ""
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+# --------------------------------------------------------------------------- #
 # Phase 0 reads — detector candidate tools (gtd_*_candidates / clusters / health)
 # --------------------------------------------------------------------------- #
 
@@ -1130,6 +1186,14 @@ BATCH_TRANSITION_OUTPUT = _envelope_schema("BatchTransitionEnvelope", BatchTrans
 INBOX_ZERO_OUTPUT = _envelope_schema("InboxZeroEnvelope", ProcessOpResult)
 CHASE_SWEEP_OUTPUT = _envelope_schema("ChaseSweepEnvelope", ProcessOpResult)
 CONSOLIDATE_OUTPUT = _envelope_schema("ConsolidateEnvelope", ProcessOpResult)
+
+# GTD Phase 4a writes — note family, note-edit
+ATTACH_OUTPUT_OUTPUT = _envelope_schema("AttachOutputEnvelope", AttachOutputResult, Candidates)
+ATTACH_CONTRIB_OUTPUT = _envelope_schema(
+    "AttachContribEnvelope", AttachContributionResult, Candidates
+)
+ANNOTATE_OUTPUT = _envelope_schema("AnnotateEnvelope", AnnotateClarificationResult, Candidates)
+EDIT_NOTE_OUTPUT = _envelope_schema("GtdEditNoteEnvelope", EditNoteResult, Candidates)
 
 # GTD Phase 0 reads — detector candidates
 REASSESSMENT_OUTPUT = _envelope_schema("ReassessmentEnvelope", ReassessmentResult)

@@ -804,3 +804,264 @@ def validate_consolidate(moves: list[dict[str, Any]]) -> list[dict[str, Any]]:
         elif not _ref_of(m, "task_ref"):
             rejections.append(_reject(ErrorCode.MISSING_PARAMETER, f"[{i}] '{mt}' needs task_ref"))
     return rejections
+
+
+# =========================================================================== #
+# Phase 4a — the note-family, note-edit, and dependency-flip grammar
+# =========================================================================== #
+
+# --- OUTPUT + FILING (gtd_attach_output) ----------------------------------- #
+# The server emits the NSC / validate-note.py model: ONE OUTPUT note carrying a FILING: LINE in
+# its body — NOT the GMI two-note pair. This server's own gtd_chat_thread already parses FILING as
+# a line inside an OUTPUT-typed note, so internal consistency forces the single-note shape.
+
+AI_SPECULATIVE = "ai_speculative"
+AI_CONTRIB_DRAFTED = "ai_contrib_drafted"
+AI_PREP_DRAFTED = "ai_prep_drafted"
+OUTPUTS_REGISTER_HEADER = "| Date | Action | Output | Type | Status | Path |"
+OUTPUTS_REGISTER_SEP = "|------|--------|--------|------|--------|------|"
+
+
+def check_filing_path(path: str) -> str | None:
+    """Mechanical FILING-path shape (the validator's rule — the server owns shape). Returns an
+    error detail, or None. Vault-relative, forward slashes only."""
+    p = (path or "").strip()
+    if not p:
+        return "filing_path is required — the OUTPUT note's machine purpose is the artefact link"
+    if p.startswith("/"):
+        return "filing_path must be vault-relative (no leading '/')"
+    if "\\" in p:
+        return "filing_path must use forward slashes, not backslashes"
+    return None
+
+
+def output_note_body(filing_path: str, output_summary: str, *, companion: bool = True) -> str:
+    """OUTPUT note body: the narrative then the line-anchored FILING: link the parser reads."""
+    marker = " (+ .meta.md)" if companion else ""
+    return f"{output_summary.strip()}\n\nFILING: {filing_path.strip()}{marker}"
+
+
+def outputs_register_row(
+    *, date: str, action_name: str, output_title: str, output_type: str, status: str, path: str
+) -> str:
+    return f"| {date} | {action_name} | {output_title} | {output_type} | {status} | {path} |"
+
+
+def new_outputs_register(project_name: str, row: str, *, date: str) -> str:
+    """A fresh OUTPUTS register note body (used when the project has none yet)."""
+    return "\n".join(
+        [
+            f"OUTPUTS: {project_name}",
+            "",
+            OUTPUTS_REGISTER_HEADER,
+            OUTPUTS_REGISTER_SEP,
+            row,
+            "",
+            f"Last updated: {date}",
+        ]
+    )
+
+
+def append_outputs_row(existing_body: str, row: str, *, date: str) -> str:
+    """Append a row to an existing OUTPUTS register, refreshing `Last updated:` (append-only rows)."""
+    lines = existing_body.split("\n")
+    out: list[str] = []
+    inserted = False
+    for ln in lines:
+        if ln.startswith("Last updated:") and not inserted:
+            out.append(row)
+            out.append("")
+            out.append(f"Last updated: {date}")
+            inserted = True
+            continue
+        if ln.startswith("Last updated:"):
+            continue
+        out.append(ln)
+    if not inserted:  # no Last-updated line — append at the end
+        out.append(row)
+        out.append(f"Last updated: {date}")
+    return "\n".join(out).rstrip() + "\n"
+
+
+def validate_attach_output(*, filing_path: str, output_summary: str) -> list[dict[str, Any]]:
+    rejections: list[dict[str, Any]] = []
+    if not (output_summary or "").strip():
+        rejections.append(_reject(ErrorCode.MISSING_PARAMETER, "output_summary is required"))
+    err = check_filing_path(filing_path)
+    if err:
+        rejections.append(_reject(ErrorCode.INVALID_INPUT, err, field="filing_path"))
+    return rejections
+
+
+# --- CONTRIB family (gtd_attach_contribution) ------------------------------ #
+
+CONTRIB_VARIANTS = frozenset({"contrib", "contrib_update", "prep", "speculative"})
+CONTRIB_CATEGORIES = frozenset(
+    {"research", "draft", "brief", "decision", "unblock", "capture", "consolidate", "monitor"}
+)
+#: variant → (note TYPE, the tag it writes).
+_CONTRIB_SHAPE: dict[str, tuple[str, str]] = {
+    "contrib": ("CONTRIB", AI_CONTRIB_DRAFTED),
+    "contrib_update": ("CONTRIB-UPDATE", AI_CONTRIB_DRAFTED),
+    "prep": ("PREP", AI_PREP_DRAFTED),
+    "speculative": ("SOURCE-DRAFT", AI_SPECULATIVE),
+}
+
+
+def contrib_note_type(variant: str) -> str:
+    return _CONTRIB_SHAPE[variant][0]
+
+
+def contrib_tag(variant: str) -> str:
+    return _CONTRIB_SHAPE[variant][1]
+
+
+def contrib_summary(variant: str, category: str, summary: str) -> str:
+    """CONTRIB/CONTRIB-UPDATE carry the category in the title; PREP/SOURCE-DRAFT do not."""
+    if variant in ("contrib", "contrib_update"):
+        return f"{category} — {summary}".strip(" —")
+    return summary.strip()
+
+
+def validate_attach_contribution(
+    *, variant: str, category: str, contrib_body: str
+) -> list[dict[str, Any]]:
+    rejections: list[dict[str, Any]] = []
+    if variant not in CONTRIB_VARIANTS:
+        rejections.append(
+            _reject(
+                ErrorCode.INVALID_INPUT,
+                f"variant must be one of {sorted(CONTRIB_VARIANTS)}",
+                field="variant",
+            )
+        )
+        return rejections
+    if not (contrib_body or "").strip():
+        rejections.append(_reject(ErrorCode.MISSING_PARAMETER, "contrib_body is required"))
+    if variant in ("contrib", "contrib_update") and category not in CONTRIB_CATEGORIES:
+        rejections.append(
+            _reject(
+                ErrorCode.INVALID_INPUT,
+                f"category must be one of {sorted(CONTRIB_CATEGORIES)} for a {variant} note",
+                field="category",
+            )
+        )
+    return rejections
+
+
+# --- AI ANALYSIS (gtd_annotate_clarification) ------------------------------ #
+
+AI_ANALYSIS_TYPE = "AI ANALYSIS"  # the one canonical space-bearing TYPE (note-shape-catalogue § 2)
+
+
+def ai_analysis_body(analysis_body: str, questions: list[str] | None) -> str:
+    """The AI ANALYSIS body, with the optional CLARIFYING QUESTIONS block appended (omitted
+    entirely when there are no genuine questions — the pipeline rule)."""
+    body = analysis_body.strip()
+    qs = [q.strip() for q in (questions or []) if q and q.strip()]
+    if qs:
+        block = "\n".join(f"{i}. {q}" for i, q in enumerate(qs, 1))
+        body = f"{body}\n\nCLARIFYING QUESTIONS\n{block}"
+    return body
+
+
+def validate_annotate_clarification(*, analysis_body: str) -> list[dict[str, Any]]:
+    if not (analysis_body or "").strip():
+        return [_reject(ErrorCode.MISSING_PARAMETER, "analysis_body is required")]
+    return []
+
+
+# --- gtd_edit_note — the bounded op-set (D2) -------------------------------- #
+# The ONLY mutate-in-place note verb. `replace_substring` mirrors gtd:replace_in_note_body
+# (substring, first occurrence only); `replace_line` / `set_frontmatter_key` / `retitle` are
+# net-new bounded ops. There is deliberately NO free-form body overwrite — the bounded set is the
+# safety property.
+
+EDIT_NOTE_OPS = frozenset({"replace_substring", "replace_line", "set_frontmatter_key", "retitle"})
+
+
+def validate_edit_note(edit: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate a single bounded edit op. A retitle additionally re-validates the title grammar."""
+    op = str(edit.get("op") or "").strip()
+    rejections: list[dict[str, Any]] = []
+    if op not in EDIT_NOTE_OPS:
+        rejections.append(
+            _reject(ErrorCode.INVALID_INPUT, f"op must be one of {sorted(EDIT_NOTE_OPS)}", op=op)
+        )
+        return rejections
+    if op == "replace_substring":
+        if not str(edit.get("old") or ""):
+            rejections.append(_reject(ErrorCode.MISSING_PARAMETER, "replace_substring needs `old`"))
+    elif op == "replace_line":
+        if not str(edit.get("match") or ""):
+            rejections.append(_reject(ErrorCode.MISSING_PARAMETER, "replace_line needs `match`"))
+    elif op == "set_frontmatter_key":
+        if not str(edit.get("key") or "").strip():
+            rejections.append(
+                _reject(ErrorCode.MISSING_PARAMETER, "set_frontmatter_key needs `key`")
+            )
+    elif op == "retitle":
+        new_title = str(edit.get("new_title") or "")
+        from .note_shape import check_title
+
+        grammar = check_title(new_title)
+        if grammar:
+            rejections.append(
+                _reject(
+                    ErrorCode.INVALID_NOTE_TYPE,
+                    f"retitle new_title fails the note-title grammar: {grammar}",
+                    new_title=new_title,
+                )
+            )
+    return rejections
+
+
+def apply_edit_op(title: str, body: str, edit: dict[str, Any]) -> tuple[str, str, str] | None:
+    """Apply ONE bounded op to `(title, body)`. Returns `(new_title, new_body, detail)` on a change,
+    or None when the op found nothing to change (a no-op — pattern not present)."""
+    op = str(edit.get("op"))
+    if op == "replace_substring":
+        old, new = str(edit.get("old")), str(edit.get("new") or "")
+        if old not in body:
+            return None
+        return title, body.replace(old, new, 1), f"replaced 1 occurrence of {old!r}"
+    if op == "replace_line":
+        match, new = str(edit.get("match")), str(edit.get("new") or "")
+        lines = body.split("\n")
+        for i, ln in enumerate(lines):
+            if match in ln:
+                lines[i] = new
+                return title, "\n".join(lines), f"replaced line matching {match!r}"
+        return None
+    if op == "set_frontmatter_key":
+        key, value = str(edit.get("key")).strip(), str(edit.get("value") or "")
+        lines = body.split("\n")
+        newline = f"{key}: {value}"
+        for i, ln in enumerate(lines):
+            if ln.strip().startswith(f"{key}:"):
+                lines[i] = newline
+                return title, "\n".join(lines), f"set {key}"
+        # key absent — append it (bounded add of one k/v line, not a free-form overwrite)
+        lines.append(newline)
+        return title, "\n".join(lines), f"added {key}"
+    if op == "retitle":
+        return str(edit.get("new_title")), body, "retitled"
+    return None
+
+
+# --- DEPENDS-ON resolve/flip (gtd_link_dependency mode) --------------------- #
+
+LINK_MODES = frozenset({"create", "resolve", "obsolete"})
+
+
+def is_active_depends_on(body: str) -> bool:
+    return "DEPENDS-ON" in body and "Status: active" in body
+
+
+def flip_depends_on(body: str, *, status: str, date: str) -> str:
+    """Flip `Status: active` → resolved|obsolete and append `Resolved at: <date>` (the engine's
+    exact line — space, not hyphen; there is no `Resolved-by:` line)."""
+    out = body.replace("Status: active", f"Status: {status}", 1)
+    if "Resolved at:" not in out:
+        out = out.rstrip() + f"\nResolved at: {date}"
+    return out

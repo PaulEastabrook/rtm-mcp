@@ -317,6 +317,24 @@ rate-limited calls; at most 50 items apply per call and the tail returns in `rem
 - gtd_consolidate_apply: apply an approved consolidation move set (reparent | link_dependency |
   complete | promote). Review with gtd_topic_clusters.
 
+### GTD Phase 4a writes (note family, note-edit, dependency-flip)
+- gtd_attach_output: writes the OUTPUT note (with the line-anchored FILING: link the reader parses)
+  on the action + appends the row to the project's OUTPUTS register. Single-note model (the
+  validate-note.py / gtd_chat_thread shape), not the GMI two-note pair.
+- gtd_attach_contribution: CONTRIB | CONTRIB-UPDATE | PREP | SOURCE-DRAFT note + the variant's tag
+  (ai_contrib_drafted / ai_prep_drafted / ai_speculative). speculative needs #ai_speculative
+  provisioned (D8).
+- gtd_annotate_clarification: the Inbox_Stuff Processor's write — AI ANALYSIS note (+ optional
+  CLARIFYING QUESTIONS block) + optional rename + #ai_review.
+- gtd_edit_note: the ONLY mutate-in-place note verb, DELIBERATELY BOUNDED — replace_substring |
+  replace_line | set_frontmatter_key | retitle (re-validates the title grammar). No free-form
+  overwrite exists; the bounded op-set IS the safety property.
+- gtd_link_dependency gains mode='resolve'|'obsolete' — flips an existing DEPENDS-ON note's
+  Status: active → resolved|obsolete and appends `Resolved at: <date>` (default mode='create'
+  unchanged).
+NOTE: gtd_transition_state already accepts the #ai_* engine tags — the server existence-gates
+tags rather than keeping a GTD-only allow-list, so item 2.5 needed no code change.
+
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
   mapping 1:1 to an RTM API method.

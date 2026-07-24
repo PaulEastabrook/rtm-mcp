@@ -102,11 +102,15 @@ from ..gtd_reads import (
 )
 from ..gtd_writes import (
     ACTION_CONTEXTS,
+    AI_ANALYSIS_TYPE,
     AI_REVIEW,
     CALENDAR_TAG,
     CHASE_VERDICTS,
     COMMS_MODES,
     CONSOLIDATE_MOVES,
+    CONTRIB_CATEGORIES,
+    CONTRIB_VARIANTS,
+    EDIT_NOTE_OPS,
     ENERGY_LEVELS,
     INBOX_CLOSE_SUMMARY,
     INBOX_LIST,
@@ -114,28 +118,44 @@ from ..gtd_writes import (
     ITEM_KINDS,
     JOURNAL_NOTE_TYPES,
     LIFE_CONTEXTS,
+    LINK_MODES,
     MOSCOW_BANDS,
     MOSCOW_TO_PRIORITY,
     PROCESSED_LIST,
     UPSTREAM_TYPES,
+    ai_analysis_body,
+    append_outputs_row,
+    apply_edit_op,
     collapse_write,
     collect_item_tags,
     collect_transition_tags,
     completion_events,
+    contrib_note_type,
+    contrib_summary,
+    contrib_tag,
     depends_on_note,
     divergent_band_proposals,
+    flip_depends_on,
     format_note_title,
     inbox_close_body,
+    is_active_depends_on,
     item_tags,
+    new_outputs_register,
     output_approval_transition,
+    output_note_body,
+    outputs_register_row,
     split_batch,
     state_body,
     validate_add_note,
+    validate_annotate_clarification,
+    validate_attach_contribution,
+    validate_attach_output,
     validate_capture,
     validate_chase_sweep,
     validate_complete,
     validate_consolidate,
     validate_create_item,
+    validate_edit_note,
     validate_inbox_zero,
     validate_link_dependency,
     validate_set_properties,
@@ -144,6 +164,9 @@ from ..gtd_writes import (
 from ..lookup import resolve_list_id, resolve_system_list_id
 from ..models import (
     ADD_NOTE_OUTPUT,
+    ANNOTATE_OUTPUT,
+    ATTACH_CONTRIB_OUTPUT,
+    ATTACH_OUTPUT_OUTPUT,
     BATCH_TRANSITION_OUTPUT,
     CALENDAR_PREP_OUTPUT,
     CANVAS_COMMIT_OUTPUT,
@@ -160,6 +183,7 @@ from ..models import (
     CREATE_PROJECT_OUTPUT,
     DECISION_OUTPUT,
     DELIVERABLE_OUTPUT,
+    EDIT_NOTE_OUTPUT,
     ENGAGE_COMMIT_OUTPUT,
     ENGAGE_SEED_OUTPUT,
     GTD_CONTEXT_OUTPUT,
@@ -284,6 +308,23 @@ _CHASE_VERDICT_SCHEMA: dict[str, Any] = {
         "new_due": {"type": "string"},
     },
     "required": ["waiting_for_ref", "verdict"],
+}
+_CONTRIB_VARIANT_ENUM: dict[str, Any] = {"enum": sorted(CONTRIB_VARIANTS)}
+_CONTRIB_CATEGORY_ENUM: dict[str, Any] = {"enum": sorted(CONTRIB_CATEGORIES)}
+_EDIT_OP_ENUM: dict[str, Any] = {"enum": sorted(EDIT_NOTE_OPS)}
+_LINK_MODE_ENUM: dict[str, Any] = {"enum": sorted(LINK_MODES)}
+_EDIT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "op": {"type": "string", "enum": sorted(EDIT_NOTE_OPS)},
+        "old": {"type": "string"},
+        "new": {"type": "string"},
+        "match": {"type": "string"},
+        "key": {"type": "string"},
+        "value": {"type": "string"},
+        "new_title": {"type": "string"},
+    },
+    "required": ["op"],
 }
 _CONSOLIDATE_MOVE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -4329,9 +4370,20 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             str,
             Field(description="What the upstream is.", json_schema_extra=_UPSTREAM_TYPE_ENUM),
         ] = "action",
+        mode: Annotated[
+            str,
+            Field(
+                description="'create' (default) records a new dependency; 'resolve' / 'obsolete' "
+                "flip the existing DEPENDS-ON note on the dependent that references the upstream.",
+                json_schema_extra=_LINK_MODE_ENUM,
+            ),
+        ] = "create",
     ) -> dict[str, Any]:
         """GTD — record a dependency as a conforming DEPENDS-ON note on the DEPENDENT task, and
-        stamp the overlay-refresh signal so the plan-graph re-layers.
+        stamp the overlay-refresh signal so the plan-graph re-layers. `mode='resolve'|'obsolete'`
+        instead FLIPS the existing note's `Status: active` → resolved|obsolete and appends
+        `Resolved at: <date>` (the engine's exact line — no `Resolved-by:`). Additive: the default
+        `mode='create'` is byte-identical to the pre-4a behaviour.
 
         Governed write, validate-then-apply — a rejected link writes NOTHING. The note carries
         every field the gtd validator hard-requires (`Depends on:`, the full upstream id triple,
@@ -4379,6 +4431,74 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 )
             )
         upstream = up["task"]
+
+        # mode resolve|obsolete — flip the existing active DEPENDS-ON note referencing this upstream.
+        if mode in ("resolve", "obsolete"):
+            uid = str(upstream.get("id"))
+            target = None
+            for n in dependent.get("notes") or []:
+                ntitle, nbody = _note_title_body(n)
+                full = f"{ntitle}\n{nbody}"  # the DEPENDS-ON marker lives in the title line
+                if is_active_depends_on(full) and f'task_id: "{uid}"' in full:
+                    target = n
+                    break
+            if target is None:
+                return build_response(
+                    data={
+                        "rejected": [
+                            {
+                                "reason": ErrorCode.INVALID_INPUT.value,
+                                "detail": f"no active DEPENDS-ON note on {dependent.get('id')} "
+                                f"references upstream {uid}",
+                            }
+                        ],
+                        "applied": [],
+                        "errors": [],
+                        "dependent_id": str(dependent.get("id")),
+                        "message": "Nothing to flip; nothing was written.",
+                    }
+                )
+            applied: list[dict[str, Any]] = []
+            errors: list[dict[str, Any]] = []
+            _write = _writer(applied, errors, client)
+            tz = await client.get_timezone()
+            _title, body = _note_title_body(target)
+            flip_status = "resolved" if mode == "resolve" else "obsolete"
+            await _write(
+                "rtm.tasks.notes.edit",
+                f"dep:{mode}",
+                str(dependent.get("id")),
+                note_id=target.get("id"),
+                note_title=_title,
+                note_text=flip_depends_on(body, status=flip_status, date=_account_today(tz)),
+                task_id=dependent.get("id"),
+                taskseries_id=dependent.get("taskseries_id"),
+                list_id=dependent.get("list_id"),
+            )
+            proj = _nearest_project(dependent, by_id)
+            await _write(
+                "rtm.tasks.addTags",
+                "dep:flip-refresh",
+                str(proj.get("id")),
+                tags=OVERLAY_REFRESH,
+                task_id=proj.get("id"),
+                taskseries_id=proj.get("taskseries_id"),
+                list_id=proj.get("list_id"),
+            )
+            return build_response(
+                data={
+                    "dependent_id": str(dependent.get("id")),
+                    "upstream_id": uid,
+                    "upstream_type": upstream_type,
+                    "status": flip_status,
+                    "note_title": _title,
+                    "signal_stamped": OVERLAY_REFRESH,
+                    "applied": applied,
+                    "errors": errors,
+                    "message": f"Flipped the dependency to {mode}.",
+                },
+                timeline_id=client.timeline_id,
+            )
 
         rejections = validate_link_dependency(
             upstream_type=upstream_type,
@@ -5087,4 +5207,536 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             tool="gtd_consolidate_apply",
             applier=_apply,
             gate_tags=[OVERLAY_REFRESH],
+        )
+
+    # ======================================================================= #
+    # Phase 4a writes — note family, note-edit, dependency-flip
+    # ======================================================================= #
+
+    def _note_title_body(note: dict[str, Any]) -> tuple[str, str]:
+        """A note's (title, body) from the RTM storage reality: notes.add stores `title\\ntext` and
+        returns an empty title on read, so an empty title field means the title is body line 1."""
+        raw = extract_note_body(note) or ""
+        explicit = (note.get("title") or "").strip()
+        if explicit:
+            return explicit, raw
+        parts = raw.split("\n", 1)
+        return parts[0], (parts[1] if len(parts) > 1 else "")
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ATTACH_OUTPUT_OUTPUT)
+    async def gtd_attach_output(
+        ctx: Context,
+        task_ref: Annotated[
+            str, Field(description="The action the output was produced for — a task id or name.")
+        ],
+        filing_path: Annotated[
+            str,
+            Field(
+                description="Vault-relative path to the filed artefact (forward slashes, no "
+                "leading '/'). The OUTPUT note's machine purpose is this link."
+            ),
+        ],
+        output_summary: Annotated[
+            str, Field(description="One line naming what was produced (the OUTPUT note summary).")
+        ],
+        output_type: Annotated[
+            str, optional_string("Artefact type for the register row (e.g. 'doc', 'deck').")
+        ] = "doc",
+        register: Annotated[
+            bool,
+            Field(
+                description="Also append the row to the project's OUTPUTS register (default True)."
+            ),
+        ] = True,
+    ) -> dict[str, Any]:
+        """GTD — record a filed artefact: write the OUTPUT note (carrying the line-anchored
+        `FILING:` link the reader parses) on the action, and append the row to the parent
+        project's OUTPUTS register — in one governed call.
+
+        Additive write; transaction-recorded (reversible via `batch_undo`); stamps
+        `#ai_conversation`. Validate-then-apply — a bad filing path (absolute, or backslashed)
+        or an empty summary rejects with nothing written.
+
+        NOTE ON SHAPE (a deliberate deviation from the brief's 'OUTPUT + FILING pair'): this
+        emits the note-shape-catalogue / validate-note.py model — ONE OUTPUT note with a
+        `FILING:` line in its body, not a separate FILING note. This server's own
+        `gtd_chat_thread` already parses FILING as a line inside an OUTPUT-typed note, so the
+        single-note shape is the internally-consistent one. The GMI two-note form is legacy.
+
+        Args:
+            task_ref: the action (id preferred; a name resolves, ambiguous → candidates).
+            filing_path / output_summary / output_type / register: see each.
+
+        Returns (on success): {"task_id", "output_note_title", "filing_path",
+            "register_updated", "applied", "errors", "message"}.
+        Returns (on ambiguity): {"candidates": [...]}.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "invalid_input" | "missing_parameter" | "strict_tag_rejected".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}}.
+        """
+        client: RTMClient = await get_client()
+        rejections = validate_attach_output(filing_path=filing_path, output_summary=output_summary)
+        ref = await _resolve_ref(client, task_ref, "status:incomplete OR status:completed")
+        if "task" not in ref:
+            return build_response(data=ref)
+        task = ref["task"]
+        by_id = {str(t.get("id")): t for t in ref["parsed"]}
+        if not rejections:
+            gate = await enforce_strict_tags(client, [AI_CONVERSATION], tool="gtd_attach_output")
+            if gate:
+                rejections.append(as_rejection(gate))
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "task_id": str(task.get("id")),
+                    "message": "Output attach rejected; nothing was written.",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        tz = await client.get_timezone()
+        today = _account_today(tz)
+        title = format_note_title("OUTPUT", output_summary[:60], date=today)
+        await _write(
+            "rtm.tasks.notes.add",
+            "output:note",
+            str(task.get("id")),
+            note_title=title,
+            note_text=output_note_body(filing_path, output_summary),
+            task_id=task.get("id"),
+            taskseries_id=task.get("taskseries_id"),
+            list_id=task.get("list_id"),
+        )
+        await _write(
+            "rtm.tasks.addTags",
+            "output:mark",
+            str(task.get("id")),
+            tags=AI_CONVERSATION,
+            task_id=task.get("id"),
+            taskseries_id=task.get("taskseries_id"),
+            list_id=task.get("list_id"),
+        )
+
+        register_updated = False
+        proj = _nearest_project(task, by_id)
+        if register and str(proj.get("id")) != str(task.get("id")):
+            row = outputs_register_row(
+                date=today,
+                action_name=task.get("name") or "",
+                output_title=output_summary[:60],
+                output_type=output_type,
+                status="filed",
+                path=filing_path,
+            )
+            existing = None
+            for n in proj.get("notes") or []:
+                nt, _ = _note_title_body(n)
+                if nt.startswith("OUTPUTS:") or extract_note_body(n).startswith("OUTPUTS:"):
+                    existing = n
+                    break
+            pids = {
+                "task_id": proj.get("id"),
+                "taskseries_id": proj.get("taskseries_id"),
+                "list_id": proj.get("list_id"),
+            }
+            if existing:
+                _, body = _note_title_body(existing)
+                await _write(
+                    "rtm.tasks.notes.edit",
+                    "output:register-append",
+                    str(proj.get("id")),
+                    note_id=existing.get("id"),
+                    note_text=append_outputs_row(body, row, date=today),
+                    **pids,
+                )
+            else:
+                await _write(
+                    "rtm.tasks.notes.add",
+                    "output:register-new",
+                    str(proj.get("id")),
+                    note_title=f"OUTPUTS: {proj.get('name') or ''}"[:60],
+                    note_text=new_outputs_register(proj.get("name") or "", row, date=today),
+                    **pids,
+                )
+            register_updated = True
+
+        return build_response(
+            data={
+                "task_id": str(task.get("id")),
+                "output_note_title": title,
+                "filing_path": filing_path,
+                "register_updated": register_updated,
+                "applied": applied,
+                "errors": errors,
+                "message": f"Recorded output; register {'updated' if register_updated else 'skipped'}.",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ATTACH_CONTRIB_OUTPUT)
+    async def gtd_attach_contribution(
+        ctx: Context,
+        task_ref: Annotated[
+            str,
+            Field(description="The action the contribution was produced for — a task id or name."),
+        ],
+        contrib_body: Annotated[str, Field(description="The CONTRIB note body.")],
+        variant: Annotated[
+            str,
+            Field(
+                description="contrib | contrib_update | prep (Brief alias) | speculative "
+                "(SOURCE-DRAFT + #ai_speculative).",
+                json_schema_extra=_CONTRIB_VARIANT_ENUM,
+            ),
+        ] = "contrib",
+        category: Annotated[
+            str,
+            optional_string(
+                "Contribution category (required for contrib / contrib_update).",
+                **_CONTRIB_CATEGORY_ENUM,
+            ),
+        ] = "",
+        summary: Annotated[
+            str, optional_string("One-line title summary (defaults from the category).")
+        ] = "",
+    ) -> dict[str, Any]:
+        """GTD — attach an AI contribution note and its state tag in one governed call.
+
+        Additive write; transaction-recorded; stamps `#ai_conversation`. Writes the note TYPE
+        and tag for the variant: contrib/contrib_update → CONTRIB / CONTRIB-UPDATE +
+        `#ai_contrib_drafted`; prep → PREP + `#ai_prep_drafted`; speculative → SOURCE-DRAFT +
+        `#ai_speculative`. Validate-then-apply — a rejected attach writes nothing.
+
+        D8 note: the `speculative` variant needs `#ai_speculative` provisioned in the account;
+        under strict-tag mode it is rejected until then (the other three variants work today).
+
+        Args:
+            task_ref / contrib_body / variant / category / summary: see each.
+
+        Returns (on success): {"task_id", "note_type", "note_title", "tag", "applied",
+            "errors", "message"}.
+        Returns (on ambiguity): {"candidates": [...]}.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "invalid_input" | "missing_parameter" | "strict_tag_rejected".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}}.
+        """
+        client: RTMClient = await get_client()
+        rejections = validate_attach_contribution(
+            variant=variant, category=category, contrib_body=contrib_body
+        )
+        ref = await _resolve_ref(client, task_ref, "status:incomplete OR status:completed")
+        if "task" not in ref:
+            return build_response(data=ref)
+        task = ref["task"]
+        tag = contrib_tag(variant) if variant in CONTRIB_VARIANTS else ""
+        if not rejections:
+            gate = await enforce_strict_tags(
+                client, sorted({AI_CONVERSATION, tag}), tool="gtd_attach_contribution"
+            )
+            if gate:
+                rejections.append(as_rejection(gate))
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "task_id": str(task.get("id")),
+                    "message": "Contribution rejected; nothing was written.",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        tz = await client.get_timezone()
+        today = _account_today(tz)
+        note_type = contrib_note_type(variant)
+        title = format_note_title(
+            note_type,
+            contrib_summary(variant, category, summary or note_type.title())[:60],
+            date=today,
+        )
+        ids = {
+            "task_id": task.get("id"),
+            "taskseries_id": task.get("taskseries_id"),
+            "list_id": task.get("list_id"),
+        }
+        await _write(
+            "rtm.tasks.notes.add",
+            f"contrib:{variant}",
+            str(task.get("id")),
+            note_title=title,
+            note_text=contrib_body,
+            **ids,
+        )
+        await _write(
+            "rtm.tasks.addTags",
+            "contrib:tag",
+            str(task.get("id")),
+            tags=f"{tag},{AI_CONVERSATION}",
+            **ids,
+        )
+        return build_response(
+            data={
+                "task_id": str(task.get("id")),
+                "note_type": note_type,
+                "note_title": title,
+                "tag": tag,
+                "applied": applied,
+                "errors": errors,
+                "message": f"Attached a {note_type} note (+#{tag}).",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ANNOTATE_OUTPUT)
+    async def gtd_annotate_clarification(
+        ctx: Context,
+        inbox_item_ref: Annotated[
+            str, Field(description="The Inbox_Stuff item being clarified — a task id or name.")
+        ],
+        analysis_body: Annotated[str, Field(description="The AI ANALYSIS note body.")],
+        questions: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema(
+                    "Optional CLARIFYING QUESTIONS (2-4) — appended as a block. Omit when the "
+                    "recommendations are clear (the pipeline rule)."
+                )
+            ),
+        ] = None,
+        rename: Annotated[
+            str,
+            optional_string(
+                "Optional new task name (set_task_name) when a clearer one is derivable."
+            ),
+        ] = "",
+    ) -> dict[str, Any]:
+        """GTD — the Inbox_Stuff Processor's write: attach the AI ANALYSIS note (with an optional
+        CLARIFYING QUESTIONS block), optionally rename the item, and add `#ai_review` — in one
+        governed call.
+
+        Additive write; transaction-recorded; stamps `#ai_conversation`. Validate-then-apply —
+        an empty analysis body rejects with nothing written. The item moves into the review
+        queue (`#ai_review`) for Paul; it is not classified here (that is clarify-time work).
+
+        Args:
+            inbox_item_ref / analysis_body / questions / rename: see each.
+
+        Returns (on success): {"task_id", "note_title", "renamed", "new_name",
+            "questions_count", "applied", "errors", "message"}.
+        Returns (on ambiguity): {"candidates": [...]}.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "missing_parameter" | "strict_tag_rejected".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}}.
+        """
+        client: RTMClient = await get_client()
+        rejections = validate_annotate_clarification(analysis_body=analysis_body)
+        ref = await _resolve_ref(client, inbox_item_ref, "status:incomplete")
+        if "task" not in ref:
+            return build_response(data=ref)
+        task = ref["task"]
+        qs = [q for q in (coerce_json(questions) or []) if str(q).strip()]
+        if not rejections:
+            gate = await enforce_strict_tags(
+                client, sorted({AI_REVIEW, AI_CONVERSATION}), tool="gtd_annotate_clarification"
+            )
+            if gate:
+                rejections.append(as_rejection(gate))
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "task_id": str(task.get("id")),
+                    "message": "Clarification rejected; nothing was written.",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        tz = await client.get_timezone()
+        today = _account_today(tz)
+        ids = {
+            "task_id": task.get("id"),
+            "taskseries_id": task.get("taskseries_id"),
+            "list_id": task.get("list_id"),
+        }
+        title = format_note_title(AI_ANALYSIS_TYPE, "proposed disposition", date=today)
+        await _write(
+            "rtm.tasks.notes.add",
+            "clarify:analysis",
+            str(task.get("id")),
+            note_title=title,
+            note_text=ai_analysis_body(analysis_body, qs),
+            **ids,
+        )
+        renamed = False
+        if rename.strip():
+            await _write(
+                "rtm.tasks.setName", "clarify:rename", str(task.get("id")), name=rename, **ids
+            )
+            renamed = True
+        await _write(
+            "rtm.tasks.addTags",
+            "clarify:review",
+            str(task.get("id")),
+            tags=f"{AI_REVIEW},{AI_CONVERSATION}",
+            **ids,
+        )
+        return build_response(
+            data={
+                "task_id": str(task.get("id")),
+                "note_title": title,
+                "renamed": renamed,
+                "new_name": rename if renamed else "",
+                "questions_count": len(qs),
+                "applied": applied,
+                "errors": errors,
+                "message": f"Annotated with AI ANALYSIS (+#ai_review){'; renamed' if renamed else ''}.",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=EDIT_NOTE_OUTPUT)
+    async def gtd_edit_note(
+        ctx: Context,
+        task_ref: Annotated[
+            str, Field(description="The task the note is on — a task id (preferred) or a name.")
+        ],
+        note_ref: Annotated[
+            str, Field(description="The note id to edit (from gtd_context / get_task_notes).")
+        ],
+        edit: Annotated[
+            dict[str, Any] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_object_schema(
+                    "The bounded edit op — one of: {op:'replace_substring', old, new}; "
+                    "{op:'replace_line', match, new}; {op:'set_frontmatter_key', key, value}; "
+                    "{op:'retitle', new_title}. No free-form body overwrite exists.",
+                    extra=_EDIT_SCHEMA,
+                )
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — the ONLY mutate-in-place note verb: apply ONE bounded edit to an existing note.
+
+        Additive write; transaction-recorded (reversible via `batch_undo`); stamps
+        `#ai_conversation`. Deliberately NOT a general 'rewrite any note' — the bounded op-set
+        IS the safety property. The four ops:
+          - replace_substring {old, new}: first occurrence only (mirrors gtd:replace_in_note_body).
+          - replace_line {match, new}: replace the first line containing `match`.
+          - set_frontmatter_key {key, value}: set/append one `key: value` line.
+          - retitle {new_title}: change the title — re-validates the note-title grammar (a
+            malformed new_title rejects).
+        There is no free-form body overwrite operation.
+
+        Covers: DEPENDS-ON status-line flips, SOURCE-DRAFT→SOURCE-CONFIRMED retitle, AI-LINK
+        status updates, blocker-line edits, register maintenance.
+
+        Args:
+            task_ref / note_ref / edit: see each.
+
+        Returns (on success): {"task_id", "note_id", "op", "changed", "detail", "note_title",
+            "applied", "errors", "message"} — `changed` is False when the op found nothing
+            to change (e.g. the substring was absent), and nothing is written in that case.
+        Returns (on ambiguity): {"candidates": [...]}.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "invalid_input" | "missing_parameter" | "invalid_note_type" (retitle
+            grammar) | "task_not_found" | "strict_tag_rejected".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}}.
+        """
+        client: RTMClient = await get_client()
+        edit_d = coerce_json(edit) or {}
+        rejections = validate_edit_note(edit_d)
+        ref = await _resolve_ref(client, task_ref, "status:incomplete OR status:completed")
+        if "task" not in ref:
+            return build_response(data=ref)
+        task = ref["task"]
+        note = next(
+            (n for n in (task.get("notes") or []) if str(n.get("id")) == str(note_ref)), None
+        )
+        if note is None and not rejections:
+            rejections.append(
+                {
+                    "reason": ErrorCode.TASK_NOT_FOUND.value,
+                    "detail": f"note {note_ref} not on this task",
+                }
+            )
+        if not rejections:
+            gate = await enforce_strict_tags(client, [AI_CONVERSATION], tool="gtd_edit_note")
+            if gate:
+                rejections.append(as_rejection(gate))
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "task_id": str(task.get("id")),
+                    "note_id": str(note_ref),
+                    "message": "Edit rejected; nothing was written.",
+                }
+            )
+
+        cur_title, cur_body = _note_title_body(note)
+        result = apply_edit_op(cur_title, cur_body, edit_d)
+        if result is None:
+            return build_response(
+                data={
+                    "task_id": str(task.get("id")),
+                    "note_id": str(note_ref),
+                    "op": edit_d.get("op"),
+                    "changed": False,
+                    "detail": "no match — nothing to change",
+                    "note_title": cur_title,
+                    "applied": [],
+                    "errors": [],
+                    "message": "No change (the target text was not present); nothing was written.",
+                }
+            )
+        new_title, new_body, detail = result
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        ids = {
+            "task_id": task.get("id"),
+            "taskseries_id": task.get("taskseries_id"),
+            "list_id": task.get("list_id"),
+        }
+        await _write(
+            "rtm.tasks.notes.edit",
+            f"edit:{edit_d.get('op')}",
+            str(task.get("id")),
+            note_id=note.get("id"),
+            note_title=new_title,
+            note_text=new_body,
+            **ids,
+        )
+        await _write(
+            "rtm.tasks.addTags", "edit:mark", str(task.get("id")), tags=AI_CONVERSATION, **ids
+        )
+        return build_response(
+            data={
+                "task_id": str(task.get("id")),
+                "note_id": str(note.get("id")),
+                "op": edit_d.get("op"),
+                "changed": True,
+                "detail": detail,
+                "note_title": new_title,
+                "applied": applied,
+                "errors": errors,
+                "message": f"Edited note ({detail}).",
+            },
+            timeline_id=client.timeline_id,
         )

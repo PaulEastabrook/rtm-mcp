@@ -501,3 +501,178 @@ def test_validate_consolidate_paths():
         )
         == []
     )
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4a — note family, note-edit, dependency-flip grammar
+# --------------------------------------------------------------------------- #
+
+
+def test_filing_path_shape():
+    assert w.check_filing_path("work/p/out.md") is None
+    assert w.check_filing_path("/abs/x.md") is not None
+    assert w.check_filing_path("win\\path.md") is not None
+    assert w.check_filing_path("") is not None
+
+
+def test_output_note_body_carries_filing_line():
+    body = w.output_note_body("work/p/out.md", "Drafted the spec")
+    assert "FILING: work/p/out.md (+ .meta.md)" in body
+    assert body.splitlines()[0] == "Drafted the spec"
+
+
+def test_outputs_register_append_keeps_one_last_updated():
+    reg = w.new_outputs_register(
+        "Proj",
+        w.outputs_register_row(
+            date="2026-07-24",
+            action_name="A",
+            output_title="T",
+            output_type="doc",
+            status="filed",
+            path="p/a.md",
+        ),
+        date="2026-07-24",
+    )
+    assert w.OUTPUTS_REGISTER_HEADER in reg and reg.count("Last updated:") == 1
+    app = w.append_outputs_row(
+        reg, "| 2026-07-25 | B | T2 | doc | filed | p/b.md |", date="2026-07-25"
+    )
+    assert app.count("| doc | filed |") == 2
+    assert app.count("Last updated:") == 1 and "Last updated: 2026-07-25" in app
+
+
+def test_attach_output_validation():
+    assert w.validate_attach_output(filing_path="p/a.md", output_summary="did it") == []
+    assert "missing_parameter" in _reasons(
+        w.validate_attach_output(filing_path="p/a.md", output_summary="")
+    )
+    assert "invalid_input" in _reasons(
+        w.validate_attach_output(filing_path="/abs.md", output_summary="x")
+    )
+
+
+def test_contrib_variants_type_and_tag():
+    assert (
+        w.contrib_note_type("contrib") == "CONTRIB"
+        and w.contrib_tag("contrib") == "ai_contrib_drafted"
+    )
+    assert w.contrib_note_type("contrib_update") == "CONTRIB-UPDATE"
+    assert w.contrib_note_type("prep") == "PREP" and w.contrib_tag("prep") == "ai_prep_drafted"
+    assert (
+        w.contrib_note_type("speculative") == "SOURCE-DRAFT"
+        and w.contrib_tag("speculative") == "ai_speculative"
+    )
+
+
+def test_contrib_summary_category_in_title_only_for_contrib():
+    assert w.contrib_summary("contrib", "research", "found X") == "research — found X"
+    assert w.contrib_summary("prep", "", "agenda drafted") == "agenda drafted"
+
+
+def test_attach_contribution_validation():
+    assert (
+        w.validate_attach_contribution(variant="contrib", category="research", contrib_body="b")
+        == []
+    )
+    assert "invalid_input" in _reasons(
+        w.validate_attach_contribution(variant="bogus", category="research", contrib_body="b")
+    )
+    assert "invalid_input" in _reasons(
+        w.validate_attach_contribution(variant="contrib", category="nope", contrib_body="b")
+    )
+    assert "missing_parameter" in _reasons(
+        w.validate_attach_contribution(variant="prep", category="", contrib_body="")
+    )
+    # prep/speculative do not need a category
+    assert w.validate_attach_contribution(variant="prep", category="", contrib_body="b") == []
+
+
+def test_ai_analysis_body_questions_block():
+    assert "CLARIFYING QUESTIONS" not in w.ai_analysis_body("found 2 items", None)
+    body = w.ai_analysis_body("found 2 items", ["What is X?", "Who owns Y?"])
+    assert "CLARIFYING QUESTIONS" in body and "1. What is X?" in body and "2. Who owns Y?" in body
+
+
+def test_edit_note_op_validation():
+    assert w.validate_edit_note({"op": "replace_substring", "old": "x", "new": "y"}) == []
+    assert "invalid_input" in _reasons(w.validate_edit_note({"op": "overwrite_everything"}))
+    assert "missing_parameter" in _reasons(w.validate_edit_note({"op": "replace_substring"}))
+    assert "missing_parameter" in _reasons(w.validate_edit_note({"op": "set_frontmatter_key"}))
+    # retitle re-validates the grammar
+    assert "invalid_note_type" in _reasons(
+        w.validate_edit_note({"op": "retitle", "new_title": "nope"})
+    )
+    assert w.validate_edit_note({"op": "retitle", "new_title": "2026-07-24 — STATE — snap"}) == []
+
+
+def test_edit_note_no_free_form_overwrite_op():
+    # the bounded set is the safety property — there is no whole-body replace op
+    assert "replace_body" not in w.EDIT_NOTE_OPS
+    assert "set_body" not in w.EDIT_NOTE_OPS
+    assert sorted(w.EDIT_NOTE_OPS) == [
+        "replace_line",
+        "replace_substring",
+        "retitle",
+        "set_frontmatter_key",
+    ]
+
+
+def test_apply_edit_ops():
+    assert (
+        w.apply_edit_op(
+            "t", "hello world", {"op": "replace_substring", "old": "world", "new": "there"}
+        )[1]
+        == "hello there"
+    )
+    # first occurrence only
+    assert (
+        w.apply_edit_op("t", "a a a", {"op": "replace_substring", "old": "a", "new": "b"})[1]
+        == "b a a"
+    )
+    # no match → no-op (None)
+    assert (
+        w.apply_edit_op("t", "hello", {"op": "replace_substring", "old": "zzz", "new": "y"}) is None
+    )
+    # replace_line
+    assert (
+        w.apply_edit_op(
+            "t",
+            "Status: active\nx",
+            {"op": "replace_line", "match": "Status:", "new": "Status: resolved"},
+        )[1]
+        == "Status: resolved\nx"
+    )
+    # set_frontmatter_key updates existing
+    assert (
+        w.apply_edit_op(
+            "t", "key: old", {"op": "set_frontmatter_key", "key": "key", "value": "new"}
+        )[1]
+        == "key: new"
+    )
+    # set_frontmatter_key appends when absent
+    assert (
+        "k: v"
+        in w.apply_edit_op("t", "body", {"op": "set_frontmatter_key", "key": "k", "value": "v"})[1]
+    )
+    # retitle changes only the title
+    nt, nb, _ = w.apply_edit_op("old title", "body", {"op": "retitle", "new_title": "new title"})
+    assert nt == "new title" and nb == "body"
+
+
+def test_flip_depends_on_writes_resolved_at_no_resolved_by():
+    body = 'Depends on: X\ntask_id: "1"\nStatus: active\n'
+    flipped = w.flip_depends_on(body, status="resolved", date="2026-07-24")
+    assert "Status: resolved" in flipped and "Status: active" not in flipped
+    assert "Resolved at: 2026-07-24" in flipped
+    assert "Resolved-by:" not in flipped and "Resolved-at:" not in flipped
+
+
+def test_is_active_depends_on():
+    assert w.is_active_depends_on("DEPENDS-ON\nStatus: active")
+    assert not w.is_active_depends_on("DEPENDS-ON\nStatus: resolved")
+    assert not w.is_active_depends_on("PROGRESS\nStatus: active")  # not a DEPENDS-ON note
+
+
+def test_link_modes():
+    assert sorted(w.LINK_MODES) == ["create", "obsolete", "resolve"]
