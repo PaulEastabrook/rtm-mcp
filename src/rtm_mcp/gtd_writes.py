@@ -1065,3 +1065,537 @@ def flip_depends_on(body: str, *, status: str, date: str) -> str:
     if "Resolved at:" not in out:
         out = out.rstrip() + f"\nResolved at: {date}"
     return out
+
+
+# =========================================================================== #
+# Phase 4b — the AI-surface subsystem
+# =========================================================================== #
+# Ported from the six binding sources. Load-bearing corrections vs the brief:
+#  * TWO vocabularies: the `item_type` INPUT is question|alert|notification|surface|
+#    activity_report; the TAG is q_question|q_alert|q_notification|q_surface|q_activity.
+#    ai-surface-creator.md:168 says derive `q_<item_type>` — that yields `q_activity_report`
+#    for the fifth type, which is NOT canonical and which gtd's `q_[a-z0-9_]+` wildcard would
+#    pass SILENTLY, producing an item invisible to every scan filter. Explicit table, never
+#    derivation.
+#  * TWO disjoint lifecycle machines (tag-taxonomy.md:136-147), not one flat set.
+#  * auto_close_at is a YAML line in the BODY note (not a tag, not a due date), per-type TTL.
+#  * The AI-LINK note lives on the LINKED ENTITY ONLY (journaling-lifecycle.md:655).
+#  * The AI-surface OUTCOME note is TITLE-ONLY — the catalogue's OUTCOME is the meeting shape.
+#  * Priority is RTM's FIELD, not a tag (`!1` is SmartAdd syntax).
+
+AI_QUESTIONS_LIST = "AI_Questions"
+AI_ACTIVITY_LIST = "AI_Activity"
+
+#: The item_type INPUT vocabulary (ai-surface-creator.md:39) — what a caller passes.
+SURFACE_ITEM_TYPES = frozenset({"question", "alert", "notification", "surface", "activity_report"})
+
+#: item_type → the canonical tag. EXPLICIT, never `q_` + item_type (see the header note).
+SURFACE_TYPE_TAG: dict[str, str] = {
+    "question": "q_question",
+    "alert": "q_alert",
+    "notification": "q_notification",
+    "surface": "q_surface",
+    "activity_report": "q_activity",  # NOT q_activity_report
+}
+
+#: item_type → target list (ai-surface.md:39-53 decision tree; creator § 3c table).
+SURFACE_ROUTING: dict[str, str] = {
+    "question": AI_QUESTIONS_LIST,
+    "alert": AI_QUESTIONS_LIST,
+    "notification": AI_ACTIVITY_LIST,
+    "surface": AI_ACTIVITY_LIST,
+    "activity_report": AI_ACTIVITY_LIST,
+}
+
+#: item_type → title-line type letter (creator § 3d).
+SURFACE_TYPE_LETTER: dict[str, str] = {
+    "question": "Q",
+    "alert": "A",
+    "notification": "N",
+    "surface": "S",
+    "activity_report": "AR",
+}
+
+#: Auto-close TTL in days. None = never (questions/alerts). Per-type, NOT one constant.
+SURFACE_TTL_DAYS: dict[str, int | None] = {
+    "question": None,
+    "alert": None,
+    "notification": 7,
+    "surface": 14,
+    "activity_report": 7,
+}
+
+#: Provenance tag by list (permanent, set at creation).
+CLAUDE_QUESTION = "claude_question"
+AI_ACTIVITY_TAG = "ai_activity"
+
+#: Initial lifecycle state by list.
+Q_PENDING = "q_pending"
+Q_OPEN = "q_open"
+Q_ANSWERED = "q_answered"
+Q_PROCESSED = "q_processed"
+Q_ACKNOWLEDGED = "q_acknowledged"
+AUTO_CLOSED = "auto_closed"  # deliberately NOT q_-prefixed
+
+#: The two disjoint lifecycle machines. A resolution illegal for the item's list is rejected.
+QUESTIONS_RESOLUTIONS = frozenset({"answered", "processed"})
+ACTIVITY_RESOLUTIONS = frozenset({"acknowledged", "auto_closed"})
+SURFACE_RESOLUTIONS = QUESTIONS_RESOLUTIONS | ACTIVITY_RESOLUTIONS
+
+#: resolution → (tags to add, tags to remove).
+_RESOLUTION_TAGS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "answered": ((Q_ANSWERED,), ()),
+    "processed": ((Q_PROCESSED,), (Q_PENDING, Q_ANSWERED)),
+    "acknowledged": ((Q_ACKNOWLEDGED,), ()),
+    "auto_closed": ((AUTO_CLOSED,), ()),
+}
+
+#: AI-LINK `Status:` enum (journaling-lifecycle.md:677 — the grammar owner). Note `auto-closed`
+#: is HYPHENATED here while the tag is `auto_closed`.
+AI_LINK_STATUSES = frozenset(
+    {"open", "answered", "processed", "acknowledged", "auto-closed", "closed"}
+)
+#: resolution → the AI-LINK Status value written on each linked entity.
+_RESOLUTION_LINK_STATUS: dict[str, str] = {
+    "answered": "answered",
+    "processed": "closed",
+    "acknowledged": "closed",
+    "auto_closed": "auto-closed",
+}
+
+#: The nine entity types (creator § 2). `meta` needs no url/triple; `meta` + `scheduled_task`
+#: are AI-LINK no-ops.
+SURFACE_ENTITY_TYPES = frozenset(
+    {
+        "action",
+        "project",
+        "calendar_entry",
+        "waiting_for",
+        "goal",
+        "focus_area",
+        "speculative",
+        "scheduled_task",
+        "meta",
+    }
+)
+AI_LINK_SKIP_ENTITY_TYPES = frozenset({"meta", "scheduled_task"})
+AI_LINK_CAP = 20  # creator § 4f
+
+#: Response shapes (creator § 2). `none` is mandatory for AI_Activity types and illegal for
+#: AI_Questions types (creator § 3a rule 4).
+RESPONSE_SHAPES = frozenset(
+    {"free-text", "yes-no", "pick-one", "confirm-list", "structured", "none"}
+)
+_SHAPES_NEEDING_OPTIONS = frozenset({"pick-one", "confirm-list"})
+
+#: "How to engage" per type (specs/proactive-contribution.md:1017-1024 — NOT ai-surface.md).
+HOW_TO_ENGAGE: dict[str, str] = {
+    "question": "Add a note to this task with your answer / direction. I'll pick it up at the "
+    "next scan.",
+    "alert": "Add a note to this task with your answer / direction. I'll pick it up at the "
+    "next scan.",
+    "notification": "Mark complete when read.",
+    "surface": "Review when convenient. Act on linked entities or close when satisfied.",
+    "activity_report": "Read at leisure; auto-closes in {ttl} days. Drill into linked entities "
+    "for detail.",
+}
+
+
+def surface_list_for(item_type: str) -> str:
+    return SURFACE_ROUTING[item_type]
+
+
+def surface_tags(
+    item_type: str, entity_types: list[str], *, extra: list[str] | None = None
+) -> list[str]:
+    """The full create-time tag set (creator § 3f), sorted.
+
+    Item-type tag + one q_<entity-type> facet per DISTINCT linked entity type + the provenance
+    tag for the list + ai_conversation + the initial lifecycle state. NO life-context and NO
+    workflow-state tag — no source applies one, and adding one would leak the surface item into
+    Paul's GTD smart lists.
+    """
+    target = surface_list_for(item_type)
+    tags: set[str] = {
+        SURFACE_TYPE_TAG[item_type],
+        AI_CONVERSATION,
+        CLAUDE_QUESTION if target == AI_QUESTIONS_LIST else AI_ACTIVITY_TAG,
+        Q_PENDING if target == AI_QUESTIONS_LIST else Q_OPEN,
+    }
+    for et in entity_types:
+        if et:
+            tags.add(f"q_{et}")
+    tags |= {t.strip() for t in (extra or []) if t and t.strip()}
+    return sorted(tags)
+
+
+def surface_title(item_type: str, title_summary: str, entity_short_ref: str, *, date: str) -> str:
+    """`YYYY-MM-DD — <TYPE> — <summary> (<entity-short-ref>)` (creator § 3d)."""
+    letter = SURFACE_TYPE_LETTER[item_type]
+    suffix = f" ({entity_short_ref})" if entity_short_ref else ""
+    return f"{date} — {letter} — {title_summary.strip()}{suffix}"
+
+
+def entity_short_ref(entity: dict[str, Any]) -> str:
+    """The compact primary-entity reference in the title (creator § 3d)."""
+    et = str(entity.get("entity_type") or "")
+    tid = str((entity.get("entity_rtm") or {}).get("task_id") or entity.get("task_id") or "")
+    prefix = {
+        "action": "act",
+        "project": "prj",
+        "calendar_entry": "cal",
+        "waiting_for": "wf",
+        "speculative": "spec",
+    }.get(et)
+    if et == "meta":
+        return "meta"
+    if et == "scheduled_task":
+        return f"sched:{entity.get('name') or entity.get('relationship') or ''}".rstrip(":")
+    if prefix and tid:
+        return f"{prefix}:rtm:{tid}"
+    return f"{et}:rtm:{tid}" if tid else et
+
+
+def slugify(text: str, *, cap: int = 40) -> str:
+    import re as _re
+
+    s = _re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return s[:cap].rstrip("-")
+
+
+def surface_item_id(title_summary: str, *, date: str) -> str:
+    """`<YYYY-MM-DD>-<short-slug>` — the day-bucket idempotency key (creator § 3b)."""
+    return f"{date}-{slugify(title_summary)}"
+
+
+def _shift_days(iso_date: str, days: int) -> str:
+    """YYYY-MM-DD + N days (pure, no clock)."""
+    from datetime import date as _date
+    from datetime import timedelta as _td
+
+    try:
+        y, m, d = (int(x) for x in iso_date[:10].split("-"))
+        return (_date(y, m, d) + _td(days=days)).isoformat()
+    except Exception:
+        return iso_date[:10]
+
+
+def auto_close_at(item_type: str, *, today: str) -> str | None:
+    """The `auto_close_at:` value — a DATE in the body YAML, or None for questions/alerts."""
+    ttl = SURFACE_TTL_DAYS[item_type]
+    return None if ttl is None else _shift_days(today, ttl)
+
+
+def surface_body(
+    *,
+    item_id: str,
+    item_type: str,
+    entities: list[dict[str, Any]],
+    content: str,
+    why_this_is_here: str,
+    expected_response_shape: str,
+    expected_response_options: list[str] | None,
+    priority: int,
+    asked_by: str,
+    asked_at: str,
+    context_summary: str,
+    related_artefact: str | None,
+    auto_close: str | None,
+    paired: dict[str, str] | None = None,
+) -> str:
+    """The structured body note (creator § 3e): YAML frontmatter + four H2 sections.
+
+    This frontmatter is what makes an item RESOLVABLE — the scan reads auto_close_at (to
+    auto-close), item_id (to match AI-LINKs), entities (to fan out), asked_by (to dispatch) and
+    asked_at (the Paul-note baseline). The published publish_ai_activity path omits it entirely,
+    which is why items created that way can never auto-close (see the module header).
+    """
+    lines = [
+        "---",
+        f"item_id: {item_id}",
+        f"item_type: {item_type}",
+        f"list: {surface_list_for(item_type)}",
+        "entities:",
+    ]
+    for e in entities:
+        rtm = e.get("entity_rtm") or {}
+        lines.append(f"  - entity_type: {e.get('entity_type', '')}")
+        lines.append(f"    entity_url: {e.get('entity_url', '')}")
+        lines.append("    entity_rtm:")
+        for k in ("task_id", "taskseries_id", "list_id"):
+            lines.append(f'      {k}: "{rtm.get(k, "")}"')
+        lines.append(f"    relationship: {e.get('relationship', '')}")
+    lines.append(f"expected_response_shape: {expected_response_shape}")
+    if expected_response_options:
+        lines.append("expected_response_options:")
+        lines += [f'  - "{o}"' for o in expected_response_options]
+    lines.append(f"priority: P{priority}")
+    lines.append(f"asked_by: {asked_by}")
+    lines.append(f"asked_at: {asked_at}")
+    lines.append("context_summary: |")
+    lines.append(f"  {context_summary}")
+    lines.append(f"related_artefact: {related_artefact or 'null'}")
+    lines.append(f"auto_close_at: {auto_close or 'null'}")
+    lines.append("---")
+    lines.append("")
+    # The paired cross-reference lines (communication-channels § 3.4/3.5 convention).
+    for label, tid in sorted((paired or {}).items()):
+        lines.append(f"Paired {label} task: {tid}")
+    if paired:
+        lines.append("")
+    heading = {
+        "question": "Question",
+        "alert": "Alert",
+        "notification": "Notification",
+        "surface": "Surface",
+        "activity_report": "Activity Report",
+    }[item_type]
+    ttl = SURFACE_TTL_DAYS[item_type]
+    engage = HOW_TO_ENGAGE[item_type].replace("{ttl}", str(ttl or ""))
+    lines += [
+        f"## {heading}",
+        "",
+        content.strip(),
+        "",
+        "## Why this is here",
+        "",
+        why_this_is_here.strip(),
+        "",
+        "## Linked entities",
+        "",
+    ]
+    lines.append("| Entity | Type | Relationship |")
+    lines.append("|---|---|---|")
+    for e in entities:
+        lines.append(
+            f"| {e.get('entity_url', '') or e.get('entity_type', '')} "
+            f"| {e.get('entity_type', '')} | {e.get('relationship', '')} |"
+        )
+    lines += ["", "## How to engage", "", engage, ""]
+    return "\n".join(lines)
+
+
+def ai_link_note(
+    *,
+    item_summary: str,
+    surface_url: str,
+    surface_ids: dict[str, str],
+    item_id: str,
+    item_type: str,
+    list_name: str,
+    asked_by: str,
+    asked_at: str,
+    why: str,
+    status: str = "open",
+) -> str:
+    """The AI-LINK note BODY (journaling-lifecycle.md:663-680 — the grammar owner).
+
+    Lives on the LINKED ENTITY, never on the surface item. `Status:` opens as `open` — the
+    creator agent writes `q_pending`/`q_open` here, which are not legal Status values.
+    """
+    ttl = SURFACE_TTL_DAYS[item_type]
+    engage = HOW_TO_ENGAGE[item_type].replace("{ttl}", str(ttl or ""))
+    return "\n".join(
+        [
+            f"Item: {item_summary}",
+            f"Surface item URL: {surface_url}",
+            "Surface item RTM IDs:",
+            f'  task_id: "{surface_ids.get("task_id", "")}"',
+            f'  taskseries_id: "{surface_ids.get("taskseries_id", "")}"',
+            f'  list_id: "{surface_ids.get("list_id", "")}"',
+            f"Item ID: {item_id}",
+            f"Item type: {item_type}",
+            f"List: {list_name}",
+            f"Asked by: {asked_by}",
+            f"Asked at: {asked_at}",
+            f"Status: {status}",
+            f"Why: {why}",
+            f"How to engage: {engage}",
+        ]
+    )
+
+
+def ai_link_targets(entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Entities that actually get an AI-LINK note: `meta` and `scheduled_task` are no-ops
+    (creator §§ 3i/3i-note), capped at AI_LINK_CAP (creator § 4f)."""
+    out = [e for e in entities if str(e.get("entity_type")) not in AI_LINK_SKIP_ENTITY_TYPES]
+    return out[:AI_LINK_CAP]
+
+
+def resolution_tags(resolution: str) -> tuple[list[str], list[str]]:
+    add, remove = _RESOLUTION_TAGS[resolution]
+    return list(add), list(remove)
+
+
+def resolution_link_status(resolution: str) -> str:
+    return _RESOLUTION_LINK_STATUS[resolution]
+
+
+def surface_outcome_summary(resolution: str, detail: str = "", *, days: int | None = None) -> str:
+    """The OUTCOME note title summary. TITLE-ONLY — the AI surface has no structured OUTCOME
+    body (the catalogue's OUTCOME grammar is the MEETING shape; emitting it here would be wrong)."""
+    if resolution == "processed":
+        return f"Response received and acted on: {detail}".rstrip(": ")
+    if resolution == "auto_closed":
+        return f"Auto-closed after {days if days is not None else 'N'} days unread"
+    if resolution == "acknowledged":
+        return f"Acknowledged: {detail}" if detail.strip() else "Acknowledged: marked acknowledged"
+    return f"Response recorded: {detail}".rstrip(": ")
+
+
+def validate_surface_create(
+    *,
+    item_type: str,
+    title_summary: str,
+    content: str,
+    entities: list[dict[str, Any]],
+    expected_response_shape: str,
+    expected_response_options: list[str] | None,
+    priority: int,
+    asked_by: str,
+    list_ok: bool,
+) -> list[dict[str, Any]]:
+    """The creator's § 3a gate, ported. Fail-closed: any breach writes nothing."""
+    rejections: list[dict[str, Any]] = []
+    if item_type not in SURFACE_ITEM_TYPES:
+        rejections.append(
+            _reject(
+                ErrorCode.INVALID_INPUT,
+                f"item_type must be one of {sorted(SURFACE_ITEM_TYPES)} (the INPUT vocabulary — "
+                "the tag is derived server-side)",
+                field="item_type",
+            )
+        )
+        return rejections  # everything below is type-relative
+    if not (title_summary or "").strip():
+        rejections.append(_reject(ErrorCode.MISSING_PARAMETER, "title_summary is required"))
+    if not (content or "").strip():
+        rejections.append(_reject(ErrorCode.MISSING_PARAMETER, "content is required"))
+    if not (asked_by or "").strip():
+        rejections.append(
+            _reject(ErrorCode.MISSING_PARAMETER, "asked_by is required (response routing)")
+        )
+    if not entities:
+        rejections.append(
+            _reject(
+                ErrorCode.MISSING_PARAMETER,
+                "entities must be non-empty — every item links at least one GTD entity, or "
+                "carries entity_type 'meta'",
+            )
+        )
+    for i, e in enumerate(entities):
+        et = str(e.get("entity_type") or "")
+        if et not in SURFACE_ENTITY_TYPES:
+            rejections.append(
+                _reject(
+                    ErrorCode.INVALID_INPUT,
+                    f"entities[{i}].entity_type must be one of {sorted(SURFACE_ENTITY_TYPES)}",
+                    entity_type=et,
+                )
+            )
+            continue
+        if et != "meta":
+            rtm = e.get("entity_rtm") or {}
+            if not e.get("entity_url") or not all(
+                rtm.get(k) for k in ("task_id", "taskseries_id", "list_id")
+            ):
+                rejections.append(
+                    _reject(
+                        ErrorCode.MISSING_PARAMETER,
+                        f"entities[{i}] ({et}) needs entity_url AND the full entity_rtm triple",
+                    )
+                )
+    # Rule 4 — the response-shape/list coupling.
+    target = SURFACE_ROUTING[item_type]
+    if target == AI_ACTIVITY_LIST and expected_response_shape != "none":
+        rejections.append(
+            _reject(
+                ErrorCode.INVALID_INPUT,
+                f"expected_response_shape must be 'none' for a {item_type} (AI_Activity items "
+                "require no response)",
+                field="expected_response_shape",
+            )
+        )
+    if target == AI_QUESTIONS_LIST:
+        if expected_response_shape not in (RESPONSE_SHAPES - {"none"}):
+            rejections.append(
+                _reject(
+                    ErrorCode.INVALID_INPUT,
+                    f"expected_response_shape must be one of "
+                    f"{sorted(RESPONSE_SHAPES - {'none'})} for a {item_type}",
+                    field="expected_response_shape",
+                )
+            )
+        elif expected_response_shape in _SHAPES_NEEDING_OPTIONS and not (
+            expected_response_options or []
+        ):
+            rejections.append(
+                _reject(
+                    ErrorCode.MISSING_PARAMETER,
+                    f"expected_response_shape '{expected_response_shape}' needs "
+                    "expected_response_options",
+                )
+            )
+    if priority not in (1, 2, 3):
+        rejections.append(
+            _reject(ErrorCode.INVALID_INPUT, "priority must be 1, 2 or 3", field="priority")
+        )
+    if not list_ok:
+        rejections.append(
+            _reject(ErrorCode.SMART_LIST_TARGET, f"the {target} list is missing or not writable")
+        )
+    return rejections
+
+
+def validate_surface_resolve(*, resolution: str, item_tags: list[str]) -> list[dict[str, Any]]:
+    """Resolution legality against the TWO disjoint lifecycle machines (tag-taxonomy.md:136-147).
+
+    A resolution valid for one list is ILLEGAL for the other — `q_acknowledged` can never follow
+    `q_pending`, and `q_processed` can never follow `q_open`.
+    """
+    rejections: list[dict[str, Any]] = []
+    if resolution not in SURFACE_RESOLUTIONS:
+        rejections.append(
+            _reject(
+                ErrorCode.INVALID_INPUT,
+                f"resolution must be one of {sorted(SURFACE_RESOLUTIONS)}",
+                field="resolution",
+            )
+        )
+        return rejections
+    on_questions = CLAUDE_QUESTION in item_tags
+    on_activity = AI_ACTIVITY_TAG in item_tags
+    if on_questions and resolution in ACTIVITY_RESOLUTIONS:
+        rejections.append(
+            _reject(
+                ErrorCode.INVALID_INPUT,
+                f"'{resolution}' is an AI_Activity resolution — an AI_Questions item resolves "
+                f"via {sorted(QUESTIONS_RESOLUTIONS)}",
+                resolution=resolution,
+            )
+        )
+    if on_activity and resolution in QUESTIONS_RESOLUTIONS:
+        rejections.append(
+            _reject(
+                ErrorCode.INVALID_INPUT,
+                f"'{resolution}' is an AI_Questions resolution — an AI_Activity item resolves "
+                f"via {sorted(ACTIVITY_RESOLUTIONS)}",
+                resolution=resolution,
+            )
+        )
+    if not on_questions and not on_activity:
+        rejections.append(
+            _reject(
+                ErrorCode.INVALID_INPUT,
+                "the target is not an AI-surface item (no claude_question / ai_activity "
+                "provenance tag)",
+            )
+        )
+    return rejections
+
+
+def collect_surface_tags(
+    item_type: str, entity_types: list[str], extra: list[str] | None = None
+) -> set[str]:
+    """Every tag a create writes — the strict-tag existence-gate input."""
+    return set(surface_tags(item_type, entity_types, extra=extra))

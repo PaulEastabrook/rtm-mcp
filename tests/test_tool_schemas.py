@@ -94,6 +94,7 @@ DESTRUCTIVE_TOOLS = {
     "gtd_inbox_zero",
     "gtd_chase_sweep",
     "gtd_consolidate_apply",
+    "gtd_surface_resolve",
 }
 
 

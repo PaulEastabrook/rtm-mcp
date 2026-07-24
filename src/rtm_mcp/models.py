@@ -912,6 +912,58 @@ class EditNoteResult(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Phase 4b writes — the AI-surface subsystem
+# --------------------------------------------------------------------------- #
+
+
+class AiLinkRef(BaseModel):
+    entity_id: str
+    ai_link_note_id: str = ""
+    entity_type: str = ""
+
+
+class SurfaceCreateResult(BaseModel):
+    """True post-state of a created AI-surface item + the AI-LINK back-links written."""
+
+    model_config = ConfigDict(extra="allow")
+    item_id: str = ""
+    task_id: str = ""
+    taskseries_id: str = ""
+    list_id: str = ""
+    list_name: str = ""
+    item_type: str = ""
+    item_type_tag: str = ""
+    title: str = ""
+    tags: list[str] = []
+    auto_close_at: str | None = None
+    ai_links_created: list[AiLinkRef] = []
+    ai_links_skipped: list[str] = []
+    status: str = ""  # created | already_existed
+    deep_link: str = ""
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+class SurfaceResolveResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    item_id: str = ""
+    resolution: str = ""
+    tags_added: list[str] = []
+    tags_removed: list[str] = []
+    outcome_note_title: str = ""
+    completed: bool = False
+    links_updated: list[AiLinkRef] = []
+    link_status: str = ""
+    applied: list[AppliedOp] = []
+    errors: list[dict[str, Any]] = []
+    rejected: list[GtdWriteRejection] | None = None
+    message: str
+
+
+# --------------------------------------------------------------------------- #
 # Phase 0 reads — detector candidate tools (gtd_*_candidates / clusters / health)
 # --------------------------------------------------------------------------- #
 
@@ -1194,6 +1246,12 @@ ATTACH_CONTRIB_OUTPUT = _envelope_schema(
 )
 ANNOTATE_OUTPUT = _envelope_schema("AnnotateEnvelope", AnnotateClarificationResult, Candidates)
 EDIT_NOTE_OUTPUT = _envelope_schema("GtdEditNoteEnvelope", EditNoteResult, Candidates)
+
+# GTD Phase 4b writes — AI surface
+SURFACE_CREATE_OUTPUT = _envelope_schema("SurfaceCreateEnvelope", SurfaceCreateResult)
+SURFACE_RESOLVE_OUTPUT = _envelope_schema(
+    "SurfaceResolveEnvelope", SurfaceResolveResult, Candidates
+)
 
 # GTD Phase 0 reads — detector candidates
 REASSESSMENT_OUTPUT = _envelope_schema("ReassessmentEnvelope", ReassessmentResult)

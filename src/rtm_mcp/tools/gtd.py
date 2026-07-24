@@ -122,12 +122,22 @@ from ..gtd_writes import (
     MOSCOW_BANDS,
     MOSCOW_TO_PRIORITY,
     PROCESSED_LIST,
+    RESPONSE_SHAPES,
+    SURFACE_ENTITY_TYPES,
+    SURFACE_ITEM_TYPES,
+    SURFACE_RESOLUTIONS,
+    SURFACE_TTL_DAYS,
+    SURFACE_TYPE_TAG,
     UPSTREAM_TYPES,
     ai_analysis_body,
+    ai_link_note,
+    ai_link_targets,
     append_outputs_row,
     apply_edit_op,
+    auto_close_at,
     collapse_write,
     collect_item_tags,
+    collect_surface_tags,
     collect_transition_tags,
     completion_events,
     contrib_note_type,
@@ -135,6 +145,7 @@ from ..gtd_writes import (
     contrib_tag,
     depends_on_note,
     divergent_band_proposals,
+    entity_short_ref,
     flip_depends_on,
     format_note_title,
     inbox_close_body,
@@ -144,8 +155,16 @@ from ..gtd_writes import (
     output_approval_transition,
     output_note_body,
     outputs_register_row,
+    resolution_link_status,
+    resolution_tags,
     split_batch,
     state_body,
+    surface_body,
+    surface_item_id,
+    surface_list_for,
+    surface_outcome_summary,
+    surface_tags,
+    surface_title,
     validate_add_note,
     validate_annotate_clarification,
     validate_attach_contribution,
@@ -159,6 +178,8 @@ from ..gtd_writes import (
     validate_inbox_zero,
     validate_link_dependency,
     validate_set_properties,
+    validate_surface_create,
+    validate_surface_resolve,
     validate_transition,
 )
 from ..lookup import resolve_list_id, resolve_system_list_id
@@ -200,6 +221,8 @@ from ..models import (
     SET_PROPERTIES_OUTPUT,
     SET_REDACTION_OUTPUT,
     STAMP_TOKENS_OUTPUT,
+    SURFACE_CREATE_OUTPUT,
+    SURFACE_RESOLVE_OUTPUT,
     TOPIC_CLUSTERS_OUTPUT,
     TRANSITION_OUTPUT,
     UNBLOCK_OUTPUT,
@@ -313,6 +336,19 @@ _CONTRIB_VARIANT_ENUM: dict[str, Any] = {"enum": sorted(CONTRIB_VARIANTS)}
 _CONTRIB_CATEGORY_ENUM: dict[str, Any] = {"enum": sorted(CONTRIB_CATEGORIES)}
 _EDIT_OP_ENUM: dict[str, Any] = {"enum": sorted(EDIT_NOTE_OPS)}
 _LINK_MODE_ENUM: dict[str, Any] = {"enum": sorted(LINK_MODES)}
+_SURFACE_TYPE_ENUM: dict[str, Any] = {"enum": sorted(SURFACE_ITEM_TYPES)}
+_SURFACE_RESOLUTION_ENUM: dict[str, Any] = {"enum": sorted(SURFACE_RESOLUTIONS)}
+_RESPONSE_SHAPE_ENUM: dict[str, Any] = {"enum": sorted(RESPONSE_SHAPES)}
+_SURFACE_ENTITY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entity_type": {"type": "string", "enum": sorted(SURFACE_ENTITY_TYPES)},
+        "entity_url": {"type": "string"},
+        "entity_rtm": {"type": "object"},
+        "relationship": {"type": "string"},
+    },
+    "required": ["entity_type"],
+}
 _EDIT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -5738,6 +5774,568 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "applied": applied,
                 "errors": errors,
                 "message": f"Edited note ({detail}).",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    # ======================================================================= #
+    # Phase 4b writes — the AI-surface subsystem
+    # ======================================================================= #
+
+    def _frontmatter_value(body: str, key: str) -> str:
+        """One scalar out of a surface item's body YAML frontmatter."""
+        for ln in (body or "").split("\n"):
+            if ln.strip().startswith(f"{key}:"):
+                return ln.split(":", 1)[1].strip()
+        return ""
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=SURFACE_CREATE_OUTPUT)
+    async def gtd_surface_create(
+        ctx: Context,
+        item_type: Annotated[
+            str,
+            Field(
+                description="question | alert | notification | surface | activity_report. The "
+                "server derives the tag AND the target list from this — routing is an invariant, "
+                "not a caller choice.",
+                json_schema_extra=_SURFACE_TYPE_ENUM,
+            ),
+        ],
+        title_summary: Annotated[
+            str,
+            Field(
+                description="One-line summary for the title. MUST vary by event CONTENT (not by "
+                "clock time) — it is the day-bucket idempotency key."
+            ),
+        ],
+        content: Annotated[str, Field(description="The question / alert / notification body.")],
+        why_this_is_here: Annotated[
+            str,
+            Field(
+                description="One paragraph: what the engine noticed and why it warrants attention."
+            ),
+        ],
+        entities: Annotated[
+            list[dict[str, Any]] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_obj_array_schema(
+                    "Linked GTD entities: [{entity_type, entity_url, entity_rtm:{task_id,"
+                    "taskseries_id,list_id}, relationship}]. Non-empty. `meta` needs no url/triple; "
+                    "`meta` and `scheduled_task` get no AI-LINK note.",
+                    item_schema=_SURFACE_ENTITY_SCHEMA,
+                )
+            ),
+        ] = None,
+        asked_by: Annotated[
+            str, Field(description="The asking agent's identifier — used to route the response.")
+        ] = "",
+        expected_response_shape: Annotated[
+            str,
+            Field(
+                description="free-text | yes-no | pick-one | confirm-list | structured for a "
+                "question/alert; MUST be 'none' for notification/surface/activity_report.",
+                json_schema_extra=_RESPONSE_SHAPE_ENUM,
+            ),
+        ] = "none",
+        expected_response_options: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema("Required when the shape is pick-one or confirm-list.")
+            ),
+        ] = None,
+        priority: Annotated[
+            int, Field(description="1 | 2 | 3 — set as RTM's priority FIELD, never as a tag.")
+        ] = 3,
+        context_summary: Annotated[str, optional_string("One-line context for the body.")] = "",
+        related_artefact: Annotated[str | None, optional_string("Vault path, if any.")] = None,
+        paired_refs: Annotated[
+            dict[str, Any] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_object_schema(
+                    "Cross-references for a dual/triple-surface set, e.g. "
+                    '{"Inbox_Stuff": "<task_id>", "AI_Questions": "<task_id>"} — emitted as '
+                    "`Paired <label> task: <id>` lines. The caller orchestrates the combination; "
+                    "this tool always creates exactly ONE item."
+                )
+            ),
+        ] = None,
+        source_flow_tag: Annotated[
+            str | None, optional_string("Optional source-flow tag so a paired set is queryable.")
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — create ONE governed item on the AI surface (`AI_Questions` / `AI_Activity`),
+        with its structured body and an AI-LINK back-link on every linked entity.
+
+        Additive write; transaction-recorded (reversible via `batch_undo`). Validate-then-apply
+        — a rejected create writes NOTHING, including no partial AI-LINKs.
+
+        THE ROUTING INVARIANT (the reason this beats raw add_task): the caller states the
+        item_type; the SERVER picks the list and the tag. question/alert → AI_Questions;
+        notification/surface/activity_report → AI_Activity. Note the two vocabularies: the
+        input is `activity_report` but its tag is `q_activity` (NOT `q_activity_report` — that
+        spelling would pass gtd's `q_*` wildcard yet be invisible to every scan filter).
+
+        Tags applied: the item-type tag, one `q_<entity-type>` facet per DISTINCT linked
+        entity type, the list's provenance tag (`claude_question` / `ai_activity`),
+        `ai_conversation`, and the initial lifecycle state (`q_pending` for AI_Questions,
+        `q_open` for AI_Activity). No life-context or workflow-state tag — no source applies
+        one and doing so would leak the item into the GTD smart lists. Priority is set as RTM's
+        FIELD.
+
+        AUTO-CLOSE: written as `auto_close_at:` in the body frontmatter (not a tag, not a due
+        date), per type — notification +7d, surface +14d, activity_report +7d, and
+        question/alert `null` (AI_Questions NEVER auto-closes).
+
+        AI-LINK: one note per linked entity, on the ENTITY (never on the surface item);
+        `meta` and `scheduled_task` are skipped; capped at 20.
+
+        Idempotency: the day-bucket `item_id` (`YYYY-MM-DD-<slug of title_summary>`) is checked
+        across both lists first — an existing match returns `status: "already_existed"` with
+        that item's ids and writes nothing.
+
+        Dual/triple-surface sets stay CALLER-orchestrated (this tool makes one item); pass
+        `paired_refs` to emit the cross-reference lines at create time.
+
+        Args:
+            item_type / title_summary / content / why_this_is_here / entities / asked_by:
+                required inputs (see each).
+            expected_response_shape / expected_response_options / priority / context_summary /
+                related_artefact / paired_refs / source_flow_tag: see each.
+
+        Returns (on success): {"item_id", "task_id", "taskseries_id", "list_id", "list_name",
+            "item_type", "item_type_tag", "title", "tags", "auto_close_at",
+            "ai_links_created": [{entity_id, ai_link_note_id, entity_type}], "ai_links_skipped",
+            "status": "created" | "already_existed", "deep_link", "applied", "errors",
+            "message"}.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "invalid_input" | "missing_parameter" | "task_not_found" (an entity ref
+            that does not resolve) | "smart_list_target" | "strict_tag_rejected". Flat vector —
+            this tool resolves its own refs, so it never returns a nested {"error": {...}}.
+        """
+        client: RTMClient = await get_client()
+        ents = coerce_json(entities) or []
+        opts = coerce_json(expected_response_options) or []
+        paired = coerce_json(paired_refs) or {}
+
+        target_name = surface_list_for(item_type) if item_type in SURFACE_ITEM_TYPES else ""
+        target: dict[str, Any] = (
+            await resolve_system_list_id(client, target_name)
+            if target_name
+            else build_error(ErrorCode.INVALID_INPUT, "unknown item_type")
+        )
+        list_ok = "error" not in target and not (target.get("list") or {}).get("smart")
+
+        rejections = validate_surface_create(
+            item_type=item_type,
+            title_summary=title_summary,
+            content=content,
+            entities=ents,
+            expected_response_shape=expected_response_shape,
+            expected_response_options=opts,
+            priority=priority,
+            asked_by=asked_by,
+            list_ok=list_ok,
+        )
+
+        tz = await client.get_timezone()
+        today = _account_today(tz)
+        item_id = surface_item_id(title_summary, date=today)
+
+        # Idempotency (creator § 3b) — day-bucket item_id across BOTH lists.
+        parsed = await _getlist(client, "status:incomplete")
+        by_id = {str(t.get("id")): t for t in parsed}
+        for t in parsed:
+            for n in t.get("notes") or []:
+                if f"item_id: {item_id}" in (extract_note_body(n) or ""):
+                    return build_response(
+                        data={
+                            "item_id": item_id,
+                            "task_id": str(t.get("id")),
+                            "taskseries_id": str(t.get("taskseries_id") or ""),
+                            "list_id": str(t.get("list_id") or ""),
+                            "item_type": item_type,
+                            "status": "already_existed",
+                            "title": t.get("name") or "",
+                            "applied": [],
+                            "errors": [],
+                            "message": "An item with this item_id already exists; nothing written.",
+                        }
+                    )
+
+        # Resolve every entity ref up front — all-or-nothing.
+        resolved_ents: list[dict[str, Any]] = []
+        for i, e in enumerate(ents):
+            et = str(e.get("entity_type") or "")
+            if et == "meta":
+                resolved_ents.append(e)
+                continue
+            tid = str((e.get("entity_rtm") or {}).get("task_id") or "")
+            if tid and tid not in by_id and et != "scheduled_task":
+                rejections.append(
+                    {
+                        "reason": ErrorCode.TASK_NOT_FOUND.value,
+                        "detail": f"entities[{i}] task_id {tid} did not resolve",
+                        "id": tid,
+                    }
+                )
+            resolved_ents.append(e)
+
+        entity_types = sorted(
+            {str(e.get("entity_type") or "") for e in ents if e.get("entity_type")}
+        )
+        extra = [source_flow_tag] if source_flow_tag else []
+        if not rejections:
+            gate = await enforce_strict_tags(
+                client,
+                sorted(collect_surface_tags(item_type, entity_types, extra)),
+                tool="gtd_surface_create",
+            )
+            if gate:
+                rejections.append(as_rejection(gate))
+
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "status": "rejected",
+                    "item_id": item_id,
+                    "message": "Surface create rejected; nothing was written.",
+                }
+            )
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        asked_at = f"{today} {datetime.now(UTC).strftime('%H:%M')}"
+        tags = surface_tags(item_type, entity_types, extra=extra)
+        title = surface_title(
+            item_type,
+            title_summary,
+            entity_short_ref(ents[0]) if ents else "",
+            date=today,
+        )
+        closes = auto_close_at(item_type, today=today)
+
+        res = await _write(
+            "rtm.tasks.add",
+            f"surface:add:{item_type}",
+            None,
+            name=title,
+            parse="0",
+            list_id=target["list_id"],
+        )
+        new = (parse_tasks_response(res) if res else [{}]) or [{}]
+        created = new[0]
+        cid = created.get("id")
+        if not cid:
+            return build_response(
+                data={
+                    "applied": applied,
+                    "errors": errors or [{"op": "surface:add", "error": "no id"}],
+                    "status": "failed",
+                    "item_id": item_id,
+                    "message": "Surface create failed; no task id returned.",
+                },
+                timeline_id=client.timeline_id,
+            )
+        nid = {
+            "task_id": cid,
+            "taskseries_id": created.get("taskseries_id"),
+            "list_id": created.get("list_id"),
+        }
+        await _write("rtm.tasks.setTags", "surface:tags", cid, tags=",".join(tags), **nid)
+        await _write(
+            "rtm.tasks.setPriority", "surface:priority", cid, priority=str(priority), **nid
+        )
+        body = surface_body(
+            item_id=item_id,
+            item_type=item_type,
+            entities=resolved_ents,
+            content=content,
+            why_this_is_here=why_this_is_here,
+            expected_response_shape=expected_response_shape,
+            expected_response_options=opts,
+            priority=priority,
+            asked_by=asked_by,
+            asked_at=asked_at,
+            context_summary=context_summary or title_summary,
+            related_artefact=related_artefact,
+            auto_close=closes,
+            paired={str(k): str(v) for k, v in paired.items()} or None,
+        )
+        await _write(
+            "rtm.tasks.notes.add",
+            "surface:body",
+            cid,
+            note_title=f"{today} — {item_type.upper()} — {title_summary[:50]}",
+            note_text=body,
+            **nid,
+        )
+
+        surface_url = build_task_url(str(nid["list_id"] or ""), [str(cid)])
+        links: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        targets = ai_link_targets(resolved_ents)
+        target_ids = {str((e.get("entity_rtm") or {}).get("task_id") or "") for e in targets}
+        for e in resolved_ents:
+            if str(e.get("entity_type")) in ("meta", "scheduled_task"):
+                skipped.append(str(e.get("entity_type")))
+            elif str((e.get("entity_rtm") or {}).get("task_id") or "") not in target_ids:
+                skipped.append("over-cap")
+        for e in targets:
+            rtm = e.get("entity_rtm") or {}
+            etid = str(rtm.get("task_id") or "")
+            ent = by_id.get(etid)
+            if not ent:
+                continue
+            note_res = await _write(
+                "rtm.tasks.notes.add",
+                "surface:ai-link",
+                etid,
+                note_title=format_note_title("AI-LINK", title_summary[:50], date=today),
+                note_text=ai_link_note(
+                    item_summary=title_summary,
+                    surface_url=surface_url,
+                    surface_ids=nid,
+                    item_id=item_id,
+                    item_type=item_type,
+                    list_name=target_name,
+                    asked_by=asked_by,
+                    asked_at=asked_at,
+                    why=why_this_is_here[:200],
+                ),
+                task_id=ent.get("id"),
+                taskseries_id=ent.get("taskseries_id"),
+                list_id=ent.get("list_id"),
+            )
+            nid_out = ""
+            if note_res:
+                notes = (note_res.get("note") or {}) if isinstance(note_res, dict) else {}
+                nid_out = str(notes.get("id") or "")
+            links.append(
+                {
+                    "entity_id": etid,
+                    "ai_link_note_id": nid_out,
+                    "entity_type": str(e.get("entity_type")),
+                }
+            )
+
+        return build_response(
+            data={
+                "item_id": item_id,
+                "task_id": str(cid),
+                "taskseries_id": str(nid["taskseries_id"] or ""),
+                "list_id": str(nid["list_id"] or ""),
+                "list_name": target_name,
+                "item_type": item_type,
+                "item_type_tag": SURFACE_TYPE_TAG[item_type],
+                "title": title,
+                "tags": tags,
+                "auto_close_at": closes,
+                "ai_links_created": links,
+                "ai_links_skipped": skipped,
+                "status": "created",
+                "deep_link": surface_url,
+                "applied": applied,
+                "errors": errors,
+                "message": f"Created a {item_type} on {target_name} with {len(links)} AI-LINK(s).",
+            },
+            timeline_id=client.timeline_id,
+        )
+
+    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=SURFACE_RESOLVE_OUTPUT)
+    async def gtd_surface_resolve(
+        ctx: Context,
+        item_ref: Annotated[
+            str,
+            Field(description="The AI-surface item to resolve — a task id (preferred) or name."),
+        ],
+        resolution: Annotated[
+            str,
+            Field(
+                description="AI_Questions: 'answered' | 'processed'. AI_Activity: "
+                "'acknowledged' | 'auto_closed'. The machines are DISJOINT — a resolution from "
+                "the wrong list is rejected.",
+                json_schema_extra=_SURFACE_RESOLUTION_ENUM,
+            ),
+        ],
+        outcome_body: Annotated[
+            str, optional_string("One-line detail folded into the OUTCOME note's title summary.")
+        ] = "",
+    ) -> dict[str, Any]:
+        """GTD — resolve an AI-surface item: transition its lifecycle tags, write the OUTCOME
+        note, complete it, and update the `Status:` line on every AI-LINK back-link.
+
+        DESTRUCTIVE: completes a pre-existing item. Transaction-recorded, reversible via
+        `batch_undo`. Validate-then-apply — a rejected resolve writes NOTHING.
+
+        TWO DISJOINT LIFECYCLE MACHINES (the server enforces this): an AI_Questions item goes
+        `q_pending → q_answered → q_processed` (and `processed` REMOVES `q_pending` +
+        `q_answered`); an AI_Activity item goes `q_open → q_acknowledged` or `→ auto_closed`.
+        Asking for `acknowledged` on a question — or `processed` on an activity item — is
+        rejected as an illegal transition.
+
+        The OUTCOME note is TITLE-ONLY (`… — OUTCOME — Response received and acted on: …` /
+        `Auto-closed after N days unread` / `Acknowledged: …`). It deliberately does NOT use
+        the note catalogue's OUTCOME body grammar — that shape is the MEETING outcome.
+
+        AI-LINK back-links live on the LINKED ENTITIES, never on the surface item. Each is
+        located by its `Item ID:` line and its `Status:` line is rewritten to the resolution's
+        value (`answered` / `closed` / `auto-closed` — note the hyphen, where the tag uses an
+        underscore).
+
+        Args:
+            item_ref / resolution / outcome_body: see each.
+
+        Returns (on success): {"task_id", "item_id", "resolution", "tags_added",
+            "tags_removed", "outcome_note_title", "completed", "links_updated", "link_status",
+            "applied", "errors", "message"}.
+        Returns (on ambiguity): {"candidates": [...]} — call again with an id.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "invalid_input" (illegal transition / not a surface item) |
+            "strict_tag_rejected".
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}} — branch on
+            `error.code`, never the prose.
+        """
+        client: RTMClient = await get_client()
+        ref = await _resolve_ref(client, item_ref, "status:incomplete")
+        if "task" not in ref:
+            return build_response(data=ref)
+        item = ref["task"]
+        parsed = ref["parsed"]
+        item_tags = list(item.get("tags") or [])
+
+        rejections = validate_surface_resolve(resolution=resolution, item_tags=item_tags)
+        add, remove = ([], [])
+        if not rejections:
+            add, remove = resolution_tags(resolution)
+            gate = await enforce_strict_tags(client, sorted(add), tool="gtd_surface_resolve")
+            if gate:
+                rejections.append(as_rejection(gate))
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "task_id": str(item.get("id")),
+                    "resolution": resolution,
+                    "message": "Resolve rejected; nothing was written.",
+                }
+            )
+
+        # The item_id from the body frontmatter is the AI-LINK matching key.
+        item_id = ""
+        for n in item.get("notes") or []:
+            found = _frontmatter_value(extract_note_body(n) or "", "item_id")
+            if found:
+                item_id = found
+                break
+
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        tz = await client.get_timezone()
+        today = _account_today(tz)
+        ids = {
+            "task_id": item.get("id"),
+            "taskseries_id": item.get("taskseries_id"),
+            "list_id": item.get("list_id"),
+        }
+
+        # 1. tags  2. OUTCOME note  3. complete  4. AI-LINK fan-out (scan's order)
+        await _write(
+            "rtm.tasks.addTags",
+            "surface:resolve-tags",
+            str(item.get("id")),
+            tags=",".join(add),
+            **ids,
+        )
+        if remove:
+            present = [t for t in remove if t in item_tags]
+            if present:
+                await _write(
+                    "rtm.tasks.removeTags",
+                    "surface:resolve-clear",
+                    str(item.get("id")),
+                    tags=",".join(present),
+                    **ids,
+                )
+        days = None
+        if resolution == "auto_closed":
+            closes = ""
+            for n in item.get("notes") or []:
+                closes = _frontmatter_value(extract_note_body(n) or "", "auto_close_at") or closes
+            days = SURFACE_TTL_DAYS.get(
+                next((k for k, v in SURFACE_TYPE_TAG.items() if v in item_tags), ""), None
+            )
+        outcome_title = format_note_title(
+            "OUTCOME", surface_outcome_summary(resolution, outcome_body, days=days), date=today
+        )
+        await _write(
+            "rtm.tasks.notes.add",
+            "surface:outcome",
+            str(item.get("id")),
+            note_title=outcome_title,
+            note_text="",
+            **ids,
+        )
+        done = await _write("rtm.tasks.complete", "surface:complete", str(item.get("id")), **ids)
+
+        link_status = resolution_link_status(resolution)
+        updated: list[dict[str, Any]] = []
+        if item_id:
+            for t in parsed:
+                if str(t.get("id")) == str(item.get("id")):
+                    continue
+                for n in t.get("notes") or []:
+                    body = extract_note_body(n) or ""
+                    if f"Item ID: {item_id}" not in body:
+                        continue
+                    ntitle, nbody = _note_title_body(n)
+                    lines = nbody.split("\n")
+                    for i, ln in enumerate(lines):
+                        if ln.startswith("Status:"):
+                            lines[i] = f"Status: {link_status}"
+                            break
+                    await _write(
+                        "rtm.tasks.notes.edit",
+                        "surface:ai-link-status",
+                        str(t.get("id")),
+                        note_id=n.get("id"),
+                        note_title=ntitle,
+                        note_text="\n".join(lines),
+                        task_id=t.get("id"),
+                        taskseries_id=t.get("taskseries_id"),
+                        list_id=t.get("list_id"),
+                    )
+                    updated.append(
+                        {
+                            "entity_id": str(t.get("id")),
+                            "ai_link_note_id": str(n.get("id") or ""),
+                            "entity_type": "",
+                        }
+                    )
+
+        return build_response(
+            data={
+                "task_id": str(item.get("id")),
+                "item_id": item_id,
+                "resolution": resolution,
+                "tags_added": add,
+                "tags_removed": [t for t in remove if t in item_tags],
+                "outcome_note_title": outcome_title,
+                "completed": done is not None,
+                "links_updated": updated,
+                "link_status": link_status,
+                "applied": applied,
+                "errors": errors,
+                "message": f"Resolved as {resolution}; {len(updated)} AI-LINK(s) updated.",
             },
             timeline_id=client.timeline_id,
         )

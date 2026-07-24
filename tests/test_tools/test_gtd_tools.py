@@ -3694,6 +3694,332 @@ def _note_dict(nid, title_line, body=""):
     return {"id": nid, "title": "", "$t": text, "created": "2026-07-20T00:00:00Z"}
 
 
+AI_Q_ID = "51542311"
+AI_A_ID = "51542342"
+
+
+def _surface_lists():
+    base = {
+        "deleted": "0",
+        "locked": "0",
+        "archived": "0",
+        "position": "0",
+        "filter": "",
+        "sort_order": "0",
+    }
+    return {
+        "lists": {
+            "list": [
+                {"id": LIST_ID, "name": "Processed", "smart": "0", **base},
+                {"id": "51526642", "name": "Inbox_Stuff", "smart": "0", **base},
+                {"id": AI_Q_ID, "name": "AI_Questions", "smart": "0", **base},
+                {"id": AI_A_ID, "name": "AI_Activity", "smart": "0", **base},
+            ]
+        }
+    }
+
+
+def _entity(tid="1001", et="action"):
+    return {
+        "entity_type": et,
+        "entity_url": f"http://rtm/{tid}",
+        "entity_rtm": {"task_id": tid, "taskseries_id": "a1", "list_id": LIST_ID},
+        "relationship": "the action this is about",
+    }
+
+
+class TestGtdPhase4bSurface:
+    """Routing, AI-LINK fan-out, and the two disjoint lifecycle machines."""
+
+    @pytest.fixture(autouse=True)
+    def _lists(self, gtd_tools):
+        _, client = gtd_tools
+        lf = {
+            "deleted": False,
+            "locked": False,
+            "archived": False,
+            "position": 0,
+            "filter": "",
+            "sort_order": 0,
+        }
+        client.get_lists_cached = AsyncMock(
+            return_value=[
+                {"id": LIST_ID, "name": "Processed", "smart": False, **lf},
+                {"id": "51526642", "name": "Inbox_Stuff", "smart": False, **lf},
+                {"id": AI_Q_ID, "name": "AI_Questions", "smart": False, **lf},
+                {"id": AI_A_ID, "name": "AI_Activity", "smart": False, **lf},
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_question_routes_to_ai_questions_with_correct_tags(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist([_ts("a1", "1001", "The action", tags=["work", "action"])])
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_surface_create"](
+            FakeContext(),
+            item_type="question",
+            title_summary="Approve the cluster",
+            content="Which option?",
+            why_this_is_here="Ambiguity found",
+            entities=[_entity()],
+            asked_by="consolidate-cluster",
+            expected_response_shape="yes-no",
+            priority=1,
+        )
+        d = res["data"]
+        assert d["status"] == "created" and d["list_name"] == "AI_Questions"
+        assert _kw_for(client, "rtm.tasks.add")[0]["list_id"] == AI_Q_ID
+        tags = set(d["tags"])
+        assert {"q_question", "claude_question", "q_pending", "q_action", "ai_conversation"} <= tags
+        assert "ai_activity" not in tags and "q_open" not in tags
+        assert d["auto_close_at"] is None  # AI_Questions NEVER auto-closes
+        assert _kw_for(client, "rtm.tasks.setPriority")[0]["priority"] == "1"  # FIELD not tag
+        assert client.record_transaction.called
+
+    @pytest.mark.asyncio
+    async def test_activity_report_uses_q_activity_tag_not_q_activity_report(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist([_ts("a1", "1001", "The action", tags=["work", "action"])])
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_surface_create"](
+            FakeContext(),
+            item_type="activity_report",
+            title_summary="Scan ran",
+            content="did work",
+            why_this_is_here="run summary",
+            entities=[_entity()],
+            asked_by="ai-surface-scan",
+            expected_response_shape="none",
+        )
+        d = res["data"]
+        assert d["item_type_tag"] == "q_activity"
+        assert "q_activity_report" not in d["tags"]
+        assert _kw_for(client, "rtm.tasks.add")[0]["list_id"] == AI_A_ID
+        assert {"ai_activity", "q_open"} <= set(d["tags"])
+        assert d["auto_close_at"]  # +7d
+
+    @pytest.mark.asyncio
+    async def test_body_carries_frontmatter_and_ai_link_written_on_entity(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist([_ts("a1", "1001", "The action", tags=["work", "action"])])
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_surface_create"](
+            FakeContext(),
+            item_type="surface",
+            title_summary="Drift noticed",
+            content="c",
+            why_this_is_here="w",
+            entities=[_entity()],
+            asked_by="reassessment",
+            expected_response_shape="none",
+        )
+        d = res["data"]
+        notes = _kw_for(client, "rtm.tasks.notes.add")
+        body = next(n for n in notes if "item_id:" in n["note_text"])
+        assert f"item_id: {d['item_id']}" in body["note_text"]
+        assert "auto_close_at:" in body["note_text"] and "entities:" in body["note_text"]
+        # the AI-LINK lands on the ENTITY, not on the surface item
+        link = next(n for n in notes if "AI-LINK" in n.get("note_title", ""))
+        assert link["task_id"] == "1001"
+        assert (
+            "Status: open" in link["note_text"] and f"Item ID: {d['item_id']}" in link["note_text"]
+        )
+        assert [x["entity_id"] for x in d["ai_links_created"]] == ["1001"]
+
+    @pytest.mark.asyncio
+    async def test_meta_entity_gets_no_ai_link(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_getlist([])))
+        res = await tools["gtd_surface_create"](
+            FakeContext(),
+            item_type="alert",
+            title_summary="Queue bloat",
+            content="c",
+            why_this_is_here="w",
+            entities=[{"entity_type": "meta"}],
+            asked_by="ai-surface-scan",
+            expected_response_shape="free-text",
+        )
+        d = res["data"]
+        assert d["ai_links_created"] == [] and "meta" in d["ai_links_skipped"]
+        assert not any(
+            "AI-LINK" in n.get("note_title", "") for n in _kw_for(client, "rtm.tasks.notes.add")
+        )
+
+    @pytest.mark.asyncio
+    async def test_response_shape_coupling_rejects_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_getlist([])))
+        res = await tools["gtd_surface_create"](
+            FakeContext(),
+            item_type="notification",
+            title_summary="t",
+            content="c",
+            why_this_is_here="w",
+            entities=[{"entity_type": "meta"}],
+            asked_by="a",
+            expected_response_shape="yes-no",  # illegal for AI_Activity
+        )
+        assert "invalid_input" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_entity_writes_nothing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_getlist([])))
+        res = await tools["gtd_surface_create"](
+            FakeContext(),
+            item_type="question",
+            title_summary="t",
+            content="c",
+            why_this_is_here="w",
+            entities=[_entity("nope")],
+            asked_by="a",
+            expected_response_shape="yes-no",
+        )
+        assert "task_not_found" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_idempotent_on_existing_item_id(self, gtd_tools):
+        tools, client = gtd_tools
+        today = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+        from rtm_mcp.gtd_writes import surface_item_id
+
+        iid = surface_item_id("Approve the cluster", date=today)
+        existing = _note_dict("nb", f"{today} — SURFACE — x", f"---\nitem_id: {iid}\n---")
+        tree = _getlist(
+            [
+                _ts(
+                    "s1",
+                    "7777",
+                    "existing surface item",
+                    tags=["ai_activity", "q_open"],
+                    notes=[existing],
+                )
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_surface_create"](
+            FakeContext(),
+            item_type="surface",
+            title_summary="Approve the cluster",
+            content="c",
+            why_this_is_here="w",
+            entities=[{"entity_type": "meta"}],
+            asked_by="a",
+            expected_response_shape="none",
+        )
+        assert res["data"]["status"] == "already_existed"
+        assert res["data"]["task_id"] == "7777"
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    # ---- resolve ---------------------------------------------------------- #
+
+    def _resolve_tree(self, iid="2026-07-24-x"):
+        body = _note_dict("nb", "2026-07-24 — QUESTION — x", f"---\nitem_id: {iid}\n---")
+        link = _note_dict(
+            "nl", "2026-07-24 — AI-LINK — x", f"Item: x\nItem ID: {iid}\nStatus: open"
+        )
+        return _getlist(
+            [
+                _ts(
+                    "s1",
+                    "9001",
+                    "The question",
+                    tags=["claude_question", "q_pending", "q_question"],
+                    notes=[body],
+                ),
+                _ts("e1", "1001", "The action", tags=["work", "action"], notes=[link]),
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_resolve_processed_transitions_and_updates_links(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(self._resolve_tree()))
+        res = await tools["gtd_surface_resolve"](
+            FakeContext(),
+            item_ref="9001",
+            resolution="processed",
+            outcome_body="routed it",
+        )
+        d = res["data"]
+        assert d["completed"] is True and d["resolution"] == "processed"
+        assert d["tags_added"] == ["q_processed"]
+        assert "q_pending" in d["tags_removed"]
+        assert "OUTCOME" in d["outcome_note_title"]
+        assert "Response received and acted on" in d["outcome_note_title"]
+        # the AI-LINK on the ENTITY had its Status line rewritten
+        edit = _kw_for(client, "rtm.tasks.notes.edit")[0]
+        assert edit["task_id"] == "1001" and "Status: closed" in edit["note_text"]
+        assert d["link_status"] == "closed"
+
+    @pytest.mark.asyncio
+    async def test_resolve_cross_machine_rejected_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(self._resolve_tree()))
+        res = await tools["gtd_surface_resolve"](
+            FakeContext(),
+            item_ref="9001",
+            resolution="acknowledged",  # AI_Activity verb
+        )
+        assert "invalid_input" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_resolve_auto_closed_uses_hyphenated_link_status(self, gtd_tools):
+        tools, client = gtd_tools
+        body = _note_dict(
+            "nb",
+            "2026-07-24 — SURFACE — x",
+            "---\nitem_id: 2026-07-24-y\nauto_close_at: 2026-07-01\n---",
+        )
+        link = _note_dict(
+            "nl", "2026-07-24 — AI-LINK — x", "Item: x\nItem ID: 2026-07-24-y\nStatus: open"
+        )
+        tree = _getlist(
+            [
+                _ts(
+                    "s1",
+                    "9002",
+                    "The surface",
+                    tags=["ai_activity", "q_open", "q_surface"],
+                    notes=[body],
+                ),
+                _ts("e1", "1001", "The action", tags=["work", "action"], notes=[link]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_surface_resolve"](
+            FakeContext(),
+            item_ref="9002",
+            resolution="auto_closed",
+        )
+        d = res["data"]
+        assert d["link_status"] == "auto-closed"  # hyphen in the Status line
+        assert d["tags_added"] == ["auto_closed"]  # underscore in the tag
+        assert "Auto-closed after" in d["outcome_note_title"]
+        assert "Status: auto-closed" in _kw_for(client, "rtm.tasks.notes.edit")[0]["note_text"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_non_surface_item_rejected(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            side_effect=_write_dispatch(
+                _getlist([_ts("a1", "1001", "Just an action", tags=["work", "action"])])
+            )
+        )
+        res = await tools["gtd_surface_resolve"](
+            FakeContext(),
+            item_ref="1001",
+            resolution="processed",
+        )
+        assert "invalid_input" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+
 class TestGtdPhase4aNotes:
     """Note family, the bounded note-edit verb, and the two additive extensions."""
 

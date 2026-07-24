@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "server": "rtm",
-  "generated_at": "2026-07-24T17:08:36Z",
-  "source_version": "2.7.0",
+  "generated_at": "2026-07-24T18:27:19Z",
+  "source_version": "2.8.0",
   "tools": {
     "mcp__rtm__add_list": "8ac69be9eba0aea86acd884639a55c591ffe9ff48283811bcbaed04a0d6e280a",
     "mcp__rtm__add_note": "480a76aa74cc516833e17f6a80dcd6d19065b1e61a81c14d67512e2207087de3",
@@ -64,6 +64,8 @@
     "mcp__rtm__gtd_set_properties": "fd66bc9a8e4f15052c574ce7193354279f3033ab7146ed13fa94c5dfc7e73cd9",
     "mcp__rtm__gtd_set_redaction": "6126d6cdadf5b569b31cbb630c1486c602e08629874121fa5d760f5755f64e38",
     "mcp__rtm__gtd_stamp_tokens": "1d9d648b66e1b9e6fa2217b742def4d8949e0b591593ef6b86ffeb8c2cd33bb5",
+    "mcp__rtm__gtd_surface_create": "663685be4ebac1d4321f7bf77b89624d15c76ad6f837cad365915c60d65ad87c",
+    "mcp__rtm__gtd_surface_resolve": "34c7ac1dcebd036acc8854af9f6bed5e0af014af303d9af1c640644922823f39",
     "mcp__rtm__gtd_topic_clusters": "8b2902997b79d326de6fd579cd8bddd46730464ae69704bb36768f3d399bfbe6",
     "mcp__rtm__gtd_transition_state": "21da0f4221af5e5dbb220de382467c38c2d771efc5e9012137647fe85fdac854",
     "mcp__rtm__gtd_unblock_candidates": "85b8a4f11dd5a17c0e8de02d798fd5e58c266b9fc229cdbd13a13ffd822126de",

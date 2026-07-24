@@ -335,6 +335,24 @@ rate-limited calls; at most 50 items apply per call and the tail returns in `rem
 NOTE: gtd_transition_state already accepts the #ai_* engine tags — the server existence-gates
 tags rather than keeping a GTD-only allow-list, so item 2.5 needed no code change.
 
+### GTD Phase 4b writes (the AI-surface subsystem)
+- gtd_surface_create: create ONE governed item on AI_Questions / AI_Activity. THE ROUTING
+  INVARIANT: the caller states item_type (question|alert|notification|surface|activity_report);
+  the SERVER picks the list and the tag. Note the two vocabularies — input `activity_report` maps
+  to tag `q_activity` (NOT q_activity_report, which gtd's q_* wildcard would pass silently while
+  being invisible to every scan filter). Writes the structured body (the YAML frontmatter carrying
+  item_id / entities / asked_by / asked_at / auto_close_at — the fields the scan needs to resolve
+  it) plus one AI-LINK note per linked entity, ON THE ENTITY. auto_close_at is a body line per
+  type (notification +7d, surface +14d, activity_report +7d; question/alert null — AI_Questions
+  NEVER auto-closes). meta/scheduled_task get no AI-LINK; capped at 20. Idempotent on the
+  day-bucket item_id. Priority is RTM's FIELD, not a tag. Dual/triple-surface sets stay
+  caller-orchestrated (pass paired_refs for the cross-reference lines).
+- gtd_surface_resolve: DESTRUCTIVE — transitions the lifecycle tags, writes the TITLE-ONLY OUTCOME
+  note, completes the item, and rewrites the Status: line on every AI-LINK back-link. Enforces the
+  TWO DISJOINT machines: AI_Questions goes q_pending->q_answered->q_processed (processed removes
+  both prior states); AI_Activity goes q_open->q_acknowledged|auto_closed. A resolution from the
+  wrong list is rejected. Link Status uses `auto-closed` (hyphen) where the tag is `auto_closed`.
+
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
   mapping 1:1 to an RTM API method.

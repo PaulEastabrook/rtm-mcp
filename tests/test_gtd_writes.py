@@ -676,3 +676,279 @@ def test_is_active_depends_on():
 
 def test_link_modes():
     assert sorted(w.LINK_MODES) == ["create", "obsolete", "resolve"]
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4b — the AI-surface subsystem
+# --------------------------------------------------------------------------- #
+
+
+def test_item_type_tag_is_a_table_not_a_derivation():
+    """ai-surface-creator.md:168 says derive `q_<item_type>` — that yields `q_activity_report`
+    for the fifth type, which is NOT canonical and which gtd's `q_*` wildcard would pass
+    SILENTLY, making the item invisible to every scan filter."""
+    assert w.SURFACE_TYPE_TAG["activity_report"] == "q_activity"
+    assert "q_activity_report" not in set(w.SURFACE_TYPE_TAG.values())
+    for t in w.SURFACE_ITEM_TYPES:
+        assert w.SURFACE_TYPE_TAG[t].startswith("q_")
+
+
+def test_input_and_tag_vocabularies_are_distinct():
+    assert sorted(w.SURFACE_ITEM_TYPES) == [
+        "activity_report",
+        "alert",
+        "notification",
+        "question",
+        "surface",
+    ]
+    assert sorted(set(w.SURFACE_TYPE_TAG.values())) == [
+        "q_activity",
+        "q_alert",
+        "q_notification",
+        "q_question",
+        "q_surface",
+    ]
+
+
+def test_routing_invariant():
+    assert w.surface_list_for("question") == "AI_Questions"
+    assert w.surface_list_for("alert") == "AI_Questions"
+    for t in ("notification", "surface", "activity_report"):
+        assert w.surface_list_for(t) == "AI_Activity"
+
+
+def test_create_tags_by_list():
+    q = w.surface_tags("question", ["action"])
+    assert "claude_question" in q and "q_pending" in q and "q_question" in q
+    assert "ai_activity" not in q and "q_open" not in q
+    a = w.surface_tags("surface", ["action"])
+    assert "ai_activity" in a and "q_open" in a and "q_surface" in a
+    assert "claude_question" not in a and "q_pending" not in a
+    # ai_conversation always; NO life-context / workflow-state leakage
+    for tags in (q, a):
+        assert "ai_conversation" in tags
+        assert not (set(tags) & w.LIFE_CONTEXTS)
+        assert not (set(tags) & w.WORKFLOW_STATES)
+
+
+def test_entity_facets_one_per_distinct_type():
+    tags = w.surface_tags("question", ["action", "project"])
+    assert "q_action" in tags and "q_project" in tags
+
+
+def test_auto_close_per_type_and_never_for_questions():
+    assert w.auto_close_at("question", today="2026-07-24") is None
+    assert w.auto_close_at("alert", today="2026-07-24") is None
+    assert w.auto_close_at("notification", today="2026-07-24") == "2026-07-31"  # +7
+    assert w.auto_close_at("surface", today="2026-07-24") == "2026-08-07"  # +14
+    assert w.auto_close_at("activity_report", today="2026-07-24") == "2026-07-31"  # +7
+
+
+def test_body_carries_the_fields_the_scan_needs():
+    """The published publish_ai_activity path omits this frontmatter, which is why items created
+    that way can never auto-close. Ours must carry it."""
+    body = w.surface_body(
+        item_id="2026-07-24-x",
+        item_type="surface",
+        entities=[
+            {
+                "entity_type": "action",
+                "entity_url": "u",
+                "entity_rtm": {"task_id": "1", "taskseries_id": "2", "list_id": "3"},
+                "relationship": "r",
+            }
+        ],
+        content="c",
+        why_this_is_here="w",
+        expected_response_shape="none",
+        expected_response_options=None,
+        priority=3,
+        asked_by="agent",
+        asked_at="2026-07-24 10:00",
+        context_summary="cs",
+        related_artefact=None,
+        auto_close="2026-08-07",
+    )
+    for needed in (
+        "item_id: 2026-07-24-x",
+        "auto_close_at: 2026-08-07",
+        "entities:",
+        "asked_by: agent",
+        "asked_at: 2026-07-24 10:00",
+    ):
+        assert needed in body
+    assert "## Why this is here" in body and "## How to engage" in body
+
+
+def test_body_questions_carry_null_auto_close():
+    body = w.surface_body(
+        item_id="i",
+        item_type="question",
+        entities=[{"entity_type": "meta"}],
+        content="c",
+        why_this_is_here="w",
+        expected_response_shape="yes-no",
+        expected_response_options=None,
+        priority=1,
+        asked_by="a",
+        asked_at="t",
+        context_summary="cs",
+        related_artefact=None,
+        auto_close=w.auto_close_at("question", today="2026-07-24"),
+    )
+    assert "auto_close_at: null" in body
+
+
+def test_ai_link_note_has_every_required_field():
+    note = w.ai_link_note(
+        item_summary="s",
+        surface_url="u",
+        surface_ids={"task_id": "1", "taskseries_id": "2", "list_id": "3"},
+        item_id="i",
+        item_type="question",
+        list_name="AI_Questions",
+        asked_by="a",
+        asked_at="t",
+        why="why",
+    )
+    for field in (
+        "Item:",
+        "Surface item URL:",
+        "Surface item RTM IDs:",
+        "task_id:",
+        "taskseries_id:",
+        "list_id:",
+        "Item ID:",
+        "Item type:",
+        "List:",
+        "Asked by:",
+        "Asked at:",
+        "Status:",
+        "Why:",
+        "How to engage:",
+    ):
+        assert field in note
+    # Status opens as `open` — the creator agent writes q_pending/q_open here, which are not
+    # legal AI-LINK Status values.
+    assert "Status: open" in note
+    assert "Status: q_pending" not in note
+
+
+def test_ai_link_targets_skip_meta_and_scheduled_task_and_cap():
+    ents = [{"entity_type": "action"}, {"entity_type": "meta"}, {"entity_type": "scheduled_task"}]
+    assert [e["entity_type"] for e in w.ai_link_targets(ents)] == ["action"]
+    many = [{"entity_type": "action"} for _ in range(30)]
+    assert len(w.ai_link_targets(many)) == w.AI_LINK_CAP == 20
+
+
+def test_two_disjoint_lifecycle_machines():
+    # legal
+    assert w.validate_surface_resolve(resolution="processed", item_tags=["claude_question"]) == []
+    assert w.validate_surface_resolve(resolution="acknowledged", item_tags=["ai_activity"]) == []
+    assert w.validate_surface_resolve(resolution="auto_closed", item_tags=["ai_activity"]) == []
+    # illegal cross-machine
+    assert "invalid_input" in _reasons(
+        w.validate_surface_resolve(resolution="acknowledged", item_tags=["claude_question"])
+    )
+    assert "invalid_input" in _reasons(
+        w.validate_surface_resolve(resolution="auto_closed", item_tags=["claude_question"])
+    )
+    assert "invalid_input" in _reasons(
+        w.validate_surface_resolve(resolution="processed", item_tags=["ai_activity"])
+    )
+    # not a surface item at all
+    assert "invalid_input" in _reasons(
+        w.validate_surface_resolve(resolution="processed", item_tags=["action"])
+    )
+
+
+def test_processed_removes_both_prior_question_states():
+    add, remove = w.resolution_tags("processed")
+    assert add == ["q_processed"]
+    assert set(remove) == {"q_pending", "q_answered"}
+
+
+def test_ai_link_status_values_and_hyphen():
+    assert w.resolution_link_status("auto_closed") == "auto-closed"  # hyphen in Status line
+    assert w.AUTO_CLOSED == "auto_closed"  # underscore in the tag
+    for v in w._RESOLUTION_LINK_STATUS.values():
+        assert v in w.AI_LINK_STATUSES
+
+
+def test_outcome_is_title_only_summary():
+    assert w.surface_outcome_summary("auto_closed", days=14) == "Auto-closed after 14 days unread"
+    assert w.surface_outcome_summary("processed", "did X").startswith(
+        "Response received and acted on"
+    )
+    assert w.surface_outcome_summary("acknowledged", "") == "Acknowledged: marked acknowledged"
+
+
+def test_response_shape_coupling_rule_4():
+    base = dict(
+        item_type="surface",
+        title_summary="t",
+        content="c",
+        entities=[{"entity_type": "meta"}],
+        expected_response_options=None,
+        priority=3,
+        asked_by="a",
+        list_ok=True,
+    )
+    # AI_Activity types MUST be `none`
+    assert "invalid_input" in _reasons(
+        w.validate_surface_create(**{**base, "expected_response_shape": "yes-no"})
+    )
+    assert w.validate_surface_create(**{**base, "expected_response_shape": "none"}) == []
+    # AI_Questions types must NOT be `none`
+    q = {**base, "item_type": "question"}
+    assert "invalid_input" in _reasons(
+        w.validate_surface_create(**{**q, "expected_response_shape": "none"})
+    )
+    assert w.validate_surface_create(**{**q, "expected_response_shape": "yes-no"}) == []
+    # pick-one needs options
+    assert "missing_parameter" in _reasons(
+        w.validate_surface_create(**{**q, "expected_response_shape": "pick-one"})
+    )
+
+
+def test_create_validation_paths():
+    base = dict(
+        item_type="question",
+        title_summary="t",
+        content="c",
+        entities=[{"entity_type": "meta"}],
+        expected_response_shape="yes-no",
+        expected_response_options=None,
+        priority=1,
+        asked_by="a",
+        list_ok=True,
+    )
+    assert w.validate_surface_create(**base) == []
+    assert "invalid_input" in _reasons(w.validate_surface_create(**{**base, "item_type": "rumour"}))
+    assert "missing_parameter" in _reasons(w.validate_surface_create(**{**base, "entities": []}))
+    assert "missing_parameter" in _reasons(w.validate_surface_create(**{**base, "asked_by": " "}))
+    assert "invalid_input" in _reasons(w.validate_surface_create(**{**base, "priority": 9}))
+    assert "smart_list_target" in _reasons(w.validate_surface_create(**{**base, "list_ok": False}))
+    # a non-meta entity needs url + the full triple
+    assert "missing_parameter" in _reasons(
+        w.validate_surface_create(**{**base, "entities": [{"entity_type": "action"}]})
+    )
+
+
+def test_title_and_item_id():
+    assert w.surface_title("question", "Approve X", "act:rtm:1", date="2026-07-24") == (
+        "2026-07-24 — Q — Approve X (act:rtm:1)"
+    )
+    assert w.surface_title("activity_report", "Ran", "meta", date="2026-07-24").startswith(
+        "2026-07-24 — AR — "
+    )
+    assert w.surface_item_id("Approve Chris cluster", date="2026-07-24") == (
+        "2026-07-24-approve-chris-cluster"
+    )
+
+
+def test_q_urgent_is_not_implemented():
+    """communication-channels.md invents q_urgent; it exists in no gtd source and gtd's q_*
+    wildcard would wave it through."""
+    allv = set(w.SURFACE_TYPE_TAG.values()) | w.SURFACE_RESOLUTIONS | {w.Q_PENDING, w.Q_OPEN}
+    assert "q_urgent" not in allv
