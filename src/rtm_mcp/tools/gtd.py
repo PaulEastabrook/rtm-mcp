@@ -5689,6 +5689,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 }
             )
 
+        assert note is not None  # a None note appended a rejection above, so we returned
         cur_title, cur_body = _note_title_body(note)
         result = apply_edit_op(cur_title, cur_body, edit_d)
         if result is None:
