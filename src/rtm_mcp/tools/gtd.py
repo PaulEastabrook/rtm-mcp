@@ -75,6 +75,16 @@ from ..engage_commit import validate as validate_engage
 from ..engage_seed import _blocked_map as engage_blocked_map
 from ..engage_seed import _kind as engage_kind
 from ..engage_seed import build_engage_seed
+from ..engine_report import ACTIVITY_FILTER as ENGINE_ACTIVITY_FILTER
+from ..engine_report import (
+    CONTRIB_FILTER,
+    DEFAULT_WINDOW_DAYS,
+    DEFERRED_FILTER,
+    MAX_WINDOW_DAYS,
+    SPECULATIVE_FILTER,
+    build_engine_report,
+)
+from ..engine_report import QUESTIONS_FILTER as ENGINE_QUESTIONS_FILTER
 from ..error_codes import ErrorCode
 from ..gtd_chat import (
     AI_CHAT,
@@ -99,6 +109,16 @@ from ..gtd_reads import (
     build_waiting_for_queue,
     classify_gtd_type,
     resolve_task_ref,
+)
+from ..gtd_reports import (
+    DEFAULT_REVIEW_DAYS,
+    DEFAULT_STALE_DAYS,
+    DEPENDENCY_DEFAULT_CAP,
+    build_dependency_gaps,
+    build_focus_index,
+    build_item_stale,
+    build_review_report,
+    build_workload_report,
 )
 from ..gtd_writes import (
     ACTION_CONTEXTS,
@@ -204,33 +224,46 @@ from ..models import (
     CREATE_PROJECT_OUTPUT,
     DECISION_OUTPUT,
     DELIVERABLE_OUTPUT,
+    DEPENDENCY_GAPS_OUTPUT,
     EDIT_NOTE_OUTPUT,
     ENGAGE_COMMIT_OUTPUT,
     ENGAGE_SEED_OUTPUT,
+    ENGINE_REPORT_OUTPUT,
+    FOCUS_INDEX_OUTPUT,
     GTD_CONTEXT_OUTPUT,
     GTD_QUERY_OUTPUT,
     HEALTH_CHECK_OUTPUT,
     INBOX_STATE_OUTPUT,
     INBOX_ZERO_OUTPUT,
+    ITEM_STALE_OUTPUT,
     LINK_DEPENDENCY_OUTPUT,
     PROJECT_CANVAS_OUTPUT,
     PROJECT_INDEX_OUTPUT,
     PROJECT_PLAN_OUTPUT,
     REASSESSMENT_OUTPUT,
     RESEARCH_OUTPUT,
+    REVIEW_REPORT_OUTPUT,
     SET_PROPERTIES_OUTPUT,
     SET_REDACTION_OUTPUT,
     STAMP_TOKENS_OUTPUT,
     SURFACE_CREATE_OUTPUT,
+    SURFACE_QUEUE_OUTPUT,
     SURFACE_RESOLVE_OUTPUT,
+    TAG_REPORT_OUTPUT,
     TOPIC_CLUSTERS_OUTPUT,
     TRANSITION_OUTPUT,
     UNBLOCK_OUTPUT,
     WAITING_FOR_OUTPUT,
+    WORKLOAD_REPORT_OUTPUT,
 )
 from ..order_note import from_envelope as resolve_order_note
 from ..order_note import make as make_order_note
-from ..parsers import extract_note_body, parse_tasks_response, priority_to_code
+from ..parsers import (
+    extract_note_body,
+    parse_tags_response,
+    parse_tasks_response,
+    priority_to_code,
+)
 from ..plan_graph import build_graph
 from ..project_index import build_actions, build_foci, build_index
 from ..project_plan import (
@@ -252,6 +285,10 @@ from ..response_builder import (
     get_transaction_info,
 )
 from ..strict_tags import as_rejection, enforce_strict_tags, normalize_tag
+from ..surface_queue import ACTIVITY_FILTER as SURFACE_ACTIVITY_FILTER
+from ..surface_queue import QUESTIONS_FILTER as SURFACE_QUESTIONS_FILTER
+from ..surface_queue import VALID_SURFACES, build_surface_queue
+from ..tag_report import build_tag_report
 from ..tmpl_child import make_tmpl_child_note, new_slug, plan_backfill
 from ..tool_params import (
     coerce_json,
@@ -302,6 +339,8 @@ _ENGAGE_ITEM_SCHEMA: dict[str, Any] = {
 }
 # Phase 0 read tools — advisory enums, sourced from the canonical frozensets in gtd_reads.
 _PERSPECTIVE_ENUM: dict[str, Any] = {"enum": sorted(VALID_PERSPECTIVES)}
+# Wave 1 reads — sourced from surface_queue.VALID_SURFACES so the advertised set cannot drift.
+_SURFACE_QUEUE_ENUM: dict[str, Any] = {"enum": sorted(VALID_SURFACES)}
 _DEPTH_ENUM: dict[str, Any] = {"enum": sorted(VALID_DEPTHS)}
 # Phase 1 write tools — the SEVEN Tier-1 structural vocabularies (D1 shared-kernel promotion),
 # each sourced from its canonical frozenset in gtd_writes so the advertised set cannot drift.
@@ -6338,4 +6377,492 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "message": f"Resolved as {resolution}; {len(updated)} AI-LINK(s) updated.",
             },
             timeline_id=client.timeline_id,
+        )
+
+    # ======================================================================= #
+    # Wave 1 — the eight MilkScript-retirement reads (v2.9.0)
+    # ======================================================================= #
+    # All eight replace `.ms` scripts (or, for gtd_focus_index, fill a capability gap) whose
+    # logic carried the defect classes in `references/milkscript-api-surface.md`. There is NO
+    # output-parity oracle: each is built to its CONSUMER's documented need, and every
+    # deliberate divergence is named in the owning pure module's docstring. Names follow the
+    # CQS + aggregate-grouped standard (CONTRIBUTING § 2) from birth, so Wave 2 never renames
+    # them.
+
+    def _bounded_int(value: int, *, name: str, low: int, high: int) -> dict[str, Any] | None:
+        """A guard-rail rejection for an out-of-range window/threshold, or None to proceed."""
+        if low <= value <= high:
+            return None
+        return build_error(
+            ErrorCode.INVALID_INPUT,
+            f"{name} must be between {low} and {high} (got {value}).",
+            **{name: value},
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=SURFACE_QUEUE_OUTPUT)
+    async def gtd_surface_queue(
+        ctx: Context,
+        surface: Annotated[
+            str,
+            Field(
+                description="Which AI-surface list to queue: 'questions' (AI_Questions) | "
+                "'activity' (AI_Activity) | 'both'. 'both' returns two separately-sorted "
+                "collections — the scan makes two passes.",
+                json_schema_extra=_SURFACE_QUEUE_ENUM,
+            ),
+        ] = "both",
+    ) -> dict[str, Any]:
+        """GTD — the AI-surface processing queue: every eligible `AI_Questions` / `AI_Activity`
+        item with its body frontmatter ALREADY PARSED, plus the two signals the scan branches on
+        (`auto_close_due`, `response_detected`). Use this to run `ai-surface-scan` §§ 3b/3c
+        without a `get_task_notes` call per item.
+
+        Read-only: ONE signed `rtm.tasks.getList` per requested surface (two for 'both') plus a
+        cached timezone read; no write, no timeline.
+
+        THE BOUNDARY — the server detects that a response EXISTS; the agent decides what it
+        MEANS. Intent parsing against `expected_response_shape` stays agent-side.
+        `response_detected` is a filter, NOT a verdict.
+
+        `response_detected` is INCLUSION-based and deliberately precise (a false positive costs
+        a wrong resolve; a false negative costs one scan's delay). It fires on exactly three
+        paths, each named in `response_evidence[].path`: `q_answered_tag` (#q_answered is set);
+        `completed_unresolved` (completed without the terminal lifecycle tag —
+        closure-with-response); `response_note` (an ANSWER / RESPONSE / REPLY / DECISION note
+        after `asked_at`, or after item creation where the item carries no `asked_at`).
+        Detection by EXCLUSION against the note catalogue was measured unusable on the live
+        lists: every off-catalogue note there is engine-authored, so exclusion fires on
+        essentially every item. That signal is not discarded — it is quarantined in
+        `unrecognised_notes[]` for the agent to judge, and never sets `response_detected`.
+
+        METADATA IS OFTEN ABSENT, and a row is never dropped for it. Items published before
+        v2.8.0 carry no frontmatter (measured live: 66 of 77 `AI_Questions` items, 45 of 52
+        `AI_Activity` items) — those return with the parsed fields null/empty and
+        `metadata_parse_error` set to `frontmatter_absent` | `frontmatter_unterminated` |
+        `frontmatter_incomplete`. An `AI_Activity` item with no `auto_close_at` can never
+        auto-close; `metadata_missing_count` is how you see how much of the queue that is.
+
+        SCOPE — completed items lacking the terminal tag ARE included, because
+        `ai-surface-scan.md` § 3b.2's closure-with-response path is otherwise unreachable
+        (the `.ms` filtered `status:incomplete`). Properly closed items still carry
+        `#q_processed` / `#q_acknowledged` / `#auto_closed` and are excluded.
+
+        Args:
+            surface: which list(s) to queue (advisory enum).
+
+        Returns (on success): {"surface", "current_date", "count", "metadata_missing_count",
+            "questions": [row], "questions_count", "questions_response_detected_count",
+            "activity": [row], "activity_count", "activity_auto_close_due_count",
+            "activity_response_detected_count"} — `questions` / `activity` present only for the
+            surfaces requested. Each row: {task_id, taskseries_id, list_id, surface, name, tags,
+            notes_count, created, modified, completed, deep_link, item_id, item_type, entities,
+            expected_response_shape, expected_response_options, asked_by, asked_at,
+            auto_close_at, related_artefact, metadata_parse_error, auto_close_due,
+            response_detected, response_evidence, unrecognised_notes}. Questions sort
+            oldest-MODIFIED first, activity oldest-CREATED first.
+        Returns (on bad input): {"error": {"code": "invalid_input", "message": ...}} — branch on
+            `error.code`, never the prose.
+        """
+        if surface not in VALID_SURFACES:
+            return build_response(
+                data=build_error(
+                    ErrorCode.INVALID_INPUT,
+                    f"Unknown surface '{surface}'. Use one of {sorted(VALID_SURFACES)}.",
+                    surface=surface,
+                )
+            )
+        client: RTMClient = await get_client()
+        questions = (
+            await _getlist(client, SURFACE_QUESTIONS_FILTER)
+            if surface in ("questions", "both")
+            else []
+        )
+        activity = (
+            await _getlist(client, SURFACE_ACTIVITY_FILTER)
+            if surface in ("activity", "both")
+            else []
+        )
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_surface_queue(
+                questions,
+                activity,
+                surface=surface,
+                today=_account_today(tz),
+                timezone=tz,
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ENGINE_REPORT_OUTPUT)
+    async def gtd_engine_report(
+        ctx: Context,
+        window_days: Annotated[
+            int,
+            Field(
+                description="Reporting window in days (default 7 for the weekly monitor; pass "
+                "30 for the monthly roll-up). 1-366.",
+                ge=1,
+                le=MAX_WINDOW_DAYS,
+            ),
+        ] = DEFAULT_WINDOW_DAYS,
+    ) -> dict[str, Any]:
+        """GTD — proactive-contribution engine telemetry over a window: contribution outcomes by
+        category and state, AI-surface engagement per list, the open speculative population, and
+        the current deferred-pending-unblock count. Backs `monitor-outcomes.md` § 4c.
+
+        Read-only: FIVE signed `rtm.tasks.getList` calls (contributions, AI_Questions,
+        AI_Activity, speculative, deferred) plus a cached timezone read; no write, no timeline.
+
+        WINDOW SEMANTICS — 'in window' means **CREATED in window** (a creation cohort: *of the
+        things drafted this week, how many were accepted*). `touched_in_window` means MODIFIED
+        in window and is reported separately, never folded in. The one deliberate exception is
+        `closed_in_window`, which keys off modification because closure is an EVENT — a task
+        completed this week was necessarily modified this week whenever it was created.
+
+        FIGURES ARE NOT COMPARABLE WITH THE RETIRED SCRIPT. `engine-telemetry-aggregator.ms`
+        reported STRUCTURAL ZEROS for every window-scoped figure for its whole life — four
+        independent faults (non-existent task accessors, non-existent note accessors, a
+        `Phase:` body field that is actually `State:`, and a modified-keyed window). A non-zero
+        here is the arithmetic being fixed, not the engine changing behaviour.
+
+        WITHDRAWN AND UNDERIVABLE METRICS ARE NAMED, NEVER ZEROED. `gaps[]` lists each metric
+        this report deliberately does not produce with the reason: the speculation upgrade rate
+        (not computable — `#ai_speculative` is removed on BOTH upgrade and discard), plus
+        unblock-walk outcomes, cluster synthesis yield and scheduled-task run health (session /
+        vault facts, not RTM state). A zero that means "not measured" is the failure mode this
+        tool exists to end.
+
+        Args:
+            window_days: the reporting window, 1-366.
+
+        Returns (on success): {"window_days", "window_start", "window_end", "window_semantics",
+            "current_date", "contributions": {drafted_in_window, touched_in_window,
+            undated_creation, open_total, cohort_ids, by_category, by_state, accepted_count,
+            edited_count, discarded_count, stale_count, acceptance_rate_pct, edit_rate_pct,
+            discard_rate_pct, per_category_acceptance_rate_pct}, "ai_surface": {"questions",
+            "activity"} each {created_in_window, touched_in_window, closed_in_window,
+            auto_closed_in_window, paul_engaged_in_window, open_depth, queue_bloat,
+            queue_bloat_threshold, avg_latency_to_engagement_hours, latency_basis,
+            per_item_type}, "speculation": {open_total, opened_in_window, touched_in_window,
+            oldest_open, upgrade_rate_reported}, "engine_state": {deferred_pending_unblock},
+            "gaps": [{metric, reason}]}.
+        Returns (on bad input): {"error": {"code": "invalid_input", "message": ...}} — branch on
+            `error.code`, never the prose.
+        """
+        bad = _bounded_int(window_days, name="window_days", low=1, high=MAX_WINDOW_DAYS)
+        if bad:
+            return build_response(data=bad)
+        client: RTMClient = await get_client()
+        contributions = await _getlist(client, CONTRIB_FILTER)
+        questions = await _getlist(client, ENGINE_QUESTIONS_FILTER)
+        activity = await _getlist(client, ENGINE_ACTIVITY_FILTER)
+        speculative = await _getlist(client, SPECULATIVE_FILTER)
+        deferred = await _getlist(client, DEFERRED_FILTER)
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_engine_report(
+                contributions=contributions,
+                questions=questions,
+                activity=activity,
+                speculative=speculative,
+                deferred=deferred,
+                now=datetime.now(UTC).isoformat(),
+                window_days=window_days,
+                today=_account_today(tz),
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=DEPENDENCY_GAPS_OUTPUT)
+    async def gtd_dependency_gaps(
+        ctx: Context,
+        max_projects: Annotated[
+            int,
+            Field(
+                description="Soft cap on eligible projects returned, applied AFTER the "
+                "largest-first sort. 0 = no cap.",
+                ge=0,
+                le=1000,
+            ),
+        ] = DEPENDENCY_DEFAULT_CAP,
+    ) -> dict[str, Any]:
+        """GTD — active projects with >=2 open children and NO dependency edge captured on any of
+        them: the legacy-project backfill set for `dependency-graph-proposal.md` (paced 5 per
+        batch via `AI_Questions`).
+
+        Read-only: ONE signed `rtm.tasks.getList(status:incomplete)` plus a cached timezone
+        read; no write, no timeline. (The `.ms` ran a `parent:` sub-query per project — ~107
+        signed calls; the parent→children map is derived client-side from the one read.)
+
+        THE RESULT IS AN UPPER BOUND, NOT THE FINAL SET. The calling agent must additionally
+        exclude projects whose `context.md` carries `dependencies:` or
+        `dependency_graph_declined: true` — vault state, outside this server's read boundary.
+        `vault_filter_pending` restates this in the payload so a caller cannot mistake the list
+        for complete.
+
+        Exclusions are reported, not swallowed: `skipped[]` carries every project considered and
+        rejected with a `reason` ∈ `disqualifying_tag` (#do_not_auto_progress / #hold / #someday
+        / #archived / #cancelled) | `too_few_open_children` | `graph_already_captured`, so the
+        agent can explain an omission. A DEPENDS-ON note counts whether its `Status:` is active
+        or resolved — a resolved edge still proves the discipline was applied.
+
+        Args:
+            max_projects: soft cap on the eligible set, applied after the largest-first sort.
+
+        Returns (on success): {"eligible": [{project_id, name, list_id, parent_id, tags,
+            redacted, deep_link, open_child_count, updated}], "eligible_count",
+            "eligible_total", "capped", "max_projects", "skipped": [{…, reason, detail}],
+            "skipped_count", "vault_filter_pending"}. Eligible sorts by open_child_count
+            descending.
+        Returns (on bad input): {"error": {"code": "invalid_input", "message": ...}} — branch on
+            `error.code`, never the prose.
+        """
+        bad = _bounded_int(max_projects, name="max_projects", low=0, high=1000)
+        if bad:
+            return build_response(data=bad)
+        client: RTMClient = await get_client()
+        parsed = await _getlist(client, "status:incomplete")
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_dependency_gaps(parsed, max_projects=max_projects, timezone=tz)
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TAG_REPORT_OUTPUT)
+    async def gtd_tag_report(ctx: Context) -> dict[str, Any]:
+        """GTD — tag-taxonomy hygiene: every account tag classified against the canonical
+        taxonomy, with active-usage counts, deletion candidates, and the minimum-tag-set gaps.
+        Backs the `tag-audit-weekly` task — the sole control that catches tags created directly
+        in the RTM native clients, where the server's strict-tag write gate cannot reach.
+
+        Read-only: `rtm.tags.getList` (the account tag list — it carries tags used only on
+        completed tasks, which a task scan would miss) plus ONE
+        `rtm.tasks.getList(status:incomplete AND NOT tag:test)`, from which active usage AND the
+        minimum-tag-set signals are both derived; no write, no timeline. (The `.ms` issued one
+        `tag:<name>` query PER non-canonical tag — up to 87 signed calls.)
+
+        CLASSIFICATION IS THREE-WAY, because binary would lie. A tag is `canonical` (an exact
+        taxonomy member), `family` (matched a registered wildcard family — `ai_*_optin`,
+        `q_<entity-type>`, `agile_wow_*`, `architect_*`, `eval_*`, `communication_*`), or
+        `non_canonical`. `retired_in_use` is its own bucket: a retired tag (e.g. `next_action`)
+        still on live items is a finding, not an unknown.
+
+        PEOPLE TAGS ARE THE HONEST CAVEAT. The taxonomy says they accumulate organically and
+        names only two, so a person tag is indistinguishable from a typo by any deterministic
+        rule. Any beyond the documented two land in `non_canonical` — review before deleting.
+        `people_caveat` restates this in the payload.
+
+        The taxonomy is CODIFIED server-side (the server is standalone and cannot read
+        `tag-taxonomy.md` at runtime). The markdown remains the authority; a change there is a
+        lockstep change here.
+
+        Returns (on success): {"current_date", "total_account_tags", "canonical",
+            "canonical_count", "family", "family_count", "people", "retired_in_use",
+            "retired_unused", "non_canonical_active", "non_canonical_unused",
+            "non_canonical_count", "orphaned_in_use", "minimum_tag_set":
+            {missing_life_context_count/_sample, missing_workflow_state_count/_sample,
+            actions_missing_action_context_count/_sample}, "people_caveat", "sample_limit"}.
+            `non_canonical_unused` is the deletion-candidate list. Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        account_tags = parse_tags_response(await client.call("rtm.tags.getList"))
+        tasks = await _getlist(client, "status:incomplete AND NOT tag:test")
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_tag_report(list(account_tags), tasks, today=_account_today(tz))
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=REVIEW_REPORT_OUTPUT)
+    async def gtd_review_report(
+        ctx: Context,
+        days: Annotated[
+            int,
+            Field(description="Look-back window in days (default 7).", ge=1, le=MAX_WINDOW_DAYS),
+        ] = DEFAULT_REVIEW_DAYS,
+    ) -> dict[str, Any]:
+        """GTD — the weekly review's quantitative snapshot: completions and additions by life
+        context over the window, the current open state by life context x workflow state,
+        overdue count, inbox depth, and a net-velocity indicator.
+
+        Read-only: THREE signed `rtm.tasks.getList` calls (the open estate, the completed
+        cohort, Inbox_Stuff) plus a cached timezone read; no write, no timeline.
+
+        FIGURES ARE NOT COMPARABLE WITH THE RETIRED SCRIPT. `weekly-review-stats.ms` reported
+        ZERO completions and ZERO additions, always: it filtered on `completedAfter:"N days
+        ago"` / `addedAfter:"N days ago"`, and RTM does not parse that relative phrase for those
+        operators (measured live: 0 rows, versus 53 for `completedWithin:"7 days of today"`).
+        The query matched nothing and returned it as a finding.
+
+        Additions are derived from each open task's own `created` timestamp rather than an
+        `addedWithin:` filter — no unverified operator on the path, and it answers the question
+        actually meant: *items added in the window that are still open*. Life contexts are the
+        canonical FOUR (`work` / `client` / `leanworking` / `personal`); the scripts hard-coded
+        three and would have silently dropped any `#client` item. Items carrying no life-context
+        tag are counted under `no_life_context` rather than discarded.
+
+        Args:
+            days: the look-back window, 1-366.
+
+        Returns (on success): {"window_days", "current_date", "completed": {by_life_context,
+            no_life_context, total}, "added": {by_life_context, no_life_context,
+            undated_creation, total}, "current_state": {<life>: {by_workflow_state, total}},
+            "overdue_count", "inbox_depth", "velocity": {net_change, direction}}.
+        Returns (on bad input): {"error": {"code": "invalid_input", "message": ...}} — branch on
+            `error.code`, never the prose.
+        """
+        bad = _bounded_int(days, name="days", low=1, high=MAX_WINDOW_DAYS)
+        if bad:
+            return build_response(data=bad)
+        client: RTMClient = await get_client()
+        incomplete = await _getlist(client, "status:incomplete AND NOT tag:test")
+        completed = await _getlist(
+            client, f'status:completed AND completedWithin:"{days} days of today"'
+        )
+        inbox = await _getlist(client, "list:Inbox_Stuff AND status:incomplete AND NOT tag:test")
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_review_report(
+                incomplete,
+                completed,
+                inbox,
+                days=days,
+                now=datetime.now(UTC).isoformat(),
+                today=_account_today(tz),
+                timezone=tz,
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ITEM_STALE_OUTPUT)
+    async def gtd_item_stale(
+        ctx: Context,
+        days: Annotated[
+            int,
+            Field(
+                description="Staleness threshold in days — items untouched for longer are "
+                "returned (default 30).",
+                ge=1,
+                le=MAX_WINDOW_DAYS,
+            ),
+        ] = DEFAULT_STALE_DAYS,
+    ) -> dict[str, Any]:
+        """GTD — incomplete items untouched for more than N days, excluding someday/maybe (which
+        are expected to sit). System-hygiene input for the weekly review.
+
+        Read-only: ONE signed `rtm.tasks.getList(status:incomplete)` plus a cached timezone
+        read; no write, no timeline.
+
+        SCOPE IS WIDER THAN THE RETIRED SCRIPT. `stale-items.ms` restricted the scan to
+        `isSubtask:true` with no stated rationale, making every top-level project and every Area
+        of Focus structurally invisible to a report whose purpose is finding forgotten work.
+        Rows are grouped by workflow state instead (`by_state`), so a caller wanting the old
+        scope reads the `action` / `waiting_for` buckets and a caller reviewing horizons reads
+        `project` / `focus`.
+
+        `age_days` is measured from the task's last modification. An item RTM reports with no
+        modification timestamp is counted in `undated_modification` rather than assumed stale.
+
+        Args:
+            days: the staleness threshold, 1-366.
+
+        Returns (on success): {"threshold_days", "current_date", "rows": [{task_id, name, state,
+            kind, life, age_days, updated, due, priority, parent_id, redacted, deep_link}],
+            "count", "by_state", "undated_modification"}. Rows sort oldest-first.
+        Returns (on bad input): {"error": {"code": "invalid_input", "message": ...}} — branch on
+            `error.code`, never the prose.
+        """
+        bad = _bounded_int(days, name="days", low=1, high=MAX_WINDOW_DAYS)
+        if bad:
+            return build_response(data=bad)
+        client: RTMClient = await get_client()
+        tasks = await _getlist(client, "status:incomplete")
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_item_stale(
+                tasks,
+                days=days,
+                now=datetime.now(UTC).isoformat(),
+                today=_account_today(tz),
+                timezone=tz,
+            )
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=WORKLOAD_REPORT_OUTPUT)
+    async def gtd_workload_report(ctx: Context) -> dict[str, Any]:
+        """GTD — committed load as an AGGREGATION: life context x workflow state, with estimate
+        totals and estimate coverage per life context. Use for the weekly review's "is this
+        balanced / is this deliverable" question.
+
+        Read-only: ONE signed `rtm.tasks.getList(status:incomplete)` plus a cached timezone
+        read; no write, no timeline.
+
+        This is a REPORT, not a row list — which is why it is not a `gtd_query` perspective.
+        Nothing here identifies an individual task; use `gtd_project_index` or `gtd_item_stale`
+        for rows.
+
+        `estimate_coverage_pct` is load-bearing: estimates are optional in RTM, so
+        `estimate_hours` is a FLOOR, not a total. Read the two together — 12h at 20% coverage is
+        a very different picture from 12h at 90%. Estimates are summed for every workflow state
+        that carries one, not only `action` as the retired script did: a waiting-for or calendar
+        entry with an estimate is real committed time.
+
+        Life contexts are the canonical FOUR (`work` / `client` / `leanworking` / `personal`);
+        items lacking a life-context OR a workflow-state tag are counted in `unclassified_count`
+        rather than silently dropped — that count is itself a hygiene signal (cross-check it
+        against `gtd_tag_report`'s minimum-tag-set gaps).
+
+        Returns (on success): {"current_date", "by_life_context": {<life>: {by_workflow_state:
+            {<state>: {count, estimated_count, estimate_minutes}}, total, estimated_count,
+            estimate_minutes, estimate_hours, estimate_coverage_pct}}, "totals": {count,
+            estimated_count, estimate_minutes, estimate_hours}, "unclassified_count"}.
+            Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        tasks = await _getlist(client, "status:incomplete")
+        tz = await client.get_timezone()
+        return build_response(data=build_workload_report(tasks, today=_account_today(tz)))
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=FOCUS_INDEX_OUTPUT)
+    async def gtd_focus_index(
+        ctx: Context,
+        include_someday: Annotated[
+            bool,
+            Field(description="Include areas tagged #someday (default false)."),
+        ] = False,
+    ) -> dict[str, Any]:
+        """GTD — every active Area of Focus grouped by life context, with its active-project and
+        direct-item counts: the Horizon-2 view.
+
+        Read-only: ONE signed `rtm.tasks.getList(status:incomplete)` plus a cached timezone
+        read; no write, no timeline.
+
+        WHY THIS EXISTS: nothing served Horizon 2 directly. Focus areas appear only inside
+        `gtd_project_index`'s navigator payload, so asking "what are my areas of focus?" meant
+        calling a project tool and discarding most of the response. This pairs with
+        `gtd_project_index` at the horizon above it — use this to see the shape of your
+        commitments, that one to see the projects inside them.
+
+        Selection reuses the SAME active-portfolio lifecycle gate as `gtd_project_index` (not
+        completed, not `#test`, `#hold` always excluded, `#someday` opt-in), so a focus that
+        appears here and a focus that appears there can never disagree.
+
+        `redacted` is the viewing-curtain flag only — this server surfaces it and never enforces
+        it. Every row carries its full data whether shielded or not; hiding is the client's job.
+
+        Args:
+            include_someday: include `#someday`-tagged areas.
+
+        Returns (on success): {"current_date", "rows": [{focus_id, focus, life, project_count,
+            direct_item_count, priority, updated, redacted, parent_id, deep_link}], "count",
+            "by_life_context", "unclassified_count"}. Rows sort by life context, then name; an
+            area with no life-context tag sorts last and is counted in `unclassified_count`.
+            Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        parsed = await _getlist(client, "status:incomplete")
+        tz = await client.get_timezone()
+        return build_response(
+            data=build_focus_index(
+                parsed,
+                include_someday=include_someday,
+                today=_account_today(tz),
+                timezone=tz,
+            )
         )

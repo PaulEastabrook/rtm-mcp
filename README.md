@@ -485,6 +485,44 @@ GTD-shaped typed projection** (rows carrying `kind` / `priority` / a deep link) 
 - `gtd_context` - the STATE-first note-reading-protocol bundle for one task (task + notes + siblings
   + ancestry), resolved by id or name, breadth controlled by `depth`.
 
+##### GTD Wave 1 reads — the MilkScript retirement (v2.9.0, all read-only)
+Eight reads that **retire the remaining gtd MilkScript library**. A 2026-07-24 sweep found ~155
+call sites across 18 `.ms` files invoking methods that do not exist, hidden for the life of each
+file by the `x.getFoo ? x.getFoo() : null` guard idiom — a null-coalescing guard on a *misspelt*
+method degrades silently into "no data", which reads downstream as "no activity". **These tools are
+therefore built to each consumer's documented need, NOT ported: there is no output-parity oracle,
+because parity would reproduce known-wrong behaviour.** Every deliberate divergence is named in the
+owning module's docstring and pinned by a test.
+- `gtd_surface_queue` - the AI-surface processing queue (`AI_Questions` / `AI_Activity` / both) with
+  each item's body frontmatter **already parsed**, plus `auto_close_due` and `response_detected`.
+  Replaces one `get_task_notes` per eligible item. `response_detected` is **inclusion**-based
+  (`#q_answered` | completed-without-the-terminal-tag | an ANSWER/RESPONSE/REPLY/DECISION note) and
+  deliberately precise — a false positive is a wrong resolve. The server detects that a response
+  **exists**; the agent decides what it **means**. A row is never dropped for absent metadata
+  (`metadata_parse_error` names the reason; live, most items pre-date the frontmatter).
+- `gtd_engine_report` - proactive-contribution engine telemetry over a window (contribution
+  outcomes, AI-surface engagement, open speculation, deferred count). **Its figures are not
+  comparable with the retired script**, which reported structural zeros for every window-scoped
+  figure for its whole life. Windows are a **creation cohort**; touched-in-window is reported
+  separately. Withdrawn and underivable metrics are named in `gaps[]`, never emitted as zeros.
+- `gtd_dependency_gaps` - active projects with ≥2 open children and no DEPENDS-ON edge captured:
+  the legacy backfill set. Returns the **RTM-derived upper bound only** — the agent still applies
+  the `context.md` vault filter — and reports every exclusion with a reason.
+- `gtd_tag_report` - tag-taxonomy hygiene: every account tag classified `canonical` / `family` /
+  `non_canonical` (+ `retired`), with active-usage counts, deletion candidates and minimum-tag-set
+  gaps. Backs the `tag-audit-weekly` task — the sole control catching tags created in the RTM native
+  clients. One broad read replaces the script's per-tag N+1.
+- `gtd_review_report` - the weekly review's snapshot (completions / additions by life context,
+  current state, overdue, inbox depth, velocity). The retired script reported **zero completions and
+  zero additions, always**: RTM does not parse `"N days ago"` for `completedAfter:` / `addedAfter:`.
+- `gtd_item_stale` - incomplete items untouched for >N days, excluding someday/maybe, grouped by
+  workflow state. Wider than the script, which filtered `isSubtask:true` and so made every top-level
+  project and Area of Focus invisible.
+- `gtd_workload_report` - committed load as an **aggregation** (life context × workflow state) with
+  estimate totals and `estimate_coverage_pct` — read the two together, the hours figure is a floor.
+- `gtd_focus_index` - every active Area of Focus grouped by life context, with project and direct-item
+  counts: the **Horizon-2 view**, a new capability. Pairs with `gtd_project_index` one horizon down.
+
 ##### GTD Phase 1 writes (governed, additive — the everyday write path)
 Four governed write tools collapsing the generic multi-call dance into one atomic call:
 validate-then-apply (**a rejected write mutates nothing**), **true post-state** (the real id triple

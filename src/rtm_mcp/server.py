@@ -353,11 +353,45 @@ tags rather than keeping a GTD-only allow-list, so item 2.5 needed no code chang
   both prior states); AI_Activity goes q_open->q_acknowledged|auto_closed. A resolution from the
   wrong list is rejected. Link Status uses `auto-closed` (hyphen) where the tag is `auto_closed`.
 
+## GTD Wave 1 reads — the MilkScript retirement (v2.9.0; all read-only, no timeline)
+These eight retire the remaining gtd MilkScript library. They are built to each CONSUMER's
+documented need, NOT ported: a 2026-07-24 sweep found ~155 call sites across 18 .ms files calling
+methods that do not exist, so there is no output-parity oracle and their figures are NOT comparable
+with the scripts they replace.
+- gtd_surface_queue: the AI-surface processing queue (questions|activity|both) with each item's body
+  frontmatter ALREADY PARSED, plus auto_close_due and response_detected. response_detected is
+  INCLUSION-based and deliberately precise (#q_answered | completed-without-the-terminal-tag | an
+  ANSWER/RESPONSE/REPLY/DECISION note). THE BOUNDARY: the server detects that a response EXISTS; the
+  agent decides what it MEANS — intent parsing against expected_response_shape stays agent-side. A
+  row is NEVER dropped for absent metadata; metadata_parse_error names the reason.
+- gtd_engine_report: engine telemetry over a window. Windows are a CREATION cohort; touched-in-window
+  is reported separately, never folded in. Withdrawn/underivable metrics are named in gaps[] rather
+  than emitted as zeros — a zero meaning "not measured" is the failure this tool exists to end.
+- gtd_dependency_gaps: projects with >=2 open children and no DEPENDS-ON edge. Returns the RTM-derived
+  UPPER BOUND only — the caller must still apply the context.md vault filter. Exclusions are reported
+  with reasons, never swallowed.
+- gtd_tag_report: tag hygiene — canonical/family/non_canonical (+retired) with usage counts, deletion
+  candidates and minimum-tag-set gaps. People tags cannot be told from typos by any rule; the payload
+  says so. Call surface is rtm.tags.getList + one rtm.tasks.getList.
+- gtd_review_report: the weekly review snapshot (completions/additions by life context, current state,
+  overdue, inbox depth, velocity). Life contexts are the canonical FOUR incl. `client`.
+- gtd_item_stale: incomplete items untouched for >N days excluding someday, grouped by workflow state
+  (top-level projects and Areas of Focus INCLUDED, unlike the retired script).
+- gtd_workload_report: an AGGREGATION (life context x workflow state) with estimate totals. Read
+  estimate_hours together with estimate_coverage_pct — the hours are a FLOOR, not a total.
+- gtd_focus_index: active Areas of Focus grouped by life context — the Horizon-2 view. Pairs with
+  gtd_project_index one horizon down.
+
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
   mapping 1:1 to an RTM API method.
 - A `gtd_` prefix marks a GTD-shaped composition (a view over RTM data, not an RTM
-  primitive). New domain compositions follow `<domain>_<concept-noun>`.
+  primitive).
+- New tools follow the CQS + aggregate-grouped standard (CONTRIBUTING.md § 2):
+  `gtd_<area>_<operation>`, commands named for the operation and queries for the thing
+  returned, with granularity explicit in the name — a collection read carries a result-noun
+  suffix (_queue/_state/_index/_candidates/_report/_gaps), a multi-entity write carries _batch
+  or a plural verb. Some pre-existing names predate the standard and are renamed in v3.0.0.
 
 ## Behavior Notes
 - Default list: add_task WITHOUT a list_name routes to the user's configured
