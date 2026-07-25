@@ -143,7 +143,19 @@ def enforce_note_shape(
     if reason is None:
         return None
 
-    logger.info("strict_notes(%s) %s via %s: %r", mode, reason, tool, title)
+    # WARNING, not INFO — see the v3.0.1 note in `server.configure_logging`. In `warn` mode this
+    # record is the ONLY effect the gate has, so a level that needs configuration to emit made
+    # the entire mode a no-op: it did not block, and its observation could not be observed.
+    # Anyone who set `warn` to gather evidence before enabling `shape` collected silence and
+    # would have concluded the estate was clean.
+    logger.warning(
+        "strict_notes(%s) %s via %s: %r — %s",
+        mode,
+        reason,
+        tool,
+        title,
+        "ALLOWED (observe-before-enforce)" if mode == "warn" else "REJECTED",
+    )
     if mode == "warn":
         return None
 

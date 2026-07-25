@@ -7,8 +7,6 @@ data and keeps a future lift of all `gtd_*` tools into a separate server a clean
 mechanical move.
 """
 
-import functools
-import inspect
 import logging
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -114,7 +112,6 @@ from ..gtd_chat import (
 )
 from ..gtd_reads import (
     VALID_DEPTHS,
-    VALID_PERSPECTIVES,
     build_context,
     build_inbox_state,
     build_query_focus_projects,
@@ -248,7 +245,6 @@ from ..models import (
     FOCUS_INDEX_OUTPUT,
     FOCUS_PROJECTS_OUTPUT,
     GTD_CONTEXT_OUTPUT,
-    GTD_QUERY_OUTPUT,
     HEALTH_CHECK_OUTPUT,
     INBOX_STATE_OUTPUT,
     INBOX_ZERO_OUTPUT,
@@ -360,7 +356,6 @@ _ENGAGE_ITEM_SCHEMA: dict[str, Any] = {
     "required": ["id", "verdict"],
 }
 # Phase 0 read tools — advisory enums, sourced from the canonical frozensets in gtd_reads.
-_PERSPECTIVE_ENUM: dict[str, Any] = {"enum": sorted(VALID_PERSPECTIVES)}
 # Wave 1 reads — sourced from surface_queue.VALID_SURFACES so the advertised set cannot drift.
 _SURFACE_QUEUE_ENUM: dict[str, Any] = {"enum": sorted(VALID_SURFACES)}
 # Wave 1b — the five TERMINAL contribution states (the open state is not a transition target),
@@ -437,38 +432,6 @@ _CONSOLIDATE_MOVE_SCHEMA: dict[str, Any] = {
         "why": {"type": "string"},
     },
     "required": ["move_type"],
-}
-
-
-#: Deprecated tool aliases: OLD name -> the v3.0.0 name it delegates to. Registered at the end of
-#: `register_gtd_tools`; removed at v3.1.0 once the alias-invocation log shows zero hits across a
-#: full scheduled-task cycle. An alias is NOT a tool and never appears in a tool count.
-DEPRECATED_ALIASES: dict[str, str] = {
-    "gtd_add_note": "gtd_note_add",
-    "gtd_annotate_clarification": "gtd_inbox_item_annotate",
-    "gtd_apply_canvas_commit": "gtd_canvas_commit",
-    "gtd_apply_engage_commit": "gtd_engage_commit",
-    "gtd_attach_contribution": "gtd_contribution_attach",
-    "gtd_attach_output": "gtd_note_attach_output",
-    "gtd_batch_transition": "gtd_item_transition_batch",
-    "gtd_capture": "gtd_inbox_capture",
-    "gtd_chase_sweep": "gtd_waiting_for_sweep",
-    "gtd_close_inbox_item": "gtd_inbox_item_close",
-    "gtd_complete_action": "gtd_item_complete",
-    "gtd_consolidate_apply": "gtd_cluster_consolidate",
-    "gtd_context": "gtd_item_context",
-    "gtd_create_item": "gtd_item_create",
-    "gtd_create_project": "gtd_project_create",
-    "gtd_edit_note": "gtd_note_edit",
-    "gtd_health_check": "gtd_health_report",
-    "gtd_inbox_zero": "gtd_inbox_drain",
-    "gtd_item_classify": "gtd_item_shape",
-    "gtd_link_dependency": "gtd_dependency_link",
-    "gtd_set_properties": "gtd_item_set_properties",
-    "gtd_set_redaction": "gtd_item_set_redaction",
-    "gtd_stamp_tokens": "gtd_item_stamp_tokens",
-    "gtd_topic_clusters": "gtd_cluster_candidates",
-    "gtd_transition_state": "gtd_item_transition",
 }
 
 
@@ -3380,7 +3343,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             return res
         return build_error(
             ErrorCode.TASK_NOT_FOUND,
-            f"No task matching '{task_ref}'. Pass a task id, or find it with gtd_query / list_tasks.",
+            f"No task matching '{task_ref}'. Pass a task id, or find it with gtd_item_today / "
+            "gtd_next_actions / list_tasks.",
             query=task_ref,
         )
 
@@ -7235,109 +7199,3 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             },
             timeline_id=client.timeline_id,
         )
-
-    # ------------------------------------------------------------------- #
-    # `gtd_query` — the one deprecated surface that is a SPLIT, not a rename
-    # ------------------------------------------------------------------- #
-    # It cannot be an alias of a single tool, because `perspective` chose between three. So it is
-    # retained as a deprecated DISPATCHER that delegates to the three replacements — still no
-    # copied logic, still one implementation per view. Removed at v3.1.0 with the other aliases.
-
-    @mcp.tool(
-        annotations=READ_ONLY_ANNOTATIONS,
-        output_schema=GTD_QUERY_OUTPUT,
-        description=(
-            "DEPRECATED — split into gtd_next_actions / gtd_item_today / gtd_focus_projects in "
-            "v3.0.0; this alias is removed in v3.1.0. Call the tool for the view you want; "
-            "behaviour is identical.\n\nThis tool took a `perspective` MODE parameter, which is a "
-            "tool boundary rather than a parameter: `context` was valid only for "
-            "next_actions_by_context and `focus` only for focus_projects, the rows carried "
-            "different fields per perspective, and focus_not_found applied to one branch alone. "
-            "The three replacements each take only the parameters their own view needs.\n\n"
-            "Args:\n    perspective: which view — 'next_actions_by_context' | 'todays_field' | "
-            "'focus_projects'.\n    context: next_actions_by_context only.\n    focus: "
-            "focus_projects only.\n\nReturns (on success): whatever the delegated tool returns.\n"
-            'Returns (on bad input): {"error": {"code": "invalid_input" (unknown '
-            'perspective) | "focus_not_found", "message": ...}} — branch on `error.code`, '
-            "never the prose."
-        ),
-    )
-    async def gtd_query(
-        ctx: Context,
-        perspective: Annotated[
-            str,
-            Field(
-                description="DEPRECATED. Which view: 'next_actions_by_context' | 'todays_field' "
-                "| 'focus_projects'.",
-                json_schema_extra=_PERSPECTIVE_ENUM,
-            ),
-        ] = "todays_field",
-        context: Annotated[
-            str | None,
-            optional_string("DEPRECATED. next_actions_by_context only — an action-context tag."),
-        ] = None,
-        focus: Annotated[
-            str | None,
-            optional_string("DEPRECATED. focus_projects only — an Area-of-Focus id or name."),
-        ] = None,
-    ) -> dict[str, Any]:
-        """DEPRECATED — use gtd_next_actions / gtd_item_today / gtd_focus_projects."""
-        logger.info(
-            "deprecated tool alias invoked: gtd_query(perspective=%s) -> the three split tools "
-            "(removed in v3.1.0)",
-            perspective,
-        )
-        if perspective not in VALID_PERSPECTIVES:
-            return build_response(
-                data=build_error(
-                    ErrorCode.INVALID_INPUT,
-                    f"Unknown perspective '{perspective}'. Use one of "
-                    f"{sorted(VALID_PERSPECTIVES)}.",
-                    perspective=perspective,
-                )
-            )
-        if perspective == "next_actions_by_context":
-            return await gtd_next_actions(ctx, context=context)
-        if perspective == "todays_field":
-            return await gtd_item_today(ctx)
-        return await gtd_focus_projects(ctx, focus=focus)
-
-    # =================================================================== #
-    # Deprecated aliases — v3.0.0 renames, removed at v3.1.0
-    # =================================================================== #
-    # Each alias registers under its pre-v3.0.0 name (FastMCP takes an explicit `name=`) and
-    # DELEGATES to the renamed tool's own function. The wrapper below holds no logic beyond the
-    # deprecation log — there is exactly one implementation per tool, so an alias cannot drift
-    # from what it delegates to. Annotations and output schema come from `_registry`, i.e. from
-    # the tool itself, so the alias advertises a byte-identical schema.
-    #
-    # THE LOG IS THE GATE. Wave 3 drops these only once a full scheduled-task cycle shows zero
-    # alias hits — elapsed time is not the control, the absence of invocations is. That is the
-    # one thing the wrapper buys over registering the bare function, and it is why it exists.
-    #
-    # They exist for CROSS-REPO SEQUENCING, not for external callers: the server and its
-    # consumers live in separate repos behind an async hand-off, so one is necessarily ahead of
-    # the other, and BOTH orders break without them.
-    def _make_alias(target: Any, old_name: str, new_name: str) -> Any:
-        @functools.wraps(target)
-        async def _alias(*args: Any, **kwargs: Any) -> Any:
-            logger.info(
-                "deprecated tool alias invoked: %s -> %s (removed in v3.1.0)", old_name, new_name
-            )
-            return await target(*args, **kwargs)
-
-        _alias.__name__ = old_name
-        return _alias
-
-    for _old_name, _new_name in sorted(DEPRECATED_ALIASES.items()):
-        _entry = _registry[_new_name]
-        _doc = inspect.getdoc(_entry["fn"]) or ""
-        mcp.tool(
-            name=_old_name,
-            description=(
-                f"DEPRECATED — renamed to {_new_name} in v3.0.0; this alias is removed in "
-                f"v3.1.0. Call {_new_name} instead; behaviour is identical.\n\n{_doc}"
-            ),
-            annotations=_entry.get("annotations"),
-            output_schema=_entry.get("output_schema"),
-        )(_make_alias(_entry["fn"], _old_name, _new_name))

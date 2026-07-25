@@ -135,7 +135,7 @@ async def enforce_strict_tags(
         offending = [t for t in wanted if t not in allowed]
 
     if offending:
-        logger.info(
+        logger.warning(
             "strict_tag_mode rejected %s via %s (requested=%s)",
             offending,
             tool,

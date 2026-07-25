@@ -3024,7 +3024,6 @@ _PHASE0_ARGS: dict[str, dict[str, Any]] = {
     "gtd_capture_candidates": {},
     "gtd_cluster_candidates": {},
     "gtd_health_report": {},
-    "gtd_query": {},
     "gtd_inbox_state": {},
     "gtd_waiting_for_queue": {},
     "gtd_item_context": {"task_ref": "Alpha"},
@@ -4635,21 +4634,13 @@ class TestGtdPhase0Reads:
         assert data["count"] == 1 and data["clusters"][0]["anchor"] == "acme"
 
     @pytest.mark.asyncio
-    async def test_query_bad_perspective_typed_error(self, gtd_tools):
-        tools, client = gtd_tools
-        client.call = AsyncMock(return_value=_getlist([]))
-        res = await tools["gtd_query"](FakeContext(), perspective="nonsense")
-        assert res["data"]["error"]["code"] == "invalid_input"
-
-    @pytest.mark.asyncio
-    async def test_query_todays_field_shape(self, gtd_tools):
+    async def test_item_today_shape(self, gtd_tools):
+        """Was `gtd_query(perspective="todays_field")` until v3.1.0."""
         tools, client = gtd_tools
         client.call = AsyncMock(
-            return_value=_getlist(
-                [_ts("t1", "1", "Overdue thing", tags=["action"], due="2026-07-20T00:00:00Z")]
-            )
+            return_value=_getlist([_ts("s1", "1", "Alpha", tags=["action"], due="2026-01-01")])
         )
-        data = (await tools["gtd_query"](FakeContext(), perspective="todays_field"))["data"]
+        data = (await tools["gtd_item_today"](FakeContext()))["data"]
         assert data["perspective"] == "todays_field" and data["count"] == 1
 
     @pytest.mark.asyncio
@@ -5575,101 +5566,3 @@ class TestWave1bContributionTransition:
 # =========================================================================== #
 # v3.0.0 — alias delegation proven by CALLING, not by schema comparison
 # =========================================================================== #
-
-
-class TestAliasDelegation:
-    """`test_tool_schemas.TestDeprecatedAliases` proves the aliases ADVERTISE identically. This
-    proves they BEHAVE identically — same input, byte-identical output — because a rename whose
-    alias reaches the wrong implementation fails silently, which is the whole hazard of this wave.
-    """
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("old", "new", "kwargs"),
-        [
-            ("gtd_health_check", "gtd_health_report", {}),
-            ("gtd_context", "gtd_item_context", {"task_ref": "Alpha"}),
-            ("gtd_topic_clusters", "gtd_cluster_candidates", {}),
-            ("gtd_item_classify", "gtd_item_shape", {"name": "Research the vendor landscape"}),
-        ],
-    )
-    async def test_read_alias_returns_exactly_what_the_new_name_returns(
-        self, gtd_tools, old, new, kwargs
-    ):
-        tools, client = gtd_tools
-        tree = _getlist(
-            [
-                _ts("tsP", "p1", "Proj", tags=["project", "work"]),
-                _ts("tsA", "10", "Alpha", parent="p1", tags=["action", "work", "acme"]),
-            ]
-        )
-        client.call = AsyncMock(return_value=tree)
-        via_new = await tools[new](FakeContext(), **kwargs)
-        client.call = AsyncMock(return_value=tree)
-        via_old = await tools[old](FakeContext(), **kwargs)
-        assert via_old["data"] == via_new["data"], f"{old} diverged from {new}"
-
-    @pytest.mark.asyncio
-    async def test_every_alias_is_registered_and_callable(self, gtd_tools):
-        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
-
-        tools, _ = gtd_tools
-        for old, new in DEPRECATED_ALIASES.items():
-            assert old in tools, f"alias not registered: {old}"
-            assert new in tools, f"target not registered: {new}"
-
-    @pytest.mark.asyncio
-    async def test_an_alias_logs_its_own_invocation(self, gtd_tools, caplog):
-        """The log is the GATE for dropping the aliases at v3.1.0 — zero hits across a full
-        scheduled-task cycle, not elapsed time. If it stops logging, the gate silently opens."""
-        import logging
-
-        tools, client = gtd_tools
-        client.call = AsyncMock(return_value=_getlist([]))
-        with caplog.at_level(logging.INFO, logger="rtm_mcp.tools.gtd"):
-            await tools["gtd_health_check"](FakeContext())
-        assert any(
-            "deprecated tool alias invoked" in r.message and "gtd_health_check" in r.message
-            for r in caplog.records
-        ), "no deprecation log emitted"
-
-    @pytest.mark.asyncio
-    async def test_the_new_name_does_NOT_log_a_deprecation(self, gtd_tools, caplog):
-        import logging
-
-        tools, client = gtd_tools
-        client.call = AsyncMock(return_value=_getlist([]))
-        with caplog.at_level(logging.INFO, logger="rtm_mcp.tools.gtd"):
-            await tools["gtd_health_report"](FakeContext())
-        assert not any("deprecated tool alias invoked" in r.message for r in caplog.records)
-
-
-class TestGtdQueryDispatcher:
-    """gtd_query is the one deprecated surface that SPLIT rather than renamed, so it dispatches."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        ("perspective", "target", "kwargs"),
-        [
-            ("todays_field", "gtd_item_today", {}),
-            ("next_actions_by_context", "gtd_next_actions", {}),
-            ("focus_projects", "gtd_focus_projects", {}),
-        ],
-    )
-    async def test_each_perspective_matches_its_replacement(
-        self, gtd_tools, perspective, target, kwargs
-    ):
-        tools, client = gtd_tools
-        tree = _getlist([_ts("tsA", "10", "Alpha", tags=["action", "work"])])
-        client.call = AsyncMock(return_value=tree)
-        via_new = await tools[target](FakeContext(), **kwargs)
-        client.call = AsyncMock(return_value=tree)
-        via_old = await tools["gtd_query"](FakeContext(), perspective=perspective)
-        assert via_old["data"] == via_new["data"], perspective
-
-    @pytest.mark.asyncio
-    async def test_an_unknown_perspective_is_still_rejected(self, gtd_tools):
-        tools, client = gtd_tools
-        client.call = AsyncMock(return_value=_getlist([]))
-        res = await tools["gtd_query"](FakeContext(), perspective="nonsense")
-        assert res["data"]["error"]["code"] == "invalid_input"

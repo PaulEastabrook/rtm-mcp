@@ -22,6 +22,7 @@ dev:
 	uv sync --all-extras
 
 lint:
+	uv run python scripts/check-tool-naming.py --strict
 	uv run ruff check src tests
 	uv run ruff format --check src tests
 	uv run pyright src
@@ -37,7 +38,7 @@ test/coverage:
 	uv run pytest --cov=src/rtm_mcp --cov-report=term-missing --cov-report=html
 
 naming:
-	uv run python scripts/check-tool-naming.py
+	uv run python scripts/check-tool-naming.py --strict
 
 fingerprints:
 	uv run python scripts/dump-tool-fingerprints.py

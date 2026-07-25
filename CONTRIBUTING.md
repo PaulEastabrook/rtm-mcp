@@ -48,9 +48,9 @@ module-responsibility table (see § 9, Documentation lockstep).
 **This section is design of record, and as of v3.0.0 the whole suite conforms to it.** It was
 frozen ahead of the Wave 1 build (designed change `2026-07-25-gtd-milkscript-retirement`, D6–D14)
 so new tools are born conformant rather than renamed later; the 25 pre-existing non-conformant
-names were renamed in Wave 2 (v3.0.0), where `gtd_query` also split into three. The 25 old names
-remain callable as **deprecated aliases for exactly one release** and are removed at v3.1.0 — an
-alias is not a tool and never appears in a tool count (§ 2.8).
+names were renamed in Wave 2 (v3.0.0), where `gtd_query` also split into three. Those 25 old names
+shipped as deprecated aliases for one release and were **removed at v3.1.0** (§ 2.8 keeps the
+policy for the next rename).
 
 **A conformance check enforces this, and it is not optional** (§ 2.7). The standard drifted within
 four days of being frozen — `gtd_item_classify` shipped in Wave 1b as an imperative verb on a
@@ -157,9 +157,9 @@ enough. The check flags any tool whose **name form disagrees with its `readOnlyH
 Run it with `make naming` (or `uv run python scripts/check-tool-naming.py`). It introspects the
 live server, so it can never drift from what is actually advertised.
 
-**Report-only at v3.0.0, blocking at v3.1.0.** It cannot block while the deprecated aliases are
-exposed, because the aliases *are* the non-conformant names — it would fire on all 25 by
-construction. `--strict` exits non-zero and is what CI runs from v3.1.0.
+**Blocking since v3.1.0**, and part of `make lint`. It ran report-only through v3.0.x because it
+could not block: the deprecated aliases *were* the non-conformant names, so it fired on all 26 by
+construction. With them gone, `--strict` exits non-zero on any finding.
 
 **The rule that matters most: a name matching neither lexicon is reported as `unclassifiable`, and
 NEVER silently passes.** A check that quietly passes what it does not recognise is the same silent
@@ -168,22 +168,30 @@ escape. `tests/test_tool_naming.py` asserts the check FIRES on a known-bad fixtu
 unrecognised one — a conformance check that reports zero findings because it skipped everything is
 worse than no check at all.
 
-### 2.8 Deprecated aliases
+### 2.8 Deprecated aliases — the policy, and the one time it was used
 
-A rename ships with the old name retained for **exactly one release**, then removed.
+**No aliases are live.** The 25 renames plus `gtd_query` shipped as deprecated aliases at v3.0.0
+and were removed at v3.1.0. This section is the policy for the next rename, not a description of
+anything currently exposed.
+
+When a rename does happen, retain the old name for **exactly one release**:
 
 - An alias is a **thin registration of the same function** under the old name
   (`mcp.tool(name=…)`), never a copied body. One code path per tool.
 - Its description opens `DEPRECATED — renamed to <new> in vX.Y.0; this alias is removed in
   vX.(Y+1).0.`
-- Aliases are **excluded from every tool count** — README tables, spec inventories, the
-  architecture docs. 55 tools, 25 aliases.
-- Every alias invocation logs at info level. **That log is the gate for removal**, not elapsed
-  time: the aliases go only after a full scheduled-task cycle shows zero hits.
-- Why they exist at all: not for external callers (the design system slots the tool name, so
-  there are none) but for **cross-repo sequencing**. Server and consumers live in separate repos
-  behind an async hand-off, so one is always ahead of the other — and *either* order breaks
-  without aliases.
+- Aliases are **excluded from every tool count** — README tables, spec inventories, architecture
+  docs.
+- Every alias invocation logs at `WARNING` (§ 7a).
+- **Removal is gated on enumerating the callers, not on watching a log.** The v3.1.0 removal
+  checked the marketplace repo, the scheduled-task specs, and — decisively — the *rendered* live
+  artifacts. A rendered artifact is a **frozen copy** of its template, so it is a live caller that
+  no repo grep can see: the standing board held four old names in both its code and its
+  `mcpTools` allowlist, seven days after the template had moved on. **Ask "rendered or source?"
+  before concluding a rename has no callers.**
+- Why they exist at all: not for external callers but for **cross-repo sequencing**. Server and
+  consumers live in separate repos behind an async hand-off, so one is always ahead of the other
+  — and *either* order breaks without them.
 
 ## 3. Tool implementation pattern
 
@@ -455,6 +463,40 @@ plugin-side — stop and flag it. Do not add a taxonomy or import one into the s
   - The fuzzy-match caution where `task_name` is accepted.
 - The docstring is **surface 1** of the six-surface standard (§ 3); it is complemented by the
   per-parameter `Field(description=…)` (surface 2). Both are model-facing — keep them consistent.
+
+## 7a. Logging
+
+Configured once in `server.configure_logging()`, called from `main()`. Scoped to the **`rtm_mcp`
+logger tree**, not root, so importing this package as a library never hijacks a host
+application's logging. Level `INFO`, overridable with **`RTM_LOG_LEVEL`**.
+
+**The handler writes to `stderr`. Never `stdout`.** This is a stdio MCP server: stdout carries the
+JSON-RPC protocol stream, and a handler there corrupts it and breaks the server outright.
+`logging.StreamHandler()` defaults to stderr, so call it with no argument — the failure mode is
+only if someone passes `sys.stdout`. `tests/test_logging.py` asserts this.
+
+**Choose the level by asking what happens if the configuration is lost.** `INFO` and `DEBUG`
+require configuration to exist in order to emit; `WARNING` and above emit through logging's
+`lastResort` fallback with none. That is not academic — **this repo shipped with no logging
+configuration at all until v3.0.1**, and six of nine log statements were silent for their entire
+lives, including all three write-boundary gates and the deprecated-alias record that gates a
+release decision.
+
+So:
+
+- **A record that is a control's ONLY output belongs at `WARNING`.** The three gates and the alias
+  records are the current examples: nothing else observes them, so a level that needs
+  configuration makes the control unobservable and its silence indistinguishable from a clean
+  estate.
+- **`DEBUG` is for genuine noise** — `client.py`'s raw API responses are the example, and are
+  deliberately left there.
+- **`INFO` for routine operational records** that have another observable effect anyway.
+
+**Test emission, never existence.** A test asserting the call site exists, or grepping the source
+for the message, passes against a server that records nothing — that is the bug's exact shape.
+Assert on the record reaching a handler (`caplog`), and do **not** call `caplog.set_level` for the
+logger under test: setting the level configures the very thing being tested, so the test would
+pass against a broken configuration.
 
 ## 8. Testing
 

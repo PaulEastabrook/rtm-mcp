@@ -416,6 +416,15 @@ class RTMClient:
                 self._account_tags_fetched_at = now
             except Exception:
                 if self._cached_account_tags is None:
+                    # An EMPTY allow-list makes the strict-tag gate reject EVERY tag write while
+                    # telling the caller its tags do not exist in the account — true of an empty
+                    # set, and completely misleading about the cause. Found by the v3.0.1
+                    # silent-control sweep: the degradation was invisible, so log it loudly.
+                    logger.warning(
+                        "rtm.tags.getList failed and no account tags are cached — the strict-tag "
+                        "allow-list is EMPTY, so every tag write will be rejected until a fetch "
+                        "succeeds. This is a fetch failure, not a tag-vocabulary problem."
+                    )
                     self._cached_account_tags = set()
         return self._cached_account_tags
 

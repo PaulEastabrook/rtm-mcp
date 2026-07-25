@@ -17,8 +17,10 @@ from .note_shape import effective_title
 from .parsers import extract_note_body
 from .project_plan import _ancestor_chain, _norm_date, _permalink
 
-# Canonical closed vocabularies (advertised as advisory enums; asserted equal in test_tool_schemas).
-VALID_PERSPECTIVES = frozenset({"next_actions_by_context", "todays_field", "focus_projects"})
+# Canonical closed vocabulary (advertised as an advisory enum; asserted equal in
+# test_tool_schemas). `VALID_PERSPECTIVES` retired at v3.1.0 with `gtd_query`: the three
+# perspectives are three tools now, so a vocabulary naming them has nothing left to validate.
+# The builders still return their own `perspective` label as a payload discriminator.
 VALID_DEPTHS = frozenset({"shallow", "medium", "deep"})
 
 # Comms-mode context tags (the second context axis, alongside the physical _CONTEXT_TAGS).

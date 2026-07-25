@@ -523,6 +523,15 @@ owning module's docstring and pinned by a test.
 - `gtd_focus_index` - every active Area of Focus grouped by life context, with project and direct-item
   counts: the **Horizon-2 view**, a new capability. Pairs with `gtd_project_index` one horizon down.
 
+##### v3.1.0 — the deprecated aliases are removed (breaking)
+The 25 renamed aliases and the `gtd_query` dispatcher shipped at v3.0.0 for one release and are
+**gone**. Calling one now returns a tool-not-found; the migration table in
+[CHANGELOG.md](CHANGELOG.md) is the only remaining map from an old name to its replacement. The
+tool count is unchanged at **55**.
+
+`make naming` is now `--strict` and part of `make lint` — it could not block while the aliases
+were exposed, because the aliases *were* the non-conformant names.
+
 ##### v3.0.0 — the GTD tool rename (breaking, with aliases)
 25 GTD tools renamed and `gtd_query` split into three, so every name now conforms to the CQS +
 aggregate-grouped standard in [CONTRIBUTING.md](CONTRIBUTING.md) § 2. **Nothing changed

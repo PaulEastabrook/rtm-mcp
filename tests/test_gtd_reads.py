@@ -1,4 +1,4 @@
-"""Unit tests for the collection/context read builders (gtd_query / inbox / waiting / context)."""
+"""Unit tests for the collection/context read builders (today / next-actions / focus-projects / inbox / waiting / context)."""
 
 from __future__ import annotations
 

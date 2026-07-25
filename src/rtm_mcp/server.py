@@ -1,6 +1,8 @@
 """RTM MCP Server - Main entry point."""
 
 import inspect
+import logging
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -256,7 +258,9 @@ raw list_tasks echo; all read-only (only rtm.tasks.getList + the cached settings
 - gtd_capture_candidates: recent AI contributions whose artefacts may hold promotion candidates.
 - gtd_cluster_candidates: cross-project tag/person clusters (candidate emergent projects/themes).
 - gtd_health_report: systemic health audit (stuck projects, missing tags, stale waiting-fors, dated actions).
-- gtd_query: one GTD collection view — next actions by context, today's field, or a focus area's projects.
+- gtd_item_today: today's field — due today + overdue + untagged capture awaiting clarification.
+- gtd_next_actions: next actions organised by action context; `context` scopes to one.
+- gtd_focus_projects: the projects inside one Area of Focus (or every area, unscoped).
 - gtd_inbox_state: the three Inbox_Stuff health signals (depth / unprocessed / awaiting-review) in one read.
 - gtd_waiting_for_queue: the waiting-for chase queue with a >14-day staleness flag.
 - gtd_item_context: the STATE-first note-reading-protocol bundle for one task (task + notes + siblings +
@@ -402,19 +406,17 @@ with the scripts they replace.
   accepted/(accepted+edited+discarded), so an invalidated contribution must not sit in the
   denominator. The server is vault-free — it returns artefact_path and the CALLER mirrors phase:.
 
-## v3.0.0 — renamed GTD tools and deprecated aliases
-25 GTD tools were renamed at v3.0.0 and gtd_query split into three. NOTHING changed behaviour —
-same parameters, same return shapes, same error branches.
-- Prefer the NEW names. All 25 old names remain callable as deprecated aliases (plus gtd_query),
-  removed at v3.1.0; each advertises a byte-identical schema and its description opens
-  "DEPRECATED — renamed to <new> in v3.0.0".
-- The four that actively misled: gtd_health_check -> gtd_health_report (a read named
-  imperatively), gtd_inbox_zero -> gtd_inbox_drain (reads as a state, writes),
-  gtd_complete_action -> gtd_item_complete (handles all three item kinds, not just actions),
-  gtd_item_classify -> gtd_item_shape (an imperative verb on a read-only tool).
-- gtd_query is retired in favour of gtd_item_today (the day's field), gtd_next_actions (context-
-  organised next actions) and gtd_focus_projects (one focus area's projects). Each takes ONLY the
-  parameters its own view needs — `perspective` was a mode parameter, which is a tool boundary.
+## v3.1.0 — the deprecated aliases are GONE
+25 GTD tools were renamed at v3.0.0 and `gtd_query` split into three. The old names shipped as
+deprecated aliases for one release and were REMOVED at v3.1.0 — calling one now returns a
+tool-not-found. CHANGELOG.md carries the full old -> new table, and is the migration path.
+- The four whose old name actively misled: `gtd_health_check` -> `gtd_health_report` (a read named
+  imperatively), `gtd_inbox_zero` -> `gtd_inbox_drain` (reads as a state, writes),
+  `gtd_complete_action` -> `gtd_item_complete` (handles all three item kinds, not just actions),
+  `gtd_item_classify` -> `gtd_item_shape` (an imperative verb on a read-only tool).
+- `gtd_query` is replaced by `gtd_item_today` (the day's field), `gtd_next_actions` (context-organised
+  next actions) and `gtd_focus_projects` (one focus area's projects). Each takes ONLY the parameters
+  its own view needs — `perspective` was a mode parameter, which is a tool boundary.
 
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
@@ -513,8 +515,51 @@ register_utility_tools(_registrar, get_client)
 register_gtd_tools(_registrar, get_client)
 
 
+#: Default level for the `rtm_mcp` logger tree. Overridable with RTM_LOG_LEVEL.
+DEFAULT_LOG_LEVEL = "INFO"
+
+
+def configure_logging(level: str | None = None) -> logging.Logger:
+    """Configure the `rtm_mcp` logger tree — the thing whose absence made v3.0.0's records vanish.
+
+    Until v3.0.1 this repo had NO logging configuration anywhere. Python's root logger defaults to
+    WARNING and, with no handler, the `lastResort` fallback emits WARNING-and-above to stderr —
+    so every INFO and DEBUG record the server produced was discarded before reaching a handler.
+    Six of nine log statements were silent, including all three write-boundary gates and both
+    deprecated-alias records. The alias record is Wave 3b's removal gate, so the gate was an
+    instrument incapable of recording the thing it gates.
+
+    **The handler MUST write to stderr.** This is a stdio MCP server: stdout carries the JSON-RPC
+    protocol stream, and a handler on stdout corrupts it and breaks the server.
+    `logging.StreamHandler()` defaults to stderr, which is why it is called with no argument here
+    — do not pass `sys.stdout`. `tests/test_logging.py` asserts no handler is on stdout.
+
+    Scoped to the `rtm_mcp` tree rather than the root logger, so importing this package as a
+    library never hijacks the host application's logging. Propagation is left ON so pytest's
+    `caplog` still sees records; `lastResort` does not double-emit, because it fires only when no
+    handler is found anywhere in the chain.
+
+    Idempotent: calling it twice replaces the handler rather than stacking duplicates.
+    """
+    resolved = (level or os.getenv("RTM_LOG_LEVEL") or DEFAULT_LOG_LEVEL).strip().upper()
+    numeric = getattr(logging, resolved, None)
+    if not isinstance(numeric, int):
+        numeric = logging.INFO
+
+    handler = logging.StreamHandler()  # stderr — NEVER stdout, see the docstring
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+
+    tree = logging.getLogger("rtm_mcp")
+    for existing in list(tree.handlers):
+        tree.removeHandler(existing)
+    tree.addHandler(handler)
+    tree.setLevel(numeric)
+    return tree
+
+
 def main() -> None:
     """Run the MCP server."""
+    configure_logging()
     mcp.run()
 
 

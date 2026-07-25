@@ -262,7 +262,7 @@ def resolve_focus(parsed: list[dict[str, Any]], focus: str) -> dict[str, Any]:
         return build_error(
             ErrorCode.FOCUS_NOT_FOUND,
             f"No Area of Focus matching '{focus}'. Pass the area's task id instead of its name "
-            "(gtd_project_create: frame.focus; gtd_query: focus), or check the name with "
+            "(gtd_project_create: frame.focus; gtd_focus_projects: focus), or check the name with "
             "list_tasks(filter='tag:project') to see existing areas.",
         )
     if len(matches) > 1:
