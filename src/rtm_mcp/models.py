@@ -1150,6 +1150,298 @@ class ContextResult(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Wave 1 — the eight MilkScript-retirement reads (v2.9.0)
+# --------------------------------------------------------------------------- #
+
+
+class SurfaceQueueEntity(BaseModel):
+    """One linked entity from a surface item's body frontmatter."""
+
+    model_config = ConfigDict(extra="allow")
+    entity_type: str = ""
+    entity_url: str = ""
+    entity_rtm: dict[str, str] = {}
+    relationship: str = ""
+
+
+class SurfaceEvidence(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    path: str
+    detail: str
+
+
+class SurfaceUnrecognisedNote(BaseModel):
+    note_id: str
+    title: str
+    created: str
+
+
+class SurfaceQueueRow(BaseModel):
+    task_id: str
+    taskseries_id: str
+    list_id: str
+    surface: str
+    name: str
+    tags: list[str] = []
+    notes_count: int
+    created: str
+    modified: str
+    completed: str
+    deep_link: str
+    item_id: str | None = None
+    item_type: str | None = None
+    entities: list[SurfaceQueueEntity] = []
+    expected_response_shape: str | None = None
+    expected_response_options: list[str] = []
+    asked_by: str | None = None
+    asked_at: str | None = None
+    auto_close_at: str | None = None
+    related_artefact: str | None = None
+    metadata_parse_error: str | None = None
+    auto_close_due: bool
+    response_detected: bool
+    response_evidence: list[SurfaceEvidence] = []
+    unrecognised_notes: list[SurfaceUnrecognisedNote] = []
+
+
+class SurfaceQueueResult(BaseModel):
+    """`questions` / `activity` are present only for the surfaces requested."""
+
+    model_config = ConfigDict(extra="allow")
+    surface: str
+    current_date: str
+    count: int
+    metadata_missing_count: int
+    questions: list[SurfaceQueueRow] | None = None
+    activity: list[SurfaceQueueRow] | None = None
+
+
+class EngineGap(BaseModel):
+    metric: str
+    reason: str
+
+
+class EngineContributions(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    drafted_in_window: int
+    touched_in_window: int
+    undated_creation: int
+    open_total: int
+    cohort_ids: list[str] = []
+    by_category: dict[str, int] = {}
+    by_state: dict[str, int] = {}
+    accepted_count: int
+    edited_count: int
+    discarded_count: int
+    stale_count: int
+    acceptance_rate_pct: int
+    edit_rate_pct: int
+    discard_rate_pct: int
+    per_category_acceptance_rate_pct: dict[str, int] = {}
+
+
+class EngineSurfaceSide(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    created_in_window: int
+    touched_in_window: int
+    closed_in_window: int
+    auto_closed_in_window: int
+    paul_engaged_in_window: int
+    open_depth: int
+    queue_bloat: bool
+    queue_bloat_threshold: int
+    avg_latency_to_engagement_hours: float | None = None
+    latency_basis: str
+    per_item_type: dict[str, dict[str, int]] = {}
+
+
+class EngineSurface(BaseModel):
+    questions: EngineSurfaceSide
+    activity: EngineSurfaceSide
+
+
+class EngineSpeculation(BaseModel):
+    open_total: int
+    opened_in_window: int
+    touched_in_window: int
+    oldest_open: str | None = None
+    upgrade_rate_reported: bool
+
+
+class EngineReportResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    window_days: int
+    window_start: str
+    window_end: str
+    window_semantics: str
+    current_date: str
+    contributions: EngineContributions
+    ai_surface: EngineSurface
+    speculation: EngineSpeculation
+    engine_state: dict[str, int]
+    gaps: list[EngineGap] = []
+
+
+class DependencyGapRow(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    project_id: str
+    name: str
+    list_id: str
+    parent_id: str
+    tags: list[str] = []
+    redacted: bool
+    deep_link: str
+    open_child_count: int | None = None
+
+
+class DependencyGapsResult(BaseModel):
+    eligible: list[DependencyGapRow] = []
+    eligible_count: int
+    eligible_total: int
+    capped: bool
+    max_projects: int
+    skipped: list[DependencyGapRow] = []
+    skipped_count: int
+    vault_filter_pending: str
+
+
+class TagUsage(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str
+    active_count: int
+
+
+class TagMinimumSet(BaseModel):
+    missing_life_context_count: int
+    missing_life_context_sample: list[dict[str, str]] = []
+    missing_workflow_state_count: int
+    missing_workflow_state_sample: list[dict[str, str]] = []
+    actions_missing_action_context_count: int
+    actions_missing_action_context_sample: list[dict[str, str]] = []
+
+
+class TagReportResult(BaseModel):
+    current_date: str
+    total_account_tags: int
+    canonical: list[str] = []
+    canonical_count: int
+    family: list[TagUsage] = []
+    family_count: int
+    people: list[TagUsage] = []
+    retired_in_use: list[TagUsage] = []
+    retired_unused: list[TagUsage] = []
+    non_canonical_active: list[TagUsage] = []
+    non_canonical_unused: list[TagUsage] = []
+    non_canonical_count: int
+    orphaned_in_use: list[str] = []
+    minimum_tag_set: TagMinimumSet
+    people_caveat: str
+    sample_limit: int
+
+
+class ReviewCohort(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    by_life_context: dict[str, int] = {}
+    no_life_context: int
+    total: int
+
+
+class ReviewLifeState(BaseModel):
+    by_workflow_state: dict[str, int] = {}
+    total: int
+
+
+class ReviewVelocity(BaseModel):
+    net_change: int
+    direction: str
+
+
+class ReviewReportResult(BaseModel):
+    window_days: int
+    current_date: str
+    completed: ReviewCohort
+    added: ReviewCohort
+    current_state: dict[str, ReviewLifeState] = {}
+    overdue_count: int
+    inbox_depth: int
+    velocity: ReviewVelocity
+
+
+class StaleRow(BaseModel):
+    task_id: str
+    name: str
+    state: str
+    kind: str
+    life: str
+    age_days: int
+    updated: str
+    due: str
+    priority: str
+    parent_id: str
+    redacted: bool
+    deep_link: str
+
+
+class ItemStaleResult(BaseModel):
+    threshold_days: int
+    current_date: str
+    rows: list[StaleRow] = []
+    count: int
+    by_state: dict[str, int] = {}
+    undated_modification: int
+
+
+class WorkloadCell(BaseModel):
+    count: int
+    estimated_count: int
+    estimate_minutes: int
+
+
+class WorkloadLife(BaseModel):
+    by_workflow_state: dict[str, WorkloadCell] = {}
+    total: int
+    estimated_count: int
+    estimate_minutes: int
+    estimate_hours: float
+    estimate_coverage_pct: int
+
+
+class WorkloadTotals(BaseModel):
+    count: int
+    estimated_count: int
+    estimate_minutes: int
+    estimate_hours: float
+
+
+class WorkloadReportResult(BaseModel):
+    current_date: str
+    by_life_context: dict[str, WorkloadLife] = {}
+    totals: WorkloadTotals
+    unclassified_count: int
+
+
+class FocusIndexRow(BaseModel):
+    focus_id: str
+    focus: str
+    life: str
+    project_count: int
+    direct_item_count: int
+    priority: str
+    updated: str
+    redacted: bool
+    parent_id: str
+    deep_link: str
+
+
+class FocusIndexResult(BaseModel):
+    current_date: str
+    rows: list[FocusIndexRow] = []
+    count: int
+    by_life_context: dict[str, int] = {}
+    unclassified_count: int
+
+
+# --------------------------------------------------------------------------- #
 # Envelope schema builder — {data: <Success…> | ErrorData, metadata, analysis?}
 # --------------------------------------------------------------------------- #
 
@@ -1269,3 +1561,13 @@ GTD_QUERY_OUTPUT = _envelope_schema("GtdQueryEnvelope", QueryResult, Candidates)
 INBOX_STATE_OUTPUT = _envelope_schema("InboxStateEnvelope", InboxStateResult)
 WAITING_FOR_OUTPUT = _envelope_schema("WaitingForEnvelope", WaitingForResult)
 GTD_CONTEXT_OUTPUT = _envelope_schema("GtdContextEnvelope", ContextResult, Candidates)
+
+# GTD Wave 1 — the eight MilkScript-retirement reads (v2.9.0)
+SURFACE_QUEUE_OUTPUT = _envelope_schema("SurfaceQueueEnvelope", SurfaceQueueResult)
+ENGINE_REPORT_OUTPUT = _envelope_schema("EngineReportEnvelope", EngineReportResult)
+DEPENDENCY_GAPS_OUTPUT = _envelope_schema("DependencyGapsEnvelope", DependencyGapsResult)
+TAG_REPORT_OUTPUT = _envelope_schema("TagReportEnvelope", TagReportResult)
+REVIEW_REPORT_OUTPUT = _envelope_schema("ReviewReportEnvelope", ReviewReportResult)
+ITEM_STALE_OUTPUT = _envelope_schema("ItemStaleEnvelope", ItemStaleResult)
+WORKLOAD_REPORT_OUTPUT = _envelope_schema("WorkloadReportEnvelope", WorkloadReportResult)
+FOCUS_INDEX_OUTPUT = _envelope_schema("FocusIndexEnvelope", FocusIndexResult)

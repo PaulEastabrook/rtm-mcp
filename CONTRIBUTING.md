@@ -45,18 +45,95 @@ module-responsibility table (see § 9, Documentation lockstep).
 
 ## 2. Naming conventions
 
+**This section is design of record.** It was frozen ahead of the Wave 1 build (designed change
+`2026-07-25-gtd-milkscript-retirement`, D6–D14) so new tools are born conformant rather than
+renamed later. The eight v2.9.0 reads are the first cohort built to it; the pre-existing 24
+non-conformant names are renamed in a separate breaking release (Wave 2, v3.0.0) — until then,
+**this section describes the target, and the exceptions below are known debt, not precedent.**
+
+### 2.1 The domain split (unchanged)
+
 - **Bare verbs are generic RTM primitives** — each maps 1:1 to an RTM API method and speaks
   RTM's own language: `add_task`, `list_tasks`, `get_task_notes`, `set_task_priority`.
 - **A `<domain>_` prefix marks a domain composition** — a domain-shaped view over RTM data that
-  does *not* map 1:1 to an RTM method. Current domain: `gtd_` (`gtd_project_plan`,
-  `gtd_project_canvas`, `gtd_apply_canvas_commit`).
-  - Format: **`<domain>_<concept-noun>`** for reads (the default — e.g. `gtd_project_plan`).
-  - Use **`<domain>_<verb>_<noun>`** only when a domain genuinely needs an explicit verb
-    (e.g. `gtd_apply_canvas_commit`).
+  does *not* map 1:1 to an RTM method. Current domain: `gtd_`.
 - Reading the tool list, the split is instant: no prefix = RTM primitive, `<domain>_` = domain
   view. This keeps a future lift of all `<domain>_*` tools into a separate server a clean,
-  mechanical move. New domain compositions **must** follow this and be documented alongside the
-  existing ones.
+  mechanical move.
+
+### 2.2 CQS is the grammar (D6)
+
+Meyer's Command–Query Separation, with the CQRS naming convention: **commands are named for the
+operation, queries for the thing returned.** The name must answer *will this change my data*
+before the description is read.
+
+### 2.3 Noun-first, aggregate-grouped (D7, D12)
+
+**`gtd_<area>_<operation>`.** At 40-plus tools and growing, *finding* a name beats *reading* one,
+so related operations sit adjacent alphabetically (as AWS and Stripe do at this cardinality).
+
+The first segment names a domain **area**, which may be an aggregate root (`item`, `project`,
+`note`, `surface`, `canvas`, `chat`, `engage`, `dependency`, `cluster`) **or a lifecycle stage**
+(`inbox`, `waiting_for`) — a deliberate decision (D12), not an inconsistency: grouping follows how
+the work is actually done, which is what a reader scanning for a tool is looking for.
+
+The acknowledged cost, recorded as a trade rather than an oversight: `gtd_capture` →
+`gtd_inbox_capture` gives up the best name in the suite by ubiquitous-language standards (Allen's
+own verb) to buy grouping.
+
+### 2.4 Granularity is explicit (D10)
+
+**The test every name must pass: from the name alone, can you tell whether it touches one thing or
+many?** Aggregate grouping improves findability and regresses scope legibility — `gtd_inbox_close`
+(one item) and `gtd_inbox_drain` (the whole list) would sit adjacent looking like siblings. On the
+write side that is the more dangerous confusion: mistaking a query for a command wastes a call;
+mistaking a single-item close for a list drain empties the inbox.
+
+| Scope | Marker | Examples |
+|---|---|---|
+| One entity | entity segment, where the area noun alone is ambiguous | `gtd_inbox_item_close`, `gtd_item_create`, `gtd_surface_create` |
+| Many entities (write) | `_batch`, or an inherently-plural verb (*sweep*, *drain*) | `gtd_item_transition_batch`, `gtd_inbox_drain`, `gtd_waiting_for_sweep` |
+| Collection (read) | result-noun suffix — `_queue`, `_state`, `_index`, `_candidates`, `_report`, `_gaps` | `gtd_surface_queue`, `gtd_inbox_state`, `gtd_focus_index`, `gtd_engine_report` |
+
+The collection-read tier already conformed before the standard existed — that convention emerged
+unaided and every query obeys it. The gap was entirely on the write side.
+
+### 2.5 `item` is an umbrella — use it only when the tool is genuinely one (D13)
+
+`gtd_create_item`'s own schema settles the vocabulary: `kind: action | waiting_for |
+calendar_entry`, with *"(A project is created with `gtd_create_project`.)"*. **Item** means those
+three kinds; **project** is a peer, not a member.
+
+> Use `item` only when the tool genuinely spans item kinds. Use the specific entity noun
+> (`action`, `project`, `waiting_for`, `calendar_entry`, `focus`) when it does not.
+
+Applying it finds errors in both directions — `gtd_complete_action` handles all three kinds
+despite its name, and a context-organised next-actions read must **not** claim the umbrella (a
+waiting-for is not a next action). `gtd_next_actions` keeps its bare form as a deliberate
+ubiquitous-language exception, like the `*_candidates` family: *Next Actions* is the canonical GTD
+list name and prefixing it degrades it.
+
+### 2.6 A scope parameter is fine; a mode parameter is a tool boundary (D11)
+
+> If changing a parameter changes (a) which *other* parameters are valid, (b) the *return shape*,
+> or (c) the *error branches* — it is a tool boundary, not a parameter.
+
+`gtd_surface_queue(surface: questions | activity | both)` **passes**: one row shape, one parameter
+set, one error set, and `both` is load-bearing because the scan processes both lists per run.
+`gtd_query(perspective: …)` **fails all three** — `context` is valid only for one perspective,
+`focus` only for another, rows carry different fields per perspective, and `focus_not_found`
+applies to one branch. It is three tools wearing a trenchcoat, and Wave 2 splits it.
+
+The same rule is why an aggregation is a `_report` and a row list is not: `gtd_workload_report`
+returns life-context × workflow-state totals, not rows, so it belongs beside `gtd_health_report`
+and `gtd_engine_report` rather than as a `gtd_query` perspective.
+
+### 2.7 Enforcement (D9)
+
+Conventions without enforcement drift — the pre-existing exceptions are the proof. An architect
+audit check flags any tool whose **name form disagrees with its `readOnlyHint` annotation** (a
+noun-phrase name on a writing tool, or an imperative name on a read). It ships in Wave 3, *after*
+the renames land, or it fails on day one for reasons that have nothing to do with drift.
 
 ## 3. Tool implementation pattern
 
@@ -279,8 +356,35 @@ plugin-side — stop and flag it. Do not add a taxonomy or import one into the s
 ## 7. Source style
 
 - **Python ≥ 3.11.** Use native unions and builtin generics (`str | None`, `dict[str, Any]`,
-  `list[str]`). **Do not** add `from __future__ import annotations` — no existing `src` module
-  uses it.
+  `list[str]`).
+- **`from __future__ import annotations` — allowed in pure modules, NEVER in a schema surface.**
+
+  | Layer | Rule |
+  |---|---|
+  | **Pure, no-IO builders** (`gtd_writes`, `gtd_reads`, `detectors`, `engage_*`, `companion`, `surface_queue`, `engine_report`, `tag_report`, `gtd_reports`) | **Allowed** — the established convention; match the file you are working beside |
+  | **Schema surfaces** (`tools/*.py`, `models.py`, `server.py`, `tool_params.py`) | **Do not add it** |
+
+  *Why the split is real, and why it is not the reason this rule originally gave.* PEP 563 turns
+  every annotation into a string, and FastMCP/pydantic must resolve those at runtime to build the
+  advertised JSON schema. Resolution happens against **module** globals — so a **function-scoped**
+  annotation becomes an unresolvable forward reference. Every tool is registered *inside*
+  `register_<group>_tools(...)`, which makes that scope the normal place to define a shared
+  `Annotated` alias, and the failure is immediate:
+
+  ```
+  NameError: name 'LocalRef' is not defined      # raised from list_tools() → schema generation
+  ```
+
+  Measured 2026-07-25 on fastmcp 3.4.4: a module-level annotation resolves fine under the import
+  (injecting it into `tools/gtd.py` produced **byte-identical** advertised schemas), and a
+  function-scoped alias raises. So the risk is latent rather than theoretical — the tool modules
+  work today only because their `Annotated` params happen to reference module-level names, and the
+  first function-scoped alias anyone adds breaks registration.
+
+  It fails **loudly**, which is the one mercy — but it fails at server start, so keep the import
+  out of the schema surfaces rather than relying on catching it. (The rule previously read *"do
+  not add it — no existing `src` module uses it"*, which was true when written on 2026-06-20 and
+  had been overtaken by six modules; it also pointed at the wrong hazard.)
 - **Lint/type:** ruff (`E,F,I,UP,B,SIM,RUF`, line-length 100, `E501` ignored) and pyright
   (`basic`, over `src`). Run `make lint` (= `uv run ruff check src tests` + `uv run pyright src`)
   and `make format` before pushing. Async/await for all I/O.

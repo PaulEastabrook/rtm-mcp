@@ -81,6 +81,15 @@ READ_ONLY_TOOLS = {
     "gtd_inbox_state",
     "gtd_waiting_for_queue",
     "gtd_context",
+    # Wave 1 — the eight MilkScript-retirement reads (v2.9.0).
+    "gtd_surface_queue",
+    "gtd_engine_report",
+    "gtd_dependency_gaps",
+    "gtd_tag_report",
+    "gtd_review_report",
+    "gtd_item_stale",
+    "gtd_workload_report",
+    "gtd_focus_index",
 }
 DESTRUCTIVE_TOOLS = {
     "delete_task",
@@ -432,6 +441,8 @@ _HELPER_CODES: dict[str, set[str]] = {
     "enforce_list_target": {"smart_list_target", "locked_system_list"},
     # error_from_exception maps whatever RTM raised; these are the codes worth advertising.
     "error_from_exception": {"auth_failed", "service_unavailable", "network_error"},
+    # The Wave 1 reads' shared window/threshold guard rail.
+    "_bounded_int": {"invalid_input"},
 }
 
 

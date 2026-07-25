@@ -5025,3 +5025,272 @@ class TestGtdApplyEngageCommit:
         assert res["data"]["errors"] == []
         assert self._steer_notes(client) == []  # identical steer already present → skipped
         assert any("skipped, duplicate" in a["op"] for a in res["data"]["applied"])
+
+
+# =========================================================================== #
+# Wave 1 — the eight MilkScript-retirement reads (v2.9.0)
+# =========================================================================== #
+
+_WAVE1_ARGS: dict[str, dict[str, Any]] = {
+    "gtd_surface_queue": {},
+    "gtd_engine_report": {},
+    "gtd_dependency_gaps": {},
+    "gtd_review_report": {},
+    "gtd_item_stale": {},
+    "gtd_workload_report": {},
+    "gtd_focus_index": {},
+}
+
+
+class TestWave1Reads:
+    """The eight MilkScript-retirement reads — call surface, typed errors, and shape."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name", sorted(_WAVE1_ARGS))
+    async def test_read_only_call_surface(self, gtd_tools, tool_name):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([_ts("s", "10", "Alpha", tags=["action"])]))
+        await tools[tool_name](FakeContext(), **_WAVE1_ARGS[tool_name])
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert methods == {"rtm.tasks.getList"}  # no write, no timeline
+        assert client.record_transaction.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_tag_report_call_surface_adds_only_the_tag_list(self, gtd_tools):
+        """The one read whose surface is not getList alone — the account tag list carries tags
+        used only on completed tasks, which a task scan cannot see."""
+        tools, client = gtd_tools
+
+        async def _call(method, **_kw):
+            if method == "rtm.tags.getList":
+                return {"stat": "ok", "tags": {"tag": ["work", "wrok"]}}
+            return _getlist([_ts("s", "10", "Alpha", tags=["action", "work"])])
+
+        client.call = AsyncMock(side_effect=_call)
+        await tools["gtd_tag_report"](FakeContext())
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert methods == {"rtm.tags.getList", "rtm.tasks.getList"}
+        assert client.record_transaction.call_count == 0
+
+    # --- gtd_surface_queue ------------------------------------------------- #
+
+    @pytest.mark.asyncio
+    async def test_surface_queue_parses_frontmatter_and_derives_signals(self, gtd_tools):
+        tools, client = gtd_tools
+        body = (
+            "2026-07-20 — QUESTION — pick one\n"
+            "---\nitem_id: 2026-07-20-pick\nitem_type: question\n"
+            "expected_response_shape: pick-one\nasked_by: scan\n"
+            "asked_at: 2026-07-20 09:00\nauto_close_at: null\n---\n\n## Question\nWhich?\n"
+        )
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts(
+                        "sq",
+                        "700",
+                        "Pick one",
+                        tags=["claude_question", "q_question", "q_answered"],
+                        notes=[{"id": "n1", "$t": body, "created": "2026-07-20T09:00:00Z"}],
+                    )
+                ]
+            )
+        )
+        data = (await tools["gtd_surface_queue"](FakeContext(), surface="questions"))["data"]
+        row = data["questions"][0]
+        assert row["item_id"] == "2026-07-20-pick"
+        assert row["expected_response_shape"] == "pick-one"
+        assert row["metadata_parse_error"] is None
+        assert row["response_detected"] is True
+        assert row["response_evidence"][0]["path"] == "q_answered_tag"
+        assert "activity" not in data
+
+    @pytest.mark.asyncio
+    async def test_surface_queue_keeps_a_metadata_less_row(self, gtd_tools):
+        """The majority case live — the row must survive with the error named."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts(
+                        "sq",
+                        "700",
+                        "Legacy item",
+                        tags=["claude_question", "q_question", "q_pending"],
+                        notes=[
+                            {
+                                "id": "n1",
+                                "$t": "2026-06-07 — CONTEXT — why this is here",
+                                "created": "2026-06-07T09:00:00Z",
+                            }
+                        ],
+                    )
+                ]
+            )
+        )
+        data = (await tools["gtd_surface_queue"](FakeContext(), surface="questions"))["data"]
+        row = data["questions"][0]
+        assert row["metadata_parse_error"] == "frontmatter_absent"
+        assert row["task_id"] == "700" and row["response_detected"] is False
+        assert data["metadata_missing_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_surface_queue_both_issues_one_read_per_surface(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([]))
+        data = (await tools["gtd_surface_queue"](FakeContext(), surface="both"))["data"]
+        assert client.call.call_count == 2
+        assert "questions" in data and "activity" in data
+
+    @pytest.mark.asyncio
+    async def test_surface_queue_rejects_an_unknown_surface(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([]))
+        res = await tools["gtd_surface_queue"](FakeContext(), surface="nonsense")
+        assert res["data"]["error"]["code"] == "invalid_input"
+        assert client.call.call_count == 0
+
+    # --- gtd_engine_report ------------------------------------------------- #
+
+    @pytest.mark.asyncio
+    async def test_engine_report_reads_five_filters_and_names_its_gaps(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([]))
+        data = (await tools["gtd_engine_report"](FakeContext(), window_days=30))["data"]
+        assert client.call.call_count == 5
+        assert data["window_days"] == 30
+        assert "creation cohort" in data["window_semantics"]
+        gaps = {g["metric"] for g in data["gaps"]}
+        assert "speculation_upgrade_rate" in gaps
+        assert data["speculation"]["upgrade_rate_reported"] is False
+
+    @pytest.mark.asyncio
+    async def test_engine_report_rejects_an_out_of_range_window(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([]))
+        res = await tools["gtd_engine_report"](FakeContext(), window_days=5000)
+        assert res["data"]["error"]["code"] == "invalid_input"
+        assert client.call.call_count == 0
+
+    # --- gtd_dependency_gaps ----------------------------------------------- #
+
+    @pytest.mark.asyncio
+    async def test_dependency_gaps_shape_and_caveat(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts("tp", "p1", "Big project", tags=["project", "work"]),
+                    _ts("t1", "c1", "child a", parent="p1", tags=["action"]),
+                    _ts("t2", "c2", "child b", parent="p1", tags=["action"]),
+                    _ts("tq", "p2", "Thin project", tags=["project", "work"]),
+                    _ts("t3", "c3", "child c", parent="p2", tags=["action"]),
+                ]
+            )
+        )
+        data = (await tools["gtd_dependency_gaps"](FakeContext()))["data"]
+        assert [r["project_id"] for r in data["eligible"]] == ["p1"]
+        assert data["eligible"][0]["open_child_count"] == 2
+        assert [r["reason"] for r in data["skipped"]] == ["too_few_open_children"]
+        assert "context.md" in data["vault_filter_pending"]
+
+    # --- the four small reads ---------------------------------------------- #
+
+    @pytest.mark.asyncio
+    async def test_review_report_uses_the_verified_completed_within_filter(self, gtd_tools):
+        """`completedAfter:"N days ago"` silently matched nothing; the cohort filter must be the
+        `completedWithin:` form."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([]))
+        await tools["gtd_review_report"](FakeContext(), days=14)
+        filters = [c.kwargs.get("filter", "") for c in client.call.call_args_list]
+        assert any('completedWithin:"14 days of today"' in f for f in filters)
+        assert not any("completedAfter" in f or "addedAfter" in f for f in filters)
+
+    @pytest.mark.asyncio
+    async def test_review_report_shape(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist([_ts("s1", "1", "Alpha", tags=["action", "work"])])
+        )
+        data = (await tools["gtd_review_report"](FakeContext()))["data"]
+        assert data["current_state"]["work"]["by_workflow_state"]["action"] >= 1
+        assert set(data["completed"]["by_life_context"]) == {
+            "work",
+            "client",
+            "leanworking",
+            "personal",
+        }
+        assert data["velocity"]["direction"] in ("growing", "shrinking", "stable")
+
+    @pytest.mark.asyncio
+    async def test_item_stale_shape(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist([_ts("s1", "1", "Forgotten", tags=["action", "work"])])
+        )
+        data = (await tools["gtd_item_stale"](FakeContext(), days=30))["data"]
+        assert data["threshold_days"] == 30
+        assert data["rows"][0]["task_id"] == "1"
+        assert data["rows"][0]["age_days"] > 30
+        assert data["by_state"] == {"action": 1}
+
+    @pytest.mark.asyncio
+    async def test_workload_report_is_an_aggregation_with_coverage(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts("s1", "1", "Alpha", tags=["action", "work"]),
+                    _ts("s2", "2", "Beta", tags=["waiting_for", "work"]),
+                ]
+            )
+        )
+        data = (await tools["gtd_workload_report"](FakeContext()))["data"]
+        work = data["by_life_context"]["work"]
+        assert work["by_workflow_state"]["action"]["count"] == 1
+        assert work["total"] == 2
+        assert work["estimate_coverage_pct"] == 0  # nothing estimated — the floor is visible
+        assert "rows" not in data  # an aggregation, never a row list
+
+    @pytest.mark.asyncio
+    async def test_focus_index_groups_areas_by_life_context(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts("f1", "F1", "Engineering leadership", tags=["focus", "work"]),
+                    _ts("p1", "P1", "Hire an EM", parent="F1", tags=["project", "work"]),
+                    _ts("f2", "F2", "Home", tags=["focus", "personal"]),
+                    _ts("f3", "F3", "Parked", tags=["focus", "work", "someday"]),
+                ]
+            )
+        )
+        data = (await tools["gtd_focus_index"](FakeContext()))["data"]
+        assert [r["focus_id"] for r in data["rows"]] == ["F1", "F2"]
+        assert data["rows"][0]["project_count"] == 1
+        assert data["by_life_context"] == {"work": 1, "personal": 1}
+
+    @pytest.mark.asyncio
+    async def test_focus_index_include_someday_opt_in(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=_getlist([_ts("f3", "F3", "Parked", tags=["focus", "work", "someday"])])
+        )
+        data = (await tools["gtd_focus_index"](FakeContext(), include_someday=True))["data"]
+        assert data["count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_tag_report_flags_the_non_canonical_tag(self, gtd_tools):
+        tools, client = gtd_tools
+
+        async def _call(method, **_kw):
+            if method == "rtm.tags.getList":
+                return {"stat": "ok", "tags": {"tag": ["work", "wrok", "orphan_tag"]}}
+            return _getlist([_ts("s", "10", "Alpha", tags=["action", "work", "wrok"])])
+
+        client.call = AsyncMock(side_effect=_call)
+        data = (await tools["gtd_tag_report"](FakeContext()))["data"]
+        assert [r["name"] for r in data["non_canonical_active"]] == ["wrok"]
+        assert [r["name"] for r in data["non_canonical_unused"]] == ["orphan_tag"]
+        assert "work" in data["canonical"]
