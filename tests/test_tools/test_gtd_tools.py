@@ -5294,3 +5294,277 @@ class TestWave1Reads:
         assert [r["name"] for r in data["non_canonical_active"]] == ["wrok"]
         assert [r["name"] for r in data["non_canonical_unused"]] == ["orphan_tag"]
         assert "work" in data["canonical"]
+
+
+# =========================================================================== #
+# Wave 1b — classify, clear_signal, ACTIVITY-REPORT, contribution transition
+# =========================================================================== #
+
+
+def _contrib_note_dict(note_id="n1", state="drafted", created="2026-07-20T09:00:00Z"):
+    body = (
+        "2026-07-20 — CONTRIB — research — Synthesis of the options\n"
+        "Drafted: work/research/options.md\n"
+        "Category: research\n"
+        f"State: {state}\n"
+    )
+    return {"id": note_id, "$t": body, "created": created}
+
+
+class TestWave1bItemClassify:
+    @pytest.mark.asyncio
+    async def test_classifies_without_touching_rtm_at_all(self, gtd_tools):
+        """Offline by construction — no read, no write, no timeline."""
+        tools, client = gtd_tools
+        client.call = AsyncMock()
+        data = (await tools["gtd_item_classify"](FakeContext(), name="Research the vendor"))["data"]
+        assert data["shape"] == "research"
+        assert client.call.call_count == 0
+        assert client.record_transaction.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_reports_the_known_ambiguity(self, gtd_tools):
+        tools, _ = gtd_tools
+        data = (
+            await tools["gtd_item_classify"](FakeContext(), name="Evaluate the options for CRM")
+        )["data"]
+        assert data["shape"] == "research" and data["also_matched"] == ["decide"]
+
+    @pytest.mark.asyncio
+    async def test_explains_a_none_via_knocked_out(self, gtd_tools):
+        tools, _ = gtd_tools
+        data = (await tools["gtd_item_classify"](FakeContext(), name="Email about the research"))[
+            "data"
+        ]
+        assert data["shape"] == "none"
+        assert {k["shape"] for k in data["knocked_out"]} == {"research", "draft"}
+
+
+class TestWave1bClearSignal:
+    @pytest.mark.asyncio
+    async def test_interim_note_leaves_the_drain_signal_SET(self, gtd_tools):
+        """The regression that silently kills the board's poll. An interim note must write the
+        CHAT note and touch NO tags."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            side_effect=lambda method, **kw: (
+                _getlist([_ts("tsA", "10", "Alpha", tags=["ai_chat", "ai_chat_requested"])])
+                if method == "rtm.tasks.getList"
+                else {"stat": "ok", "note": {"id": "n9", "created": "2026-07-25T09:00:00Z"}}
+            )
+        )
+        res = await tools["gtd_chat_post"](
+            FakeContext(),
+            task_id="10",
+            text="Read the project context",
+            role="ai",
+            clear_signal=False,
+        )
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert "rtm.tasks.removeTags" not in methods, "the drain signal must NOT be cleared"
+        assert "rtm.tasks.addTags" not in methods
+        assert methods.count("rtm.tasks.notes.add") == 1, "the note is still written"
+        assert res["data"]["tag_changes"] == []
+        assert res["data"]["clear_signal"] is False
+
+    @pytest.mark.asyncio
+    async def test_final_reply_still_clears_by_default(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            side_effect=lambda method, **kw: (
+                _getlist([_ts("tsA", "10", "Alpha", tags=["ai_chat", "ai_chat_requested"])])
+                if method == "rtm.tasks.getList"
+                else {"stat": "ok", "note": {"id": "n9", "created": "2026-07-25T09:00:00Z"}}
+            )
+        )
+        res = await tools["gtd_chat_post"](FakeContext(), task_id="10", text="Done", role="ai")
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert "rtm.tasks.removeTags" in methods
+        assert res["data"]["tag_changes"] == ["-ai_chat_requested"]
+        assert res["data"]["clear_signal"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_me_turn_is_unaffected_by_the_flag(self, gtd_tools):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=False)
+        client.call = AsyncMock(
+            side_effect=lambda method, **kw: (
+                _getlist([_ts("tsA", "10", "Alpha", tags=[])])
+                if method == "rtm.tasks.getList"
+                else {"stat": "ok", "note": {"id": "n9", "created": "2026-07-25T09:00:00Z"}}
+            )
+        )
+        res = await tools["gtd_chat_post"](
+            FakeContext(), task_id="10", text="Progress this", role="me", clear_signal=False
+        )
+        assert res["data"]["tag_changes"] == ["+ai_chat_requested", "+ai_chat"]
+        assert res["data"]["clear_signal"] is None
+
+
+class TestWave1bActivityReportTitle:
+    @pytest.mark.asyncio
+    async def test_the_emitted_body_note_title_passes_the_note_shape_gate(self, gtd_tools):
+        """The actual defect was that the server could write a title its OWN validator rejects."""
+        from rtm_mcp.gtd_writes import SURFACE_BODY_NOTE_TYPE
+        from rtm_mcp.note_shape import check_title
+
+        for item_type, token in SURFACE_BODY_NOTE_TYPE.items():
+            title = f"2026-07-25 — {token} — a summary"
+            assert check_title(title) is None, f"{item_type} -> {title}"
+
+    def test_the_underscore_form_is_exactly_what_the_gate_rejects(self):
+        from rtm_mcp.note_shape import check_title
+
+        assert check_title("2026-07-25 — ACTIVITY_REPORT — a summary") is not None
+        assert check_title("2026-07-25 — ACTIVITY-REPORT — a summary") is None
+
+    def test_the_token_is_mapped_not_derived(self):
+        """The root cause: an INPUT vocabulary leaking into an OUTPUT one."""
+        from rtm_mcp.gtd_writes import SURFACE_BODY_NOTE_TYPE, SURFACE_ITEM_TYPES
+
+        assert set(SURFACE_BODY_NOTE_TYPE) == SURFACE_ITEM_TYPES
+        assert SURFACE_BODY_NOTE_TYPE["activity_report"] == "ACTIVITY-REPORT"
+        assert SURFACE_BODY_NOTE_TYPE["activity_report"] != "activity_report".upper()
+
+
+class TestWave1bContributionTransition:
+    def _tree(self, state="drafted", notes=None):
+        return _getlist(
+            [
+                _ts(
+                    "tsC",
+                    "500",
+                    "Draft the onboarding spec",
+                    tags=["action", "work", "ai_contrib_drafted"],
+                    notes=notes if notes is not None else [_contrib_note_dict(state=state)],
+                )
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_accepted_rewrites_the_state_and_journals_an_update(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            side_effect=lambda method, **kw: (
+                self._tree()
+                if method == "rtm.tasks.getList"
+                else {
+                    "stat": "ok",
+                    "note": {"id": "u1"},
+                    "transaction": {"id": "t1", "undoable": "1"},
+                }
+            )
+        )
+        data = (
+            await tools["gtd_contribution_transition"](
+                FakeContext(), task_ref="500", state="accepted", note="Used as-is."
+            )
+        )["data"]
+        assert data["state"] == "accepted" and data["previous_state"] == "drafted"
+        assert data["kind"] == "judged" and data["category"] == "research"
+        assert data["artefact_path"] == "work/research/options.md"
+        assert data["vault_mirror_pending"]
+
+        edits = [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.notes.edit"
+        ]
+        assert len(edits) == 1
+        assert "State: accepted" in edits[0].kwargs["note_text"]
+        adds = [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.notes.add"
+        ]
+        assert len(adds) == 1
+        assert adds[0].kwargs["note_title"].startswith("2026-")
+        assert "CONTRIB-UPDATE" in adds[0].kwargs["note_title"]
+        assert client.record_transaction.call_count == 2  # both writes undoable
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", ["accepted", "edited", "discarded", "superseded", "stale"])
+    async def test_every_terminal_is_reachable_from_drafted(self, gtd_tools, state):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            side_effect=lambda method, **kw: (
+                self._tree()
+                if method == "rtm.tasks.getList"
+                else {"stat": "ok", "note": {"id": "u1"}}
+            )
+        )
+        data = (
+            await tools["gtd_contribution_transition"](FakeContext(), task_ref="500", state=state)
+        )["data"]
+        assert data["state"] == state and "rejected" not in data
+
+    @pytest.mark.asyncio
+    async def test_terminal_to_terminal_rejected_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=self._tree(state="accepted"))
+        data = (
+            await tools["gtd_contribution_transition"](
+                FakeContext(), task_ref="500", state="discarded"
+            )
+        )["data"]
+        assert data["rejected"][0]["reason"] == "invalid_input"
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert methods == ["rtm.tasks.getList"], "nothing written"
+
+    @pytest.mark.asyncio
+    async def test_a_task_with_no_contrib_note_is_rejected(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(
+            return_value=self._tree(notes=[{"id": "x", "$t": "2026-07-20 — CONTEXT — why"}])
+        )
+        data = (
+            await tools["gtd_contribution_transition"](
+                FakeContext(), task_ref="500", state="accepted"
+            )
+        )["data"]
+        assert data["rejected"][0]["reason"] == "no_contribution_note"
+        assert [c.args[0] for c in client.call.call_args_list if c.args] == ["rtm.tasks.getList"]
+
+    @pytest.mark.asyncio
+    async def test_an_off_enum_state_is_rejected(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=self._tree())
+        data = (
+            await tools["gtd_contribution_transition"](
+                FakeContext(), task_ref="500", state="drafted"
+            )
+        )["data"]
+        assert data["rejected"][0]["reason"] == "off_enum"
+
+    @pytest.mark.asyncio
+    async def test_a_note_with_no_state_line_gets_one_appended(self, gtd_tools):
+        """6 of 39 live notes are in this state — they must remain transitionable."""
+        tools, client = gtd_tools
+        bare = {
+            "id": "n1",
+            "$t": "2026-07-20 — CONTRIB — research — x\nDrafted: work/x.md\nCategory: research\n",
+            "created": "2026-07-20T09:00:00Z",
+        }
+        client.call = AsyncMock(
+            side_effect=lambda method, **kw: (
+                self._tree(notes=[bare])
+                if method == "rtm.tasks.getList"
+                else {"stat": "ok", "note": {"id": "u1"}}
+            )
+        )
+        data = (
+            await tools["gtd_contribution_transition"](
+                FakeContext(), task_ref="500", state="edited"
+            )
+        )["data"]
+        assert data["previous_state"] == "" and data["state"] == "edited"
+        edits = [
+            c for c in client.call.call_args_list if c.args and c.args[0] == "rtm.tasks.notes.edit"
+        ]
+        assert "State: edited" in edits[0].kwargs["note_text"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_task_errors_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([]))
+        res = await tools["gtd_contribution_transition"](
+            FakeContext(), task_ref="999", state="accepted"
+        )
+        assert res["data"]["error"]["code"] == "task_not_found"
+        assert [c.args[0] for c in client.call.call_args_list if c.args] == ["rtm.tasks.getList"]

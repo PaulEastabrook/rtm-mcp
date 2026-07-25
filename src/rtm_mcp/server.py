@@ -382,6 +382,26 @@ with the scripts they replace.
 - gtd_focus_index: active Areas of Focus grouped by life context — the Horizon-2 view. Pairs with
   gtd_project_index one horizon down.
 
+## GTD Wave 1b — remembered discipline made enforceable (v2.10.0)
+- gtd_item_classify: classify ONE action name into a contribution shape (research|draft|decide|none).
+  OFFLINE — no RTM call. Returns the matched pattern, any also-matched runner-up (the deliberate
+  `evaluate the options` overlap resolves to research and reports decide), and any anti-pattern
+  knock-out so a `none` is explained. `brief` is NOT returned — it is the #calendar_entry tag, not
+  lexical. No match returns none, never a guess.
+- gtd_chat_post gains clear_signal (ai turns only, default True). True = the FINAL reply, which
+  clears #ai_chat_requested and takes the target off the worker's work-list. False = an INTERIM step
+  note: the CHAT note is written and the signal is LEFT SET so the board's live poll survives
+  mid-turn. Never change the default — a caller who forgets it must not strand the board.
+- gtd_surface_create now writes ACTIVITY-REPORT (hyphen), not ACTIVITY_REPORT. The TYPE token is
+  MAPPED from the item type, never derived by .upper() — an input vocabulary must not leak into an
+  output one. The underscore form fails the server's own note-title grammar.
+- gtd_contribution_transition: move a contribution to a terminal state — rewrite the CONTRIB note's
+  State: line and journal a CONTRIB-UPDATE, in one governed call. Validate-then-apply; a rejection
+  writes nothing. drafted -> accepted|edited|discarded (JUDGED) or superseded|stale (INVALIDATED).
+  Terminals are terminal. The judged/invalidated split is load-bearing: the acceptance rate is
+  accepted/(accepted+edited+discarded), so an invalidated contribution must not sit in the
+  denominator. The server is vault-free — it returns artefact_path and the CALLER mirrors phase:.
+
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,
   mapping 1:1 to an RTM API method.

@@ -873,3 +873,79 @@ def build_health_check(
             _issue("action_with_due_date", t)
 
     return {"issues": issues, "count": len(issues), "current_date": today}
+
+
+# --------------------------------------------------------------------------- #
+# Single-item shape classification (Wave 1b) — backs `gtd_item_classify`
+# --------------------------------------------------------------------------- #
+# NOT a detector port. The detectors above sweep the account for MANY candidates and layer
+# progress-ability filters on top; this answers "what shape is THIS name?" for one action —
+# `progression-fanout.md` § 3.created.a, which until now read `shape-patterns.md` at session start
+# and applied the regexes by hand. Applying a fixed pattern list is mechanism, not judgement.
+#
+# It lives in this module deliberately: it REUSES the pattern constants above rather than holding
+# a second copy, so the lockstep contract in `shape-patterns.md` ("an action the fan-out classifies
+# as draft is one the deliverable detector would have found") holds by CONSTRUCTION rather than by
+# two lists being kept in step. `shape-patterns.md` remains the authority; a divergence is
+# corrected there and mirrored here.
+
+#: Priority order. `shape-patterns.md` § Matching rules: first shape that matches AND survives its
+#: own anti-patterns wins. `brief` is deliberately absent — see `classify_shape`.
+SHAPE_ORDER = ("research", "draft", "decide")
+
+#: shape -> (patterns, anti-patterns). Per-shape knock-outs, never global.
+_SHAPE_RULES: dict[str, tuple[list[re.Pattern[str]], list[re.Pattern[str]]]] = {
+    "research": (RESEARCH_PATTERNS, RESEARCH_ANTI),
+    "draft": (DELIVERABLE_PATTERNS, DELIVERABLE_ANTI),
+    "decide": (DECISION_PATTERNS, DECISION_ANTI),
+}
+
+#: The verdict vocabulary (advertised as an advisory enum; asserted equal in test_tool_schemas).
+SHAPE_VERDICTS = frozenset({*SHAPE_ORDER, "none"})
+
+
+def classify_shape(name: str) -> dict[str, Any]:
+    """Classify one action NAME into a contribution shape.
+
+    Returns the winning ``shape`` plus the evidence a caller needs to understand it: the pattern
+    that matched, the lower-priority shapes that also matched (``also_matched``), and every shape
+    whose pattern matched but was knocked out by one of its own anti-patterns (``knocked_out``,
+    with the offending anti-pattern). The agent needs the *why*, not just the verdict.
+
+    ``brief`` is NOT lexical — it is the presence of the ``#calendar_entry`` tag
+    (`shape-patterns.md` § Matching rules 4), which a name-only classifier cannot see. A calendar
+    entry therefore returns ``none`` here and the caller applies the tag check itself.
+
+    No match returns ``none``, never a guess (rule 5): an unclassifiable action is left alone.
+    """
+    text = name or ""
+    winner = ""
+    winning_pattern = ""
+    also: list[str] = []
+    knocked_out: list[dict[str, str]] = []
+
+    for shape in SHAPE_ORDER:
+        patterns, antis = _SHAPE_RULES[shape]
+        hit = next((p for p in patterns if p.search(text)), None)
+        if hit is None:
+            continue
+        blocked = next((a for a in antis if a.search(text)), None)
+        if blocked is not None:
+            knocked_out.append({"shape": shape, "anti_pattern": blocked.pattern})
+            continue
+        if not winner:
+            winner, winning_pattern = shape, hit.pattern
+        else:
+            # A surviving lower-priority match. `evaluate (the) options|alternatives|approaches` is
+            # in BOTH researchPatterns and decisionPatterns; priority resolves it to `research`
+            # (evaluating options is research until someone has to choose). That is deliberate, so
+            # the runner-up is SURFACED rather than silently discarded.
+            also.append(shape)
+
+    return {
+        "name": text,
+        "shape": winner or "none",
+        "matched_pattern": winning_pattern,
+        "also_matched": also,
+        "knocked_out": knocked_out,
+    }

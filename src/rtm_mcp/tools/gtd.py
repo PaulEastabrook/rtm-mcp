@@ -39,6 +39,16 @@ from ..canvas_overlay import apply_graph, lean_seed
 from ..canvas_seed import build_seed
 from ..client import RTMClient
 from ..companion import enrich_files, resolve_vault_root
+from ..contribution import STATE_KIND, TERMINAL_STATES
+from ..contribution import artefact_path as contrib_artefact_path
+from ..contribution import category as contrib_category
+from ..contribution import current_state as contrib_current_state
+from ..contribution import find_state_note as contrib_find_state_note
+from ..contribution import make_update_note as contrib_make_update_note
+from ..contribution import note_title_body as contrib_note_title_body
+from ..contribution import rewrite_state as contrib_rewrite_state
+from ..contribution import state_remainder as contrib_state_remainder
+from ..contribution import validate_transition as validate_contrib_transition
 from ..detectors import (
     ACTION_QUERY,
     CALENDAR_PREP_QUERY,
@@ -57,6 +67,7 @@ from ..detectors import (
     build_topic_clusters,
     build_unblock_candidates,
     capture_completed_queries,
+    classify_shape,
 )
 from ..engage_commit import (
     CALENDAR_ENTRY_TAG,
@@ -143,6 +154,7 @@ from ..gtd_writes import (
     MOSCOW_TO_PRIORITY,
     PROCESSED_LIST,
     RESPONSE_SHAPES,
+    SURFACE_BODY_NOTE_TYPE,
     SURFACE_ENTITY_TYPES,
     SURFACE_ITEM_TYPES,
     SURFACE_RESOLUTIONS,
@@ -220,6 +232,7 @@ from ..models import (
     CLOSE_INBOX_OUTPUT,
     COMPLETE_ACTION_OUTPUT,
     CONSOLIDATE_OUTPUT,
+    CONTRIB_TRANSITION_OUTPUT,
     CREATE_ITEM_OUTPUT,
     CREATE_PROJECT_OUTPUT,
     DECISION_OUTPUT,
@@ -235,6 +248,7 @@ from ..models import (
     HEALTH_CHECK_OUTPUT,
     INBOX_STATE_OUTPUT,
     INBOX_ZERO_OUTPUT,
+    ITEM_CLASSIFY_OUTPUT,
     ITEM_STALE_OUTPUT,
     LINK_DEPENDENCY_OUTPUT,
     PROJECT_CANVAS_OUTPUT,
@@ -341,6 +355,9 @@ _ENGAGE_ITEM_SCHEMA: dict[str, Any] = {
 _PERSPECTIVE_ENUM: dict[str, Any] = {"enum": sorted(VALID_PERSPECTIVES)}
 # Wave 1 reads — sourced from surface_queue.VALID_SURFACES so the advertised set cannot drift.
 _SURFACE_QUEUE_ENUM: dict[str, Any] = {"enum": sorted(VALID_SURFACES)}
+# Wave 1b — the five TERMINAL contribution states (the open state is not a transition target),
+# sourced from contribution.TERMINAL_STATES so the advertised set cannot drift.
+_CONTRIB_STATE_ENUM: dict[str, Any] = {"enum": sorted(TERMINAL_STATES)}
 _DEPTH_ENUM: dict[str, Any] = {"enum": sorted(VALID_DEPTHS)}
 # Phase 1 write tools — the SEVEN Tier-1 structural vocabularies (D1 shared-kernel promotion),
 # each sourced from its canonical frozenset in gtd_writes so the advertised set cannot drift.
@@ -1862,6 +1879,15 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 **_MODE_ENUM,
             ),
         ] = None,
+        clear_signal: Annotated[
+            bool,
+            Field(
+                description="'ai' turns only. True (default) clears #ai_chat_requested — the "
+                "FINAL reply, which takes the target off the worker's work-list. Pass False for "
+                "an INTERIM step note so the board's live poll keeps running mid-turn. Ignored "
+                "for 'me' turns."
+            ),
+        ] = True,
     ) -> dict[str, Any]:
         """GTD — post one turn of the in-board AI conversation surface (the CHAT note class) to a
             task and manage the worker's drain signal in ONE signed call. The board's governed write
@@ -1883,13 +1909,24 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 scope: optional short display label for the title; defaults to the task name.
                 mode: optional posture for a "me" turn — "discuss" | "act" — recorded as a body footer
                     so the worker knows the requested posture (ignored for "ai" turns).
+                clear_signal: "ai" turns only; default True. See INTERIM NOTES below.
+
+            INTERIM NOTES — `clear_signal=False`. An "ai" turn conflates two operations: writing the
+            note AND clearing the drain signal. That is right for the FINAL reply and wrong for the
+            interim step notes a long turn journals at stage boundaries (context read → skill run →
+            filing → reply) so the board renders a live timeline while the worker thinks. Clearing
+            the signal on those would flip #ai_chat_requested false and kill the board's poll
+            mid-turn. Pass clear_signal=False for an interim note: the CHAT note is written and the
+            signal is LEFT SET. The default stays True, so a caller who forgets it strands nothing —
+            the failure mode of the wrong default is a board polling forever.
 
             The #ai_chat_requested / #ai_chat tag writes pass the strict-tag existence gate — both must
             exist in the RTM account (provision once, account-side); a missing tag yields the guided
             error with NOTHING written. Tag removal ("ai" turn) is never gated.
 
-            Returns (on success): {"note": {id, title, created}, "task_id", "role", "tag_changes": [...],
-                "errors": [...]} with the note's transaction_id for undo.
+            Returns (on success): {"note": {id, title, created}, "task_id", "role", "clear_signal",
+                "tag_changes": [...], "errors": [...]} with the note's transaction_id for undo.
+                `tag_changes` is [] for an interim note (clear_signal=False) — nothing was touched.
             Returns (on bad input / strict-tag rejection — nothing written): {"error": {"code":
         "invalid_input" | "task_not_found" | "conversation_read_only" | "strict_tag_rejected"
         | "write_failed",
@@ -2003,9 +2040,15 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "rtm.tasks.addTags", "chat-requested", tags=f"{AI_CHAT_REQUESTED},{AI_CHAT}", **ids
             )
             tag_changes = [f"+{AI_CHAT_REQUESTED}", f"+{AI_CHAT}"]
-        else:
+        elif clear_signal:
             await _write("rtm.tasks.removeTags", "chat-answered", tags=AI_CHAT_REQUESTED, **ids)
             tag_changes = [f"-{AI_CHAT_REQUESTED}"]
+        else:
+            # Interim step note: the turn is NOT finished, so the drain signal stays raised and
+            # the board's poll keeps running. Nothing else differs — the note goes through the
+            # governed write like every other turn, which is the point (it replaces a hand-written
+            # add_note whose title the note-shape gate then had to judge).
+            tag_changes = []
 
         note_tx, note_undoable = get_transaction_info(note_res or {})
         return build_response(
@@ -2017,6 +2060,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 },
                 "task_id": ids["task_id"],
                 "role": role,
+                "clear_signal": clear_signal if role == "ai" else None,
                 "tag_changes": tag_changes,
                 "errors": errors,
             },
@@ -6111,7 +6155,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             "rtm.tasks.notes.add",
             "surface:body",
             cid,
-            note_title=f"{today} — {item_type.upper()} — {title_summary[:50]}",
+            note_title=f"{today} — {SURFACE_BODY_NOTE_TYPE[item_type]} — {title_summary[:50]}",
             note_text=body,
             **nid,
         )
@@ -6865,4 +6909,240 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 today=_account_today(tz),
                 timezone=tz,
             )
+        )
+
+    # ======================================================================= #
+    # Wave 1b — closing remembered-discipline gaps (v2.10.0)
+    # ======================================================================= #
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ITEM_CLASSIFY_OUTPUT)
+    async def gtd_item_classify(
+        ctx: Context,
+        name: Annotated[
+            str,
+            Field(
+                description="The action NAME to classify (the text alone — no id, no lookup). "
+                "Classification is purely lexical."
+            ),
+        ],
+    ) -> dict[str, Any]:
+        """GTD — classify ONE action name into a contribution shape: `research` | `draft` |
+        `decide` | `none`. Use when a newly-created action needs routing to a production agent
+        (`progression-fanout.md` § 3.created.a) — the single-item counterpart to the
+        `gtd_*_candidates` detectors, which sweep the whole account instead.
+
+        Read-only and OFFLINE: no RTM call at all, no timeline, no clock. Pure string matching.
+
+        Why it exists: applying a fixed pattern list is MECHANISM, not judgement. Until now the
+        agent read `shape-patterns.md` at session start and applied the regexes by hand.
+
+        THE PATTERNS ARE THE SAME OBJECTS the detector tools use — not a second copy — so the
+        lockstep contract holds by construction: an action this classifies as `draft` is one
+        `gtd_deliverable_candidates` would have found. `shape-patterns.md` is the authority; a
+        divergence is corrected THERE and mirrored here, never absorbed server-side.
+
+        Rules (all from `shape-patterns.md`): priority order `research` → `draft` → `decide`, and
+        the first shape that matches AND survives its own anti-patterns wins; anti-patterns are
+        per-shape knock-outs, never global; matching is case-insensitive.
+
+        `brief` IS NOT RETURNED. It is not lexical — it is the presence of the `#calendar_entry`
+        tag, which a name-only classifier cannot see. A calendar entry returns `none` here and the
+        caller applies the tag check itself.
+
+        NO MATCH RETURNS `none`, NEVER A GUESS — an unclassifiable action is left alone.
+
+        The known ambiguity, surfaced rather than hidden: `evaluate (the) options|alternatives|
+        approaches` is in BOTH the research and decision pattern sets. Priority resolves it to
+        `research` (evaluating options is research until someone has to choose) and `decide`
+        appears in `also_matched`. That is deliberate, not a defect.
+
+        Args:
+            name: the action name to classify.
+
+        Returns (on success): {"name", "shape" ("research"|"draft"|"decide"|"none"),
+            "matched_pattern" (the winning regex source, "" when none), "also_matched" (surviving
+            lower-priority shapes), "knocked_out": [{shape, anti_pattern}] (a shape whose pattern
+            matched but whose own anti-pattern vetoed it — the *why* behind a `none`)}.
+            Cannot fail.
+        """
+        return build_response(data=classify_shape(name))
+
+    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CONTRIB_TRANSITION_OUTPUT)
+    async def gtd_contribution_transition(
+        ctx: Context,
+        task_ref: Annotated[
+            str,
+            Field(
+                description="The task carrying the contribution — a task id (preferred) or name."
+            ),
+        ],
+        state: Annotated[
+            str,
+            Field(
+                description="The terminal state to move to. JUDGED: 'accepted' (used as-is) | "
+                "'edited' (used with changes) | 'discarded' (not used). INVALIDATED: "
+                "'superseded' (replaced by a newer contribution) | 'stale' (the source moved).",
+                json_schema_extra=_CONTRIB_STATE_ENUM,
+            ),
+        ],
+        note: Annotated[
+            str,
+            optional_string("One-line rationale, folded into the CONTRIB-UPDATE body."),
+        ] = "",
+        artefact_path: Annotated[
+            str | None,
+            optional_string(
+                "Override the artefact path recorded on the CONTRIB note's `Drafted:` line "
+                "(rarely needed — it is read from the note)."
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — transition a contribution to a terminal state: rewrite the CONTRIB note's
+        `State:` line and journal a CONTRIB-UPDATE note, in ONE governed call. Use after Paul has
+        judged an engine-produced contribution (accepted / edited / discarded), or when
+        reassessment invalidates one (superseded / stale).
+
+        ADDITIVE WRITE. Validate-then-apply — a rejected transition writes NOTHING. Every write is
+        transaction-recorded (reversible via `batch_undo`).
+
+        THE STATE MACHINE (canonical: `journaling-lifecycle.md` § "The contribution state
+        machine"). Six states — `drafted` is the only OPEN state and the only legal source:
+
+            drafted → accepted | edited | discarded      (JUDGED — Paul assessed the offer)
+            drafted → superseded | stale                 (INVALIDATED — never assessed)
+
+        JUDGED vs INVALIDATED IS LOAD-BEARING, NOT DECORATIVE. The acceptance rate is
+        `accepted / (accepted + edited + discarded)`. A superseded or stale contribution was never
+        judged, so counting it in the denominator reads as a rejection Paul never made —
+        `gtd_engine_report` excludes the invalidated pair from every rate.
+
+        `edited` EARNS ITS PLACE: it separates *directionally right but unfinished* from *right*.
+        Collapse it into `accepted` and the engine cannot tell "keep going" from "this is the
+        shape".
+
+        THE VAULT MIRROR IS THE CALLER'S. The note's `State:` is the system of record and the
+        artefact's `phase:` mirrors it (inverted 2026-07-25 — RTM is queryable, the vault is not).
+        This server is vault-free, so the response returns `artefact_path` and
+        `vault_mirror_pending`; mirroring `phase:` is the caller's step.
+
+        CONTEXT WORTH KNOWING: nothing has ever transitioned a contribution. Producing agents write
+        `State: drafted` and never touch the note again (live 2026-07-25: 33 `drafted`, zero
+        terminal), which is why `gtd_engine_report`'s 0% acceptance rate is a property of the
+        wiring rather than of the work. A note carrying NO `State:` line — 6 live — is transitioned
+        anyway, with the line appended; refusing would leave exactly those permanently stuck.
+
+        Args:
+            task_ref / state / note / artefact_path: see each.
+
+        Returns (on success): {"task_id", "state", "previous_state", "kind"
+            ("judged"|"invalidated"), "category", "contrib_note_id", "update_note_id",
+            "artefact_path", "vault_mirror_pending", "applied", "errors", "message"}.
+        Returns (on ambiguity): {"candidates": [{id, name, list_id}]} — call again with an id.
+        Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
+            reason ∈ "off_enum" (state not one of the five terminals) | "no_contribution_note"
+            (the task has no CONTRIB/PREP note — nothing to transition) | "invalid_input" (already
+            terminal; terminals are terminal).
+        Returns (on miss): {"error": {"code": "task_not_found", "message": …}} — branch on
+            `error.code`, never the prose.
+        """
+        client: RTMClient = await get_client()
+        ref = await _resolve_ref(client, task_ref, "status:incomplete OR status:completed")
+        if "task" not in ref:
+            return build_response(data=ref)
+        task = ref["task"]
+
+        target = state.strip().lower()
+        contrib = contrib_find_state_note(task)
+        title, body = contrib_note_title_body(contrib) if contrib else ("", "")
+        from_state = contrib_current_state(body) if contrib else ""
+        stale_annotation = contrib_state_remainder(body) if contrib else ""
+
+        rejections = validate_contrib_transition(
+            state=target, note_found=contrib is not None, from_state=from_state
+        )
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "applied": [],
+                    "errors": [],
+                    "task_id": str(task.get("id")),
+                    "state": target,
+                    "previous_state": from_state,
+                    "message": "Transition rejected; nothing was written.",
+                }
+            )
+
+        assert contrib is not None  # validate_transition rejects when it is None
+        applied: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        _write = _writer(applied, errors, client)
+        tz = await client.get_timezone()
+        today = _account_today(tz)
+        ids = {
+            "task_id": task.get("id"),
+            "taskseries_id": task.get("taskseries_id"),
+            "list_id": task.get("list_id"),
+        }
+        artefact = (artefact_path or "").strip() or contrib_artefact_path(body)
+        category_name = contrib_category(body, title)
+
+        # 1. Rewrite the State: line on the CONTRIB/PREP note. RTM stores a note as
+        #    `title\ntext`, so the edit re-sends line 1 as the title and the rewritten remainder
+        #    as the text (the same storage reality the CHAT / ORDER / TMPL-CHILD grammars rely on).
+        await _write(
+            "rtm.tasks.notes.edit",
+            "contrib:state",
+            str(task.get("id")),
+            note_id=contrib.get("id"),
+            note_title=title,
+            note_text=contrib_rewrite_state(body, target),
+            **ids,
+        )
+
+        # 2. Journal the transition as a CONTRIB-UPDATE note.
+        update_title, update_text = contrib_make_update_note(
+            state=target,
+            previous_state=from_state,
+            note=note or "",
+            category_name=category_name,
+            original_note_id=str(contrib.get("id") or ""),
+            artefact=artefact,
+            date=today,
+            superseded_text=stale_annotation,
+        )
+        update_res = await _write(
+            "rtm.tasks.notes.add",
+            "contrib:update-note",
+            str(task.get("id")),
+            note_title=update_title,
+            note_text=update_text,
+            **ids,
+        )
+        update_note = (update_res or {}).get("note", {}) if isinstance(update_res, dict) else {}
+
+        kind = STATE_KIND.get(target, "unknown")
+        return build_response(
+            data={
+                "task_id": str(task.get("id")),
+                "state": target,
+                "previous_state": from_state,
+                "kind": kind,
+                "category": category_name,
+                "contrib_note_id": str(contrib.get("id") or ""),
+                "update_note_id": str(update_note.get("id") or ""),
+                "artefact_path": artefact,
+                "vault_mirror_pending": (
+                    "The note's State: is the system of record and the artefact's phase: mirrors "
+                    "it. This server is vault-free — mirror phase: on the artefact yourself."
+                    if artefact
+                    else ""
+                ),
+                "applied": applied,
+                "errors": errors,
+                "message": (
+                    f"Contribution transitioned {from_state or 'unset'} → {target} ({kind})."
+                ),
+            },
+            timeline_id=client.timeline_id,
         )

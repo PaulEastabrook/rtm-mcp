@@ -90,6 +90,8 @@ READ_ONLY_TOOLS = {
     "gtd_item_stale",
     "gtd_workload_report",
     "gtd_focus_index",
+    # Wave 1b (v2.10.0) — offline, pure string matching; no RTM call at all.
+    "gtd_item_classify",
 }
 DESTRUCTIVE_TOOLS = {
     "delete_task",
@@ -287,6 +289,20 @@ class TestToolAnnotations:
 
 
 class TestClosedVocabularyEnums:
+    async def test_contribution_state_enum_matches_the_terminal_set(self):
+        """The five TERMINAL states — the open state `drafted` is deliberately NOT a transition
+        target, so it must not appear in the advertised enum."""
+        from rtm_mcp.contribution import OPEN_STATE, TERMINAL_STATES
+
+        advertised = (await _props("gtd_contribution_transition"))["state"]["enum"]
+        assert advertised == sorted(TERMINAL_STATES)
+        assert OPEN_STATE not in advertised
+
+    async def test_shape_verdict_vocabulary_is_sourced_from_the_detector_constants(self):
+        from rtm_mcp.detectors import SHAPE_ORDER, SHAPE_VERDICTS
+
+        assert {*SHAPE_ORDER, "none"} == SHAPE_VERDICTS
+
     """Closed-set params expose their legal values, sourced from the canonical constants so the
     advertised enum can never drift from what the handler validates."""
 
