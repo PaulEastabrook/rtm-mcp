@@ -116,7 +116,7 @@ This server provides full access to Remember The Milk's task management features
   optional prog ("now"/"later", from the #ai_progress_requested / #ai_progress_deferred
   tags) so the execute pill reflects committed state on reload, and redacted (bool, from
   the item's #redacted tag); frame.redacted is the project's own #redacted state (set/clear
-  via gtd_set_redaction). File objects (per-action
+  via gtd_item_set_redaction). File objects (per-action
   and project-level frame.files) carry a meta block from the artefact's companion
   metadata when a read-only AI Memory vault is configured (RTM_VAULT_ROOT / AI_MEMORY_DIR
   or the host default); absent vault or companion → no meta. Identify by project_id
@@ -144,7 +144,7 @@ This server provides full access to Remember The Milk's task management features
   project / focus); a shielded action carries no engage data (estimate/energy/exec null, contexts []).
   Project rows carry redacted from their own tag. Backward-compatible for the navigator (reads
   data.projects; the new action fields are additive).
-- gtd_apply_canvas_commit: Constrained write — the single governed write surface for a
+- gtd_canvas_commit: Constrained write — the single governed write surface for a
   project-plan-canvas commit (adds/edits/completes/removes/execute/notes). execute is a
   durable now/later split: now/quick → #ai_progress_requested; later →
   #ai_progress_deferred (switching state drops the stale sibling so an item never carries
@@ -161,7 +161,7 @@ This server provides full access to Remember The Milk's task management features
   (execute/order stay child-only). On any successful commit it also stamps #ai_overlay_refresh_needed on the
   project (the gtd-side finalise engine drains it to refresh the persisted plan-graph overlay);
   that tag must exist in the account under strict-tag mode. Identify the project by project_id.
-- gtd_create_project: Constrained write — the create-sibling of gtd_apply_canvas_commit:
+- gtd_project_create: Constrained write — the create-sibling of gtd_canvas_commit:
   builds a NEW project from a canvas draft (frame {life, focus, name, outcome} + items[]),
   creating the project task under the resolved Area of Focus and its child items parented in
   dependency order, with tags/priorities/dates/estimates, DEPENDS-ON notes (in-draft deps →
@@ -170,7 +170,7 @@ This server provides full access to Remember The Milk's task management features
   strict-tag mode). Validates up-front (strict-tag gate, item types/execute/deps) and writes
   nothing if rejected. Identify the destination area by frame.focus (name or area task id;
   ambiguous name → candidates).
-- gtd_stamp_tokens: Constrained write — stamp durable template-child tokens (tmpl-child/1) on a
+- gtd_item_stamp_tokens: Constrained write — stamp durable template-child tokens (tmpl-child/1) on a
   repeating templated project's children so its dependencies survive recurrence. A bounded,
   idempotent back-fill: for each unstamped open child it writes a TMPL-CHILD note, and re-authors
   each active DEPENDS-ON note with the additive Template-child-id line (RTM copies the notes onto
@@ -211,7 +211,7 @@ This server provides full access to Remember The Milk's task management features
   recency → name. status from tags (#ai_chat_requested→in_flight; else #ai_output_review_needed→
   awaiting_review; else open); project_id/name = nearest #project ancestor. Reads existing chat
   signals — no new tag, vault-free.
-- gtd_set_redaction: Constrained write — mark or unmark a task's #redacted viewing curtain, the
+- gtd_item_set_redaction: Constrained write — mark or unmark a task's #redacted viewing curtain, the
   single governed surface the sandboxed board is given for redaction (it may not call the bare
   add_task_tags / remove_task_tags primitives). Resolves the task's triple by task_id from one
   rtm.tasks.getList (incomplete + completed, so done items redact too); redacted=true → addTags
@@ -226,7 +226,7 @@ This server provides full access to Remember The Milk's task management features
   has_deadline (= RTM has_due_time, a timed due = the GTD hard landscape), blocked (the thin
   plan-graph), postponed, the deterministic pre-triage `suggested` verdict, and redacted (+ the
   localised current_date). Curtain-not-vault: emits `redacted` but never suppresses a field.
-- gtd_apply_engage_commit: Constrained write — the governed commit for an engage-sweep batch (gtd's
+- gtd_engage_commit: Constrained write — the governed commit for an engage-sweep batch (gtd's
   Anti-Corruption Layer over the board's advisory askClaude). Accepts {items:[{id, verdict,
   date_phrase?, note?}]} and re-validates everything server-side (kind/has_deadline/blocked re-derived —
   client flags never trusted); dates resolve through parse_time (Europe/London, authoritative). Maps
@@ -254,12 +254,12 @@ raw list_tasks echo; all read-only (only rtm.tasks.getList + the cached settings
   2-day horizon).
 - gtd_calendar_prep_candidates: upcoming #calendar_entry items needing prep (port of calendar-prep-candidates.ms).
 - gtd_capture_candidates: recent AI contributions whose artefacts may hold promotion candidates.
-- gtd_topic_clusters: cross-project tag/person clusters (candidate emergent projects/themes).
-- gtd_health_check: systemic health audit (stuck projects, missing tags, stale waiting-fors, dated actions).
+- gtd_cluster_candidates: cross-project tag/person clusters (candidate emergent projects/themes).
+- gtd_health_report: systemic health audit (stuck projects, missing tags, stale waiting-fors, dated actions).
 - gtd_query: one GTD collection view — next actions by context, today's field, or a focus area's projects.
 - gtd_inbox_state: the three Inbox_Stuff health signals (depth / unprocessed / awaiting-review) in one read.
 - gtd_waiting_for_queue: the waiting-for chase queue with a >14-day staleness flag.
-- gtd_context: the STATE-first note-reading-protocol bundle for one task (task + notes + siblings +
+- gtd_item_context: the STATE-first note-reading-protocol bundle for one task (task + notes + siblings +
   ancestry) resolved by id or name.
 
 ### GTD Phase 1 writes (governed, additive — the everyday write path)
@@ -268,37 +268,37 @@ validate-then-apply (a rejected write mutates NOTHING), true post-state (the rea
 an echo), and the durable orchestration signal stamped atomically. They carry the Tier-1
 shared-kernel promotion: the seven structural GTD vocabularies (life_context, kind, action_context,
 energy, comms, MoSCoW priority, note_type) are now server-owned advisory enums.
-- gtd_create_item: create ONE clarified action / waiting_for / calendar_entry under a parent — the
+- gtd_item_create: create ONE clarified action / waiting_for / calendar_entry under a parent — the
   server materialises the structural tags from typed facets (a calendar entry gets `action` +
   `calendar_entry`), sets the MoSCoW band, resolves the due phrase via parse_time, writes an
   optional CONTEXT note, and stamps `#ai_overlay_refresh_needed` on the nearest #project ancestor.
   Definition-of-Ready is HARD-GATED per kind.
-- gtd_add_note: write a conforming journal note — the server builds the
+- gtd_note_add: write a conforming journal note — the server builds the
   `YYYY-MM-DD [HH:MM] — TYPE — summary` title and validates body block order. Journalling types
   only; STATE gets its snapshot marker and is latest-wins (the prior STATE note is never deleted).
-- gtd_capture: atomic Inbox_Stuff capture — task (verbatim, parse disabled) + SOURCE note +
+- gtd_inbox_capture: atomic Inbox_Stuff capture — task (verbatim, parse disabled) + SOURCE note +
   `#ai_conversation`. Staged RAW: no life-context/workflow-state tags (there is no tag parameter);
   `pre_analysis` adds an AI ANALYSIS note + `#ai_review`.
-- gtd_transition_state: validated tag transition that stamps the orchestration signal atomically,
+- gtd_item_transition: validated tag transition that stamps the orchestration signal atomically,
   so the caller no longer carries the remembered-fire responsibility. Guards the "exactly one per
   task" invariants over the RESULTING tag set.
 
 ### GTD Phase 2 writes (density, dependency, bulk)
-- gtd_complete_action: DESTRUCTIVE — the dense completion. Writes the COMPLETION note (or an
+- gtd_item_complete: DESTRUCTIVE — the dense completion. Writes the COMPLETION note (or an
   OUTCOME note for a #calendar_entry) BEFORE completing, resolves #ai_output_review_needed →
   #ai_output_approved, completes the task, writes a CASCADE note on the parent project, and stamps
   #ai_overlay_refresh_needed. RETURNS `fanout_events` (completed / waiting_for_resolved /
   calendar_entry_completed / decided) as DATA — those are gtd progression-fanout EVENT names, not
   RTM tags, and a server cannot invoke an agent. Undo via batch_undo.
-- gtd_close_inbox_item: DESTRUCTIVE — closes the clarify loop: a COMPLETION note listing every
+- gtd_inbox_item_close: DESTRUCTIVE — closes the clarify loop: a COMPLETION note listing every
   derived item, then completes the source. The item is COMPLETED, never deleted (audit record).
   Refuses to close if a derived id cannot be resolved.
-- gtd_set_properties: batch scalar edits in one call. Applies the SERIES GUARD — priority and
+- gtd_item_set_properties: batch scalar edits in one call. Applies the SERIES GUARD — priority and
   estimate are taskseries-level in RTM, so the write collapses to one per series and is redirected
   to the nearest-active occurrence; divergent bands are surfaced, never silently picked.
-- gtd_link_dependency: writes a conforming DEPENDS-ON note on the DEPENDENT task + stamps the
+- gtd_dependency_link: writes a conforming DEPENDS-ON note on the DEPENDENT task + stamps the
   overlay-refresh signal. The context.md mirror is a VAULT write and stays gtd-side (the membrane).
-- gtd_batch_transition: DESTRUCTIVE — bulk state transition, ALL-OR-NOTHING, stamping the
+- gtd_item_transition_batch: DESTRUCTIVE — bulk state transition, ALL-OR-NOTHING, stamping the
   orchestration signal for every item. Closes the silent per-item fan-out gap the generic bulk tag
   path leaves.
 
@@ -309,30 +309,30 @@ NOTHING; a mid-apply API failure returns a resumable results/remaining split. Th
 signal is stamped ONCE per affected project, and fan-out EVENT names are returned as data, never
 written as tags. Throughput (measured): RTM has NO multi-task write endpoint, so N items cost N
 rate-limited calls; at most 50 items apply per call and the tail returns in `remaining`.
-- gtd_inbox_zero: apply an approved Inbox_Stuff disposition set (verb: tag | move | complete |
+- gtd_inbox_drain: apply an approved Inbox_Stuff disposition set (verb: tag | move | complete |
   leave). Review with gtd_inbox_state.
-- gtd_chase_sweep: apply an approved chase verdict set over waiting-fors (retickle needs new_due,
+- gtd_waiting_for_sweep: apply an approved chase verdict set over waiting-fors (retickle needs new_due,
   resolved via parse_time before any write | convert_to_action swaps waiting_for→action AND clears
   the tickle | complete | leave). Review with gtd_waiting_for_queue.
-- gtd_consolidate_apply: apply an approved consolidation move set (reparent | link_dependency |
-  complete | promote). Review with gtd_topic_clusters.
+- gtd_cluster_consolidate: apply an approved consolidation move set (reparent | link_dependency |
+  complete | promote). Review with gtd_cluster_candidates.
 
 ### GTD Phase 4a writes (note family, note-edit, dependency-flip)
-- gtd_attach_output: writes the OUTPUT note (with the line-anchored FILING: link the reader parses)
+- gtd_note_attach_output: writes the OUTPUT note (with the line-anchored FILING: link the reader parses)
   on the action + appends the row to the project's OUTPUTS register. Single-note model (the
   validate-note.py / gtd_chat_thread shape), not the GMI two-note pair.
-- gtd_attach_contribution: CONTRIB | CONTRIB-UPDATE | PREP | SOURCE-DRAFT note + the variant's tag
+- gtd_contribution_attach: CONTRIB | CONTRIB-UPDATE | PREP | SOURCE-DRAFT note + the variant's tag
   (ai_contrib_drafted / ai_prep_drafted / ai_speculative). speculative needs #ai_speculative
   provisioned (D8).
-- gtd_annotate_clarification: the Inbox_Stuff Processor's write — AI ANALYSIS note (+ optional
+- gtd_inbox_item_annotate: the Inbox_Stuff Processor's write — AI ANALYSIS note (+ optional
   CLARIFYING QUESTIONS block) + optional rename + #ai_review.
-- gtd_edit_note: the ONLY mutate-in-place note verb, DELIBERATELY BOUNDED — replace_substring |
+- gtd_note_edit: the ONLY mutate-in-place note verb, DELIBERATELY BOUNDED — replace_substring |
   replace_line | set_frontmatter_key | retitle (re-validates the title grammar). No free-form
   overwrite exists; the bounded op-set IS the safety property.
-- gtd_link_dependency gains mode='resolve'|'obsolete' — flips an existing DEPENDS-ON note's
+- gtd_dependency_link gains mode='resolve'|'obsolete' — flips an existing DEPENDS-ON note's
   Status: active → resolved|obsolete and appends `Resolved at: <date>` (default mode='create'
   unchanged).
-NOTE: gtd_transition_state already accepts the #ai_* engine tags — the server existence-gates
+NOTE: gtd_item_transition already accepts the #ai_* engine tags — the server existence-gates
 tags rather than keeping a GTD-only allow-list, so item 2.5 needed no code change.
 
 ### GTD Phase 4b writes (the AI-surface subsystem)
@@ -383,7 +383,7 @@ with the scripts they replace.
   gtd_project_index one horizon down.
 
 ## GTD Wave 1b — remembered discipline made enforceable (v2.10.0)
-- gtd_item_classify: classify ONE action name into a contribution shape (research|draft|decide|none).
+- gtd_item_shape: classify ONE action name into a contribution shape (research|draft|decide|none).
   OFFLINE — no RTM call. Returns the matched pattern, any also-matched runner-up (the deliberate
   `evaluate the options` overlap resolves to research and reports decide), and any anti-pattern
   knock-out so a `none` is explained. `brief` is NOT returned — it is the #calendar_entry tag, not
@@ -401,6 +401,20 @@ with the scripts they replace.
   Terminals are terminal. The judged/invalidated split is load-bearing: the acceptance rate is
   accepted/(accepted+edited+discarded), so an invalidated contribution must not sit in the
   denominator. The server is vault-free — it returns artefact_path and the CALLER mirrors phase:.
+
+## v3.0.0 — renamed GTD tools and deprecated aliases
+25 GTD tools were renamed at v3.0.0 and gtd_query split into three. NOTHING changed behaviour —
+same parameters, same return shapes, same error branches.
+- Prefer the NEW names. All 25 old names remain callable as deprecated aliases (plus gtd_query),
+  removed at v3.1.0; each advertises a byte-identical schema and its description opens
+  "DEPRECATED — renamed to <new> in v3.0.0".
+- The four that actively misled: gtd_health_check -> gtd_health_report (a read named
+  imperatively), gtd_inbox_zero -> gtd_inbox_drain (reads as a state, writes),
+  gtd_complete_action -> gtd_item_complete (handles all three item kinds, not just actions),
+  gtd_item_classify -> gtd_item_shape (an imperative verb on a read-only tool).
+- gtd_query is retired in favour of gtd_item_today (the day's field), gtd_next_actions (context-
+  organised next actions) and gtd_focus_projects (one focus area's projects). Each takes ONLY the
+  parameters its own view needs — `perspective` was a mode parameter, which is a tool boundary.
 
 ## Tool naming convention
 - Bare verbs (add_task, list_tasks, get_task_notes) are generic RTM primitives,

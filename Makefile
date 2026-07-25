@@ -1,4 +1,4 @@
-.PHONY: install dev lint format test test/coverage fingerprints run clean help
+.PHONY: naming install dev lint format test test/coverage fingerprints run clean help
 
 help:
 	@echo "RTM MCP Server - Development Commands"
@@ -35,6 +35,9 @@ test:
 
 test/coverage:
 	uv run pytest --cov=src/rtm_mcp --cov-report=term-missing --cov-report=html
+
+naming:
+	uv run python scripts/check-tool-naming.py
 
 fingerprints:
 	uv run python scripts/dump-tool-fingerprints.py

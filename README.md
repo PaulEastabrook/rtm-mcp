@@ -12,10 +12,10 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Default-List Aware**: `add_task` without a list routes to your configured RTM default list (not the built-in Inbox); `get_lists` surfaces the `smart`/`locked`/`archived` flags so callers can pick a writable target
 - **Strict-Tag Mode** (on by default): the server refuses to apply any tag that doesn't already exist in your account — stopping accidental tag creation at the source, with a guided error that tells the caller how to recover. Set `RTM_STRICT_TAGS=0` to disable.
 - **Batched project read** (`gtd_project_plan`): a whole project plan — project, all descendant items, and every note — in one read-only call (vs `1+N`), as the `project-plan-seed` envelope the GTD canvas consumes. The first of the server's `gtd_`-prefixed domain compositions.
-- **Project-plan canvas tools** (`gtd_project_canvas` + `gtd_apply_canvas_commit` + `gtd_create_project`): a read-only canvas seed with the deterministic plan-graph overlay applied (ordering, blocking, quick-wins), a single governed write surface that validates a whole canvas commit up-front and writes nothing if anything is rejected, and a create-sibling that builds a brand-new project (task + dependency-ordered children + notes/tags + finalise mark) from a canvas draft in one governed call.
+- **Project-plan canvas tools** (`gtd_project_canvas` + `gtd_canvas_commit` + `gtd_project_create`): a read-only canvas seed with the deterministic plan-graph overlay applied (ordering, blocking, quick-wins), a single governed write surface that validates a whole canvas commit up-front and writes nothing if anything is rejected, and a create-sibling that builds a brand-new project (task + dependency-ordered children + notes/tags + finalise mark) from a canvas draft in one governed call.
 - **Portfolio index** (`gtd_project_index`): a read-only roll-up of every active `#project` — life, parent Area-of-Focus, and at-a-glance open/blocked counts + next tickle — in one call, backing the canvas navigator (the Phase C cockpit project picker).
 - **In-board conversation surface** (`gtd_chat_post` + `gtd_chat_thread`): the governed post + cheap-poll path for the project-plan-canvas's AI chat — a new `CHAT` note class on the target task, with the worker's drain-signal tags managed in the same signed call. The board and a headless worker session converse through RTM notes (the system of record), not a live session.
-- **Engage renegotiation surface** (`gtd_engage_seed` + `gtd_apply_engage_commit`): the overdue + soft-parked seed and the governed Anti-Corruption-Layer commit for the engage board's overdue-renegotiation sweep — every legality flag re-derived server-side, nothing written if any item is rejected. Progress verdicts (`draft`/`do_now`/`nudge`) can carry a short sanitised `note` steer, attached as a `STEER` note that shapes the AI first-pass.
+- **Engage renegotiation surface** (`gtd_engage_seed` + `gtd_engage_commit`): the overdue + soft-parked seed and the governed Anti-Corruption-Layer commit for the engage board's overdue-renegotiation sweep — every legality flag re-derived server-side, nothing written if any item is rejected. Progress verdicts (`draft`/`do_now`/`nudge`) can carry a short sanitised `note` steer, attached as a `STEER` note that shapes the AI first-pass.
 - **Undo and Batch Undo**: All write operations return transaction IDs; undo one or many operations with `batch_undo`
 - **Timeline Introspection**: Session transaction log with `get_timeline_info` for reviewing write history
 - **Token Bucket Rate Limiting**: Burst to 3 RPS, sustain ~0.9 RPS with configurable safety margin
@@ -284,13 +284,13 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   applied — `quick` (from `#quick_win`), sibling `deps`, and a dependency-respecting timeline
   order — so the canvas never re-implements GTD ordering/blocking. The timeline order honours the
   latest valid **ORDER note** on the project (the durable manual-order intent written by
-  `gtd_apply_canvas_commit`) as the manual-order bias — cosmetic tiering only, never topology: a
+  `gtd_canvas_commit`) as the manual-order bias — cosmetic tiering only, never topology: a
   consumer never sorts before its producer, unlisted items fall to their cohort end, departed ids
   are pruned, and an invalid note is ignored (fall back to the next-latest valid; none → no bias). Each row also carries an
   optional `prog` (`"now"` from `#ai_progress_requested` / `"later"` from `#ai_progress_deferred`)
   so the execute pill reflects committed state on reload, and `redacted` (bool, from the item's
   `#redacted` tag) so the board can lock the row; `frame.redacted` is the project's own state (set
-  or clear it via `gtd_set_redaction`). Date fields (`d`, `cd`, note dates) are
+  or clear it via `gtd_item_set_redaction`). Date fields (`d`, `cd`, note dates) are
   localised to the account timezone (RTM returns UTC, so BST/DST dues would otherwise render a day
   early). Byte-compatible with the GTD plugin's `build_canvas --emit html-lean` seed. Filed-artefact
   file objects (per-action and the
@@ -318,7 +318,7 @@ you just created elsewhere is picked up without waiting for the cache to expire.
     `{focus_id, focus, life, redacted}` — **including foci with zero active projects**, which the
     per-project rows can never surface; sorted `life` → `focus`. `redacted` is the area's own
     `#redacted` state, so the navigator can collapse a whole focus to one "Redacted Area of Focus"
-    row (set it via `gtd_set_redaction` with the focus id).
+    row (set it via `gtd_item_set_redaction` with the focus id).
   - `actions`: every incomplete child under an active project (actions, waiting-fors and calendar
     entries — all jumpable; not `#test`) as `{action_id, name, project_id, project, focus, life,
     type, due, priority, blocked, estimate, contexts, energy, exec, redacted}` for fast cockpit
@@ -339,7 +339,7 @@ you just created elsewhere is picked up without waiting for the cache to expire.
 
   Counts are vault-free — the enriched overlay stays gtd-side. The response is an object (was a bare
   list pre-1.10.0) but backward-compatible for the existing navigator, which reads `data.projects`.
-- `gtd_apply_canvas_commit` - **Constrained write.** The single governed write surface for a
+- `gtd_canvas_commit` - **Constrained write.** The single governed write surface for a
   canvas commit (order / adds / edits / completes / removes / execute / notes). `execute` is a
   durable now/later split: `now`/`quick` write `#ai_progress_requested`; `later` writes
   `#ai_progress_deferred` (the two are mutually exclusive — switching state drops the stale
@@ -373,7 +373,7 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   the gtd-side finalise engine drains to recompute the persisted plan-graph overlay (so a pure
   edit/reorder/note commit refreshes the enriched tier too, not only `execute` commits). That tag
   must exist in the RTM account under strict-tag mode. Identify the project by `project_id`.
-- `gtd_create_project` - **Constrained write.** The create-sibling of `gtd_apply_canvas_commit`:
+- `gtd_project_create` - **Constrained write.** The create-sibling of `gtd_canvas_commit`:
   builds a **new** project from a canvas draft (`frame` `{life, focus, name, outcome}` + `items[]`).
   Resolves the destination Area of Focus from `frame.focus` (a name — matched against the parents of
   existing `#project` tasks — or an area task id; ambiguous names return a candidate list, and an
@@ -429,7 +429,7 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   (`#ai_chat_requested` → in_flight; else `#ai_output_review_needed` → awaiting_review; else open);
   `project_id`/`project_name` are the nearest `#project` ancestor. No new tag — reads the existing
   chat signals; vault-free.
-- `gtd_set_redaction` - **Constrained write.** Mark or unmark a task's `#redacted` viewing curtain —
+- `gtd_item_set_redaction` - **Constrained write.** Mark or unmark a task's `#redacted` viewing curtain —
   the single governed surface the sandboxed board is given for redaction (it may not call the bare
   `add_task_tags` / `remove_task_tags` primitives). Resolves the task's triple by `task_id` from one
   `rtm.tasks.getList` (spanning incomplete + completed, so done items can be redacted too), then
@@ -443,9 +443,9 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   sweep — every incomplete dated item at/after its date (overdue or due today), each with the
   server-derived flags (`kind`, `has_deadline` = the RTM timed-due primitive, `blocked` from the thin
   plan-graph, `postponed`, `suggested` pre-triage verdict, `redacted`) — in one `rtm.tasks.getList`.
-  The read-sibling of `gtd_apply_engage_commit`. Curtain-not-vault: emits `redacted` but never nulls a
+  The read-sibling of `gtd_engage_commit`. Curtain-not-vault: emits `redacted` but never nulls a
   field on a shielded row (the board is the sole enforcer).
-- `gtd_apply_engage_commit` - **Constrained write.** The single governed write surface for an engage
+- `gtd_engage_commit` - **Constrained write.** The single governed write surface for an engage
   renegotiation-sweep commit — gtd's Anti-Corruption Layer over the untrusted board. Accepts
   `items: [{id, verdict, date_phrase?, note?}]` and re-validates everything server-side (re-deriving
   each item's `kind`/`has_deadline`/`blocked` from a fresh read — the client's flags are never
@@ -475,14 +475,14 @@ GTD-shaped typed projection** (rows carrying `kind` / `priority` / a deep link) 
   defaults to a 2-day horizon).
 - `gtd_calendar_prep_candidates` - upcoming `#calendar_entry` items needing prep.
 - `gtd_capture_candidates` - recent AI contributions whose artefacts may hold promotion candidates.
-- `gtd_topic_clusters` - cross-project tag/person clusters (candidate emergent projects/themes).
-- `gtd_health_check` - systemic health audit (stuck projects, missing tags, stale waiting-fors,
+- `gtd_cluster_candidates` - cross-project tag/person clusters (candidate emergent projects/themes).
+- `gtd_health_report` - systemic health audit (stuck projects, missing tags, stale waiting-fors,
   dated actions) — one broad read (the `.ms` N+1 consolidated).
 - `gtd_query` - one GTD collection view: `next_actions_by_context` | `todays_field` | `focus_projects`.
 - `gtd_inbox_state` - the three `Inbox_Stuff` health signals (depth / unprocessed / awaiting-review)
   in one read.
 - `gtd_waiting_for_queue` - the waiting-for chase queue with a >14-day staleness flag.
-- `gtd_context` - the STATE-first note-reading-protocol bundle for one task (task + notes + siblings
+- `gtd_item_context` - the STATE-first note-reading-protocol bundle for one task (task + notes + siblings
   + ancestry), resolved by id or name, breadth controlled by `depth`.
 
 ##### GTD Wave 1 reads — the MilkScript retirement (v2.9.0, all read-only)
@@ -523,9 +523,30 @@ owning module's docstring and pinned by a test.
 - `gtd_focus_index` - every active Area of Focus grouped by life context, with project and direct-item
   counts: the **Horizon-2 view**, a new capability. Pairs with `gtd_project_index` one horizon down.
 
+##### v3.0.0 — the GTD tool rename (breaking, with aliases)
+25 GTD tools renamed and `gtd_query` split into three, so every name now conforms to the CQS +
+aggregate-grouped standard in [CONTRIBUTING.md](CONTRIBUTING.md) § 2. **Nothing changed
+behaviour** — same parameters, same returns, same errors.
+
+**You probably need to do nothing yet:** all 25 old names remain callable as deprecated aliases
+(plus `gtd_query`), removed at v3.1.0. Each advertises a byte-identical schema and logs its own
+invocation — and that log, not elapsed time, is the gate for removal. Full rename table and
+migration notes: [CHANGELOG.md](CHANGELOG.md).
+
+Four renames fixed names that actively misled: `gtd_health_check` → `gtd_health_report` (a read
+named imperatively), `gtd_inbox_zero` → `gtd_inbox_drain` (reads as a state, writes),
+`gtd_complete_action` → `gtd_item_complete` (handled all three item kinds despite saying
+*action*), and `gtd_item_classify` → `gtd_item_shape` (an imperative verb on a read-only tool —
+the standard drifted four days after it was frozen).
+
+`gtd_query` splits into `gtd_item_today` / `gtd_next_actions` / `gtd_focus_projects`; each takes
+only the parameters its own view needs, so an invalid combination is unrepresentable rather than
+rejected. New: `make naming` runs the D9 conformance check (report-only at v3.0.0, blocking at
+v3.1.0).
+
 ##### GTD Wave 1b — closing remembered-discipline gaps (v2.10.0)
 Each item replaces a rule an agent had to *remember* with one the server enforces.
-- `gtd_item_classify` - classify ONE action name into a contribution shape (`research` | `draft` |
+- `gtd_item_shape` - classify ONE action name into a contribution shape (`research` | `draft` |
   `decide` | `none`) with the matched pattern, any also-matched runner-up, and any anti-pattern
   knock-out. **Offline** — no RTM call at all. Reuses the detectors' own compiled patterns, so the
   `shape-patterns.md` lockstep holds by construction. `brief` is not returned (it is the
@@ -553,20 +574,20 @@ RTM returned, never a pre-write echo — the `move_task` stale-echo class of bug
 orchestration signal stamped atomically. These carry the **Tier-1 shared-kernel promotion**: the
 seven structural GTD vocabularies (`life_context`, `kind`, `action_context`, `energy`, `comms`,
 MoSCoW `priority`, `note_type`) are now **server-owned** advisory enums, asserted drift-proof.
-- `gtd_create_item` - create one clarified `action` / `waiting_for` / `calendar_entry` under a
+- `gtd_item_create` - create one clarified `action` / `waiting_for` / `calendar_entry` under a
   parent. The server materialises the structural tags from typed facets (a calendar entry gets
   `action` **+** `calendar_entry` — `calendar_entry` is a Special Tag, not a workflow state), sets
   the MoSCoW band on RTM's priority field, resolves the due phrase via `parse_time` **before** any
   write, writes an optional CONTEXT note, and stamps `#ai_overlay_refresh_needed` on the nearest
   `#project` ancestor. **Definition-of-Ready is hard-gated** per kind.
-- `gtd_add_note` - write a conforming journal note; the server builds the
+- `gtd_note_add` - write a conforming journal note; the server builds the
   `YYYY-MM-DD [HH:MM] — TYPE — summary` title and validates body block order. Journalling types
   only (side-effect types get their own tools). STATE is latest-wins — the prior STATE note is
   never deleted.
-- `gtd_capture` - atomic `Inbox_Stuff` capture: task (verbatim, SmartAdd disabled) + SOURCE note +
+- `gtd_inbox_capture` - atomic `Inbox_Stuff` capture: task (verbatim, SmartAdd disabled) + SOURCE note +
   `#ai_conversation`. Staged **raw** — there is no tag parameter, so a capture cannot be
   "helpfully" classified; `pre_analysis` adds an AI ANALYSIS note + `#ai_review`.
-- `gtd_transition_state` - validated tag transition that stamps the orchestration signal
+- `gtd_item_transition` - validated tag transition that stamps the orchestration signal
   atomically, retiring the remembered-fire call-site discipline. Guards the "exactly one per task"
   invariants over the resulting tag set.
 

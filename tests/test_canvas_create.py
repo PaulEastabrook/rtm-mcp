@@ -1,4 +1,4 @@
-"""Tests for canvas_create — the pure validators + tag collector for gtd_create_project."""
+"""Tests for canvas_create — the pure validators + tag collector for gtd_project_create."""
 
 from rtm_mcp.canvas_commit import (
     AI_CONVERSATION,

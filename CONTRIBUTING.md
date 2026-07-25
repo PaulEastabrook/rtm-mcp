@@ -45,11 +45,18 @@ module-responsibility table (see § 9, Documentation lockstep).
 
 ## 2. Naming conventions
 
-**This section is design of record.** It was frozen ahead of the Wave 1 build (designed change
-`2026-07-25-gtd-milkscript-retirement`, D6–D14) so new tools are born conformant rather than
-renamed later. The eight v2.9.0 reads are the first cohort built to it; the pre-existing 24
-non-conformant names are renamed in a separate breaking release (Wave 2, v3.0.0) — until then,
-**this section describes the target, and the exceptions below are known debt, not precedent.**
+**This section is design of record, and as of v3.0.0 the whole suite conforms to it.** It was
+frozen ahead of the Wave 1 build (designed change `2026-07-25-gtd-milkscript-retirement`, D6–D14)
+so new tools are born conformant rather than renamed later; the 25 pre-existing non-conformant
+names were renamed in Wave 2 (v3.0.0), where `gtd_query` also split into three. The 25 old names
+remain callable as **deprecated aliases for exactly one release** and are removed at v3.1.0 — an
+alias is not a tool and never appears in a tool count (§ 2.8).
+
+**A conformance check enforces this, and it is not optional** (§ 2.7). The standard drifted within
+four days of being frozen — `gtd_item_classify` shipped in Wave 1b as an imperative verb on a
+read-only tool, in a wave whose own brief claimed conformance. It is `gtd_item_shape` from v3.0.0.
+An unenforced convention is a remembered one, and this programme's whole thesis is that remembered
+discipline fails silently.
 
 ### 2.1 The domain split (unchanged)
 
@@ -77,9 +84,20 @@ The first segment names a domain **area**, which may be an aggregate root (`item
 (`inbox`, `waiting_for`) — a deliberate decision (D12), not an inconsistency: grouping follows how
 the work is actually done, which is what a reader scanning for a tool is looking for.
 
-The acknowledged cost, recorded as a trade rather than an oversight: `gtd_capture` →
-`gtd_inbox_capture` gives up the best name in the suite by ubiquitous-language standards (Allen's
-own verb) to buy grouping.
+The acknowledged cost, recorded as a trade rather than an oversight: `gtd_inbox_capture` (was
+`gtd_capture`) gives up the best name in the suite by ubiquitous-language standards — Allen's own
+verb, reading exactly as Paul would say it — to buy grouping.
+
+**Twelve areas**, one added after the standard was frozen: `contribution`.
+`gtd_contribution_attach` and `gtd_contribution_transition` are two operations on one domain
+object, and splitting them across `note` and `contribution` would have put siblings in different
+places — the precise outcome aggregate grouping exists to prevent. A contribution has a
+**lifecycle** (the six-state machine in `contribution.py`), which is what D12 asks of an area; the
+note is its *storage*, not its identity.
+
+**`gtd_note_attach_output` stays under `note`, and the asymmetry is deliberate.** An output has no
+lifecycle — it is filed, journalled, and done. There is no state machine to hang an aggregate on,
+so grouping it with the note machinery is correct rather than inconsistent.
 
 ### 2.4 Granularity is explicit (D10)
 
@@ -100,18 +118,19 @@ unaided and every query obeys it. The gap was entirely on the write side.
 
 ### 2.5 `item` is an umbrella — use it only when the tool is genuinely one (D13)
 
-`gtd_create_item`'s own schema settles the vocabulary: `kind: action | waiting_for |
-calendar_entry`, with *"(A project is created with `gtd_create_project`.)"*. **Item** means those
+`gtd_item_create`'s own schema settles the vocabulary: `kind: action | waiting_for |
+calendar_entry`, with *"(A project is created with `gtd_project_create`.)"*. **Item** means those
 three kinds; **project** is a peer, not a member.
 
 > Use `item` only when the tool genuinely spans item kinds. Use the specific entity noun
 > (`action`, `project`, `waiting_for`, `calendar_entry`, `focus`) when it does not.
 
-Applying it finds errors in both directions — `gtd_complete_action` handles all three kinds
-despite its name, and a context-organised next-actions read must **not** claim the umbrella (a
-waiting-for is not a next action). `gtd_next_actions` keeps its bare form as a deliberate
-ubiquitous-language exception, like the `*_candidates` family: *Next Actions* is the canonical GTD
-list name and prefixing it degrades it.
+Applying it found errors in both directions. `gtd_complete_action` handled all three kinds despite
+its name and became **`gtd_item_complete`** — a correctness fix, not a style change. And a
+context-organised next-actions read must **not** claim the umbrella (a waiting-for is not a next
+action), so `gtd_next_actions` keeps its bare form as a deliberate ubiquitous-language exception,
+like the `*_candidates` family: *Next Actions* is the canonical GTD list name and prefixing it
+degrades it.
 
 ### 2.6 A scope parameter is fine; a mode parameter is a tool boundary (D11)
 
@@ -128,12 +147,43 @@ The same rule is why an aggregation is a `_report` and a row list is not: `gtd_w
 returns life-context × workflow-state totals, not rows, so it belongs beside `gtd_health_report`
 and `gtd_engine_report` rather than as a `gtd_query` perspective.
 
-### 2.7 Enforcement (D9)
+### 2.7 Enforcement (D9) — `scripts/check-tool-naming.py`
 
-Conventions without enforcement drift — the pre-existing exceptions are the proof. An architect
-audit check flags any tool whose **name form disagrees with its `readOnlyHint` annotation** (a
-noun-phrase name on a writing tool, or an imperative name on a read). It ships in Wave 3, *after*
-the renames land, or it fails on day one for reasons that have nothing to do with drift.
+Conventions without enforcement drift; the pre-existing exceptions were the proof, and
+`gtd_item_classify` drifting four days after the freeze is the proof that the proof was not
+enough. The check flags any tool whose **name form disagrees with its `readOnlyHint` annotation**
+— an imperative verb segment on a read, or a result-noun suffix on a write.
+
+Run it with `make naming` (or `uv run python scripts/check-tool-naming.py`). It introspects the
+live server, so it can never drift from what is actually advertised.
+
+**Report-only at v3.0.0, blocking at v3.1.0.** It cannot block while the deprecated aliases are
+exposed, because the aliases *are* the non-conformant names — it would fire on all 25 by
+construction. `--strict` exits non-zero and is what CI runs from v3.1.0.
+
+**The rule that matters most: a name matching neither lexicon is reported as `unclassifiable`, and
+NEVER silently passes.** A check that quietly passes what it does not recognise is the same silent
+control this programme has now found five times over, and it is exactly how a novel verb would
+escape. `tests/test_tool_naming.py` asserts the check FIRES on a known-bad fixture and on an
+unrecognised one — a conformance check that reports zero findings because it skipped everything is
+worse than no check at all.
+
+### 2.8 Deprecated aliases
+
+A rename ships with the old name retained for **exactly one release**, then removed.
+
+- An alias is a **thin registration of the same function** under the old name
+  (`mcp.tool(name=…)`), never a copied body. One code path per tool.
+- Its description opens `DEPRECATED — renamed to <new> in vX.Y.0; this alias is removed in
+  vX.(Y+1).0.`
+- Aliases are **excluded from every tool count** — README tables, spec inventories, the
+  architecture docs. 55 tools, 25 aliases.
+- Every alias invocation logs at info level. **That log is the gate for removal**, not elapsed
+  time: the aliases go only after a full scheduled-task cycle shows zero hits.
+- Why they exist at all: not for external callers (the design system slots the tool name, so
+  there are none) but for **cross-repo sequencing**. Server and consumers live in separate repos
+  behind an async hand-off, so one is always ahead of the other — and *either* order breaks
+  without aliases.
 
 ## 3. Tool implementation pattern
 

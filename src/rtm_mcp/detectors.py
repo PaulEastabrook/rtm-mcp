@@ -876,7 +876,7 @@ def build_health_check(
 
 
 # --------------------------------------------------------------------------- #
-# Single-item shape classification (Wave 1b) — backs `gtd_item_classify`
+# Single-item shape classification (Wave 1b) — backs `gtd_item_shape`
 # --------------------------------------------------------------------------- #
 # NOT a detector port. The detectors above sweep the account for MANY candidates and layer
 # progress-ability filters on top; this answers "what shape is THIS name?" for one action —

@@ -24,7 +24,7 @@ def test_life_contexts_include_client():
 
 
 def test_item_kinds_exclude_project():
-    # project has its own governed tool (gtd_create_project) with a richer DoR.
+    # project has its own governed tool (gtd_project_create) with a richer DoR.
     assert sorted(w.ITEM_KINDS) == ["action", "calendar_entry", "waiting_for"]
     assert "project" not in w.ITEM_KINDS
 

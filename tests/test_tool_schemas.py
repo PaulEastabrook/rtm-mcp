@@ -75,12 +75,11 @@ READ_ONLY_TOOLS = {
     "gtd_research_candidates",
     "gtd_calendar_prep_candidates",
     "gtd_capture_candidates",
-    "gtd_topic_clusters",
-    "gtd_health_check",
-    "gtd_query",
+    "gtd_cluster_candidates",
+    "gtd_health_report",
     "gtd_inbox_state",
     "gtd_waiting_for_queue",
-    "gtd_context",
+    "gtd_item_context",
     # Wave 1 — the eight MilkScript-retirement reads (v2.9.0).
     "gtd_surface_queue",
     "gtd_engine_report",
@@ -91,20 +90,26 @@ READ_ONLY_TOOLS = {
     "gtd_workload_report",
     "gtd_focus_index",
     # Wave 1b (v2.10.0) — offline, pure string matching; no RTM call at all.
-    "gtd_item_classify",
+    "gtd_item_shape",
+    # v3.0.0 — the three tools gtd_query split into, plus gtd_query itself, which stays a
+    # read-only tool until the alias is removed at v3.1.0.
+    "gtd_item_today",
+    "gtd_next_actions",
+    "gtd_focus_projects",
+    "gtd_query",
 }
 DESTRUCTIVE_TOOLS = {
     "delete_task",
     "delete_list",
     "delete_note",
-    "gtd_apply_canvas_commit",
-    "gtd_apply_engage_commit",
-    "gtd_complete_action",
-    "gtd_close_inbox_item",
-    "gtd_batch_transition",
-    "gtd_inbox_zero",
-    "gtd_chase_sweep",
-    "gtd_consolidate_apply",
+    "gtd_canvas_commit",
+    "gtd_engage_commit",
+    "gtd_item_complete",
+    "gtd_inbox_item_close",
+    "gtd_item_transition_batch",
+    "gtd_inbox_drain",
+    "gtd_waiting_for_sweep",
+    "gtd_cluster_consolidate",
     "gtd_surface_resolve",
 }
 
@@ -274,8 +279,14 @@ class TestToolAnnotations:
             assert ann.get("destructiveHint") is True, f"{name}: not destructiveHint"
 
     async def test_additive_writes_are_non_readonly_non_destructive(self):
+        # Deprecated aliases are excluded: each one INHERITS its target's annotations (pinned by
+        # TestDeprecatedAliases.test_every_alias_advertises_the_same_schema_as_its_target), so
+        # re-listing them here would duplicate that assertion and drift from it at v3.1.0.
+        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
+
         tools = await _tools()
-        additive = set(tools) - READ_ONLY_TOOLS - DESTRUCTIVE_TOOLS
+        aliases = set(DEPRECATED_ALIASES) | {"gtd_query"}
+        additive = set(tools) - READ_ONLY_TOOLS - DESTRUCTIVE_TOOLS - aliases
         assert additive, "expected some additive-write tools"
         for name in additive:
             ann = await _annotations(name)
@@ -315,10 +326,10 @@ class TestClosedVocabularyEnums:
         assert (await _props("move_task_priority"))["direction"]["enum"] == list(MOVE_DIRECTIONS)
 
     async def test_commit_scope_enum(self):
-        assert (await _props("gtd_apply_canvas_commit"))["scope"]["enum"] == sorted(VALID_SCOPES)
+        assert (await _props("gtd_canvas_commit"))["scope"]["enum"] == sorted(VALID_SCOPES)
 
     async def test_commit_execute_value_enum(self):
-        execute = (await _props("gtd_apply_canvas_commit"))["execute"]
+        execute = (await _props("gtd_canvas_commit"))["execute"]
         assert execute["additionalProperties"]["enum"] == sorted(VALID_EXECUTE_COMMIT)
 
     async def test_chat_post_role_and_mode_enums(self):
@@ -327,27 +338,27 @@ class TestClosedVocabularyEnums:
         assert props["mode"]["enum"] == sorted(VALID_MODES)
 
     async def test_engage_commit_items_verdict_enum(self):
-        items = (await _props("gtd_apply_engage_commit"))["items"]
+        items = (await _props("gtd_engage_commit"))["items"]
         assert items["items"]["properties"]["verdict"]["enum"] == sorted(VERDICT_FAMILY)
 
     async def test_query_perspective_enum(self):
         assert (await _props("gtd_query"))["perspective"]["enum"] == sorted(VALID_PERSPECTIVES)
 
     async def test_context_depth_enum(self):
-        assert (await _props("gtd_context"))["depth"]["enum"] == sorted(VALID_DEPTHS)
+        assert (await _props("gtd_item_context"))["depth"]["enum"] == sorted(VALID_DEPTHS)
 
     async def test_tier1_vocabulary_enums_match_canonical_constants(self):
         """The D1 shared-kernel promotion: all SEVEN structural GTD vocabularies are now
         server-owned, and every advertised enum EQUALS its canonical frozenset — so the schema
         can never drift from what the handler validates."""
-        create = await _props("gtd_create_item")
+        create = await _props("gtd_item_create")
         assert create["life_context"]["enum"] == sorted(LIFE_CONTEXTS)
         assert create["kind"]["enum"] == sorted(ITEM_KINDS)
         assert create["action_context"]["enum"] == sorted(ACTION_CONTEXTS)
         assert create["energy"]["enum"] == sorted(ENERGY_LEVELS)
         assert create["comms"]["enum"] == sorted(COMMS_MODES)
         assert create["priority"]["enum"] == sorted(MOSCOW_BANDS)
-        assert (await _props("gtd_add_note"))["note_type"]["enum"] == sorted(JOURNAL_NOTE_TYPES)
+        assert (await _props("gtd_note_add"))["note_type"]["enum"] == sorted(JOURNAL_NOTE_TYPES)
 
 
 class TestStructuredParams:
@@ -355,7 +366,7 @@ class TestStructuredParams:
     description — the tool_params coercion machinery is composed, not replaced."""
 
     async def test_commit_complex_params_are_clean_typed_arrays_objects(self):
-        props = await _props("gtd_apply_canvas_commit")
+        props = await _props("gtd_canvas_commit")
         assert props["adds"]["type"] == "array" and "anyOf" not in props["adds"]
         assert props["execute"]["type"] == "object" and "anyOf" not in props["execute"]
         assert props["order"]["type"] == "array"
@@ -388,9 +399,7 @@ class TestOutputSchemas:
         # gtd_project_plan advertises the project-plan-seed header a caller reads.
         assert "project" in model("gtd_project_plan", "PlanHeader")
         # the commit tool advertises its rejection-reason vocabulary as an enum.
-        assert (
-            "invalid_scope" in model("gtd_apply_canvas_commit", "CommitRejection")["reason"]["enum"]
-        )
+        assert "invalid_scope" in model("gtd_canvas_commit", "CommitRejection")["reason"]["enum"]
         # a task write advertises the Task object a caller chains on.
         assert "id" in model("add_task", "Task")
 
@@ -404,14 +413,10 @@ class TestOutputSchemas:
             schema = tools[tool].to_mcp_tool().outputSchema or {}
             return _find_model(schema, model)["reason"]["enum"]
 
-        assert reason_enum("gtd_apply_canvas_commit", "CommitRejection") == sorted(
-            COMMIT_REJECT_REASONS
-        )
-        assert reason_enum("gtd_create_project", "CreateRejection") == sorted(CREATE_REJECT_REASONS)
-        assert reason_enum("gtd_apply_engage_commit", "EngageRejection") == sorted(
-            ENGAGE_REJECT_REASONS
-        )
-        assert reason_enum("gtd_create_item", "GtdWriteRejection") == sorted(
+        assert reason_enum("gtd_canvas_commit", "CommitRejection") == sorted(COMMIT_REJECT_REASONS)
+        assert reason_enum("gtd_project_create", "CreateRejection") == sorted(CREATE_REJECT_REASONS)
+        assert reason_enum("gtd_engage_commit", "EngageRejection") == sorted(ENGAGE_REJECT_REASONS)
+        assert reason_enum("gtd_item_create", "GtdWriteRejection") == sorted(
             GTD_WRITE_REJECT_REASONS
         )
 
@@ -550,3 +555,100 @@ class TestAdvertisedErrorContract:
         sources = _tool_sources()
         cannot_fail = [n for n in await _tools() if not _reachable_codes(sources.get(n, ""))]
         assert cannot_fail, "derivation marks every tool as failable — it is not discriminating"
+
+
+# --------------------------------------------------------------------------- #
+# v3.0.0 — deprecated aliases and the gtd_query split
+# --------------------------------------------------------------------------- #
+
+
+class TestDeprecatedAliases:
+    """A rename is only safe if the old name reaches the SAME implementation. These prove the
+    delegation rather than assuming it — the failure mode of a rename is silent."""
+
+    async def test_the_alias_set_is_exactly_the_25_renames_plus_gtd_query(self):
+        """Pinned so an alias can be neither quietly forgotten nor quietly added."""
+        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
+
+        tools = await _tools()
+        assert len(DEPRECATED_ALIASES) == 25
+        for old in DEPRECATED_ALIASES:
+            assert old in tools, f"alias missing from the server: {old}"
+        assert "gtd_query" in tools, "the split surface must remain for one release"
+
+    async def test_every_alias_advertises_the_same_schema_as_its_target(self):
+        """Same input schema, same output schema, same annotations — so a caller on the old name
+        sees no difference at all until it is removed."""
+        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
+
+        tools = await _tools()
+        for old, new in DEPRECATED_ALIASES.items():
+            a, b = tools[old].to_mcp_tool(), tools[new].to_mcp_tool()
+            assert a.inputSchema == b.inputSchema, old
+            assert a.outputSchema == b.outputSchema, old
+            assert a.annotations == b.annotations, old
+
+    async def test_every_alias_names_its_replacement_and_removal_version(self):
+        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
+
+        tools = await _tools()
+        for old, new in DEPRECATED_ALIASES.items():
+            desc = tools[old].to_mcp_tool().description or ""
+            assert desc.startswith("DEPRECATED — renamed to "), old
+            assert new in desc.split("\n")[0], old
+            assert "removed in v3.1.0" in desc, old
+        query_desc = tools["gtd_query"].to_mcp_tool().description or ""
+        assert query_desc.startswith("DEPRECATED — split into ")
+        assert "removed in v3.1.0" in query_desc
+
+    async def test_aliases_are_excluded_from_the_tool_count(self):
+        """55 tools, 26 deprecated surfaces. An alias is not a tool."""
+        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
+
+        tools = await _tools()
+        gtd = {n for n in tools if n.startswith("gtd_")}
+        deprecated = set(DEPRECATED_ALIASES) | {"gtd_query"}
+        assert len(gtd - deprecated) == 55
+        assert len(gtd & deprecated) == 26
+
+    async def test_no_alias_target_is_itself_an_alias(self):
+        """A chain would mean a caller on an old name resolves through two hops and the removal
+        at v3.1.0 would break the survivor."""
+        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
+
+        assert not (set(DEPRECATED_ALIASES.values()) & set(DEPRECATED_ALIASES))
+
+    async def test_the_committed_fingerprints_cover_aliases_too(self):
+        """Aliases are advertised, so they carry fingerprints — the freshness guard must see the
+        whole surface, not just the tools."""
+        import json
+
+        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
+
+        committed = json.loads((_REPO_ROOT / "tool-fingerprints.json").read_text())["tools"]
+        for old in (*DEPRECATED_ALIASES, "gtd_query"):
+            assert f"mcp__rtm__{old}" in committed, old
+
+
+class TestGtdQuerySplit:
+    """D11: an invalid parameter combination should be UNREPRESENTABLE, not merely rejected."""
+
+    async def test_each_tool_takes_only_its_own_parameters(self):
+        assert set((await _props("gtd_item_today")) or {}) == set()
+        assert set(await _props("gtd_next_actions")) == {"context"}
+        assert set(await _props("gtd_focus_projects")) == {"focus"}
+
+    async def test_no_split_tool_carries_perspective_forward(self):
+        for name in ("gtd_item_today", "gtd_next_actions", "gtd_focus_projects"):
+            assert "perspective" not in (await _props(name) or {}), name
+
+    async def test_the_cross_perspective_parameters_are_gone(self):
+        """`focus` belonged to one perspective and `context` to another; neither may appear on
+        the other's tool."""
+        assert "focus" not in (await _props("gtd_next_actions"))
+        assert "context" not in (await _props("gtd_focus_projects"))
+
+    async def test_all_three_are_read_only(self):
+        for name in ("gtd_item_today", "gtd_next_actions", "gtd_focus_projects"):
+            ann = await _annotations(name)
+            assert ann.get("readOnlyHint") is True and ann.get("idempotentHint") is True, name

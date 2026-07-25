@@ -17,8 +17,8 @@ survives verbatim as `message`, for humans only.
 (`{"op": ..., "id": ..., "error": str(exc)}`) — that is a different contract, reporting
 partial failure inside a batch that otherwise applied. Unifying it is a separate change.
 
-**One vocabulary, three scoped views.** `gtd_apply_canvas_commit` / `gtd_create_project` /
-`gtd_apply_engage_commit` each advertise a closed `rejected[].reason` enum. Those enums
+**One vocabulary, three scoped views.** `gtd_canvas_commit` / `gtd_project_create` /
+`gtd_engage_commit` each advertise a closed `rejected[].reason` enum. Those enums
 are frozensets of members *of this registry*, declared next to their handlers
 (`canvas_commit.COMMIT_REJECT_REASONS`, `canvas_create.CREATE_REJECT_REASONS`,
 `engage_commit.ENGAGE_REJECT_REASONS`) so per-tool scoping stays honest while the spelling

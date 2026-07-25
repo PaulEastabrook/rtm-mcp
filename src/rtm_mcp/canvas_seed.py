@@ -101,7 +101,7 @@ def map_comms(tags: list[str]) -> str:
 
 def map_prog(tags: list[str]) -> str:
     """Execute tri-state read back from the durable progression tags — the read-side mirror of the
-    commit's execute mapping (gtd_apply_canvas_commit). `now` wins if both are somehow present;
+    commit's execute mapping (gtd_canvas_commit). `now` wins if both are somehow present;
     absent → "" (the template treats absent `prog` as "off"). Server-emitted field, additive to the
     reference build-canvas-seed.py shape (upstream parity is a follow-up)."""
     if "ai_progress_requested" in tags:
@@ -176,7 +176,7 @@ def map_row(row: dict[str, Any]) -> dict[str, Any]:
     if row.get("deps"):
         item["_deps_raw"] = [str(d) for d in row["deps"]]
     # prog: durable execute tri-state read back from the progression tags, so the canvas pill
-    # reflects committed state on reload (round-trips with gtd_apply_canvas_commit's execute write).
+    # reflects committed state on reload (round-trips with gtd_canvas_commit's execute write).
     prog = map_prog(tags)
     if prog:
         item["prog"] = prog

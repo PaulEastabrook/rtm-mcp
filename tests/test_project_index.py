@@ -882,7 +882,7 @@ class TestRedaction:
 class TestCompletedRowGuards:
     """All per-project counts and the action index must exclude completed
     children uniformly — the pure builders can't assume a status:incomplete
-    read (gtd_apply_canvas_commit's read already spans completed)."""
+    read (gtd_canvas_commit's read already spans completed)."""
 
     def _portfolio_with_completed_child(self):
         return [

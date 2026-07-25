@@ -657,7 +657,7 @@ class TestGtdApplyCanvasCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             adds=[
@@ -703,7 +703,7 @@ class TestGtdApplyCanvasCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             adds='[{"type": "action", "text": "New action", '
@@ -729,7 +729,7 @@ class TestGtdApplyCanvasCommit:
         client.get_account_tags = AsyncMock(return_value={"action"})  # missing using_device etc.
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             adds=[{"type": "action", "text": "x", "classifiers": {"context": "using_device"}}],
@@ -745,7 +745,7 @@ class TestGtdApplyCanvasCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists("1")))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             adds=[{"type": "action", "text": "x"}],
@@ -760,7 +760,7 @@ class TestGtdApplyCanvasCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             edits={"intruder": {"priority": "1"}},
@@ -775,7 +775,7 @@ class TestGtdApplyCanvasCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             completes=["c2"],
@@ -792,7 +792,7 @@ class TestGtdApplyCanvasCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, execute={"c1": "now"}
         )
         addtags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
@@ -809,7 +809,7 @@ class TestGtdApplyCanvasCommit:
         tree = _commit_tree_c1_tags(["action", "ai_progress_deferred"])
         client.call = AsyncMock(side_effect=_commit_dispatch(tree, _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, execute={"c1": "now"}
         )
         addtags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
@@ -827,7 +827,7 @@ class TestGtdApplyCanvasCommit:
         tree = _commit_tree_c1_tags(["action", "ai_progress_requested"])
         client.call = AsyncMock(side_effect=_commit_dispatch(tree, _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, execute={"c1": "later"}
         )
         addtags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
@@ -847,7 +847,7 @@ class TestGtdApplyCanvasCommit:
         )
         client.call = AsyncMock(side_effect=_commit_dispatch(tree, _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, execute={"c1": "off"}
         )
         removetags = next(
@@ -866,7 +866,7 @@ class TestGtdApplyCanvasCommit:
         # c1 carries only its workflow tag — no progression directive present
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, execute={"c1": "off"}
         )
         methods = {c.args[0] for c in client.call.call_args_list if c.args}
@@ -881,7 +881,7 @@ class TestGtdApplyCanvasCommit:
         tree = _commit_tree_c1_tags(["action", "ai_progress_requested"])
         client.call = AsyncMock(side_effect=_commit_dispatch(tree, _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, execute={"c1": "off"}
         )
         removetags = next(
@@ -903,7 +903,7 @@ class TestGtdApplyCanvasCommit:
         )
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, execute={"c1": "later"}
         )
         rejected = result["data"]["rejected"]
@@ -929,7 +929,7 @@ class TestGtdApplyCanvasCommit:
         )
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, execute={"c1": "now"}
         )
         assert "rejected" not in result["data"]
@@ -943,7 +943,7 @@ class TestGtdApplyCanvasCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, edits={"c1": {"priority": "1"}}
         )
         stamp = [
@@ -961,7 +961,7 @@ class TestGtdApplyCanvasCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](FakeContext(), project_id=PROJECT_ID)
+        result = await tools["gtd_canvas_commit"](FakeContext(), project_id=PROJECT_ID)
         assert result["data"]["applied"] == []
         stamped = any(
             c.args[0] == "rtm.tasks.addTags" and c.kwargs.get("tags") == "ai_overlay_refresh_needed"
@@ -982,7 +982,7 @@ class TestGtdCommitScope:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, edits={"c1": {"priority": "1"}}
         )
         note = next(c for c in self._commit_notes(client) if c.kwargs.get("note_title") == "COMMIT")
@@ -993,7 +993,7 @@ class TestGtdCommitScope:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, edits={"c1": {"priority": "1"}}, scope="bogus"
         )
         assert result["data"]["applied"] == []
@@ -1006,7 +1006,7 @@ class TestGtdCommitScope:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, edits={"c1": {"priority": "1"}}, scope="item"
         )
         note = next(
@@ -1020,7 +1020,7 @@ class TestGtdCommitScope:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, execute={"c1": "now"}, scope="instant"
         )
         note = next(
@@ -1037,7 +1037,7 @@ class TestGtdCommitScope:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             edits={PROJECT_ID: {"text": "Renamed project"}},
@@ -1059,7 +1059,7 @@ class TestGtdCommitScope:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             edits={PROJECT_ID: {"text": "Renamed project"}},
@@ -1076,7 +1076,7 @@ class TestGtdCommitScope:
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
         # without confirmation → destructive rejection, nothing written
-        rej = await tools["gtd_apply_canvas_commit"](
+        rej = await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, completes=[PROJECT_ID], scope="project"
         )
         assert {r["reason"] for r in rej["data"]["rejected"]} == {"destructive_unconfirmed"}
@@ -1084,7 +1084,7 @@ class TestGtdCommitScope:
 
         # with confirmation → the project is completed
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
-        ok = await tools["gtd_apply_canvas_commit"](
+        ok = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             completes=[PROJECT_ID],
@@ -1100,7 +1100,7 @@ class TestGtdCommitScope:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        ok = await tools["gtd_apply_canvas_commit"](
+        ok = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             removes=[PROJECT_ID],
@@ -1117,7 +1117,7 @@ class TestGtdCommitScope:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             edits={"not-a-child": {"text": "x"}},
@@ -1135,7 +1135,7 @@ class TestGtdCommitScope:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             notes={PROJECT_ID: {"type": "JOURNAL", "text": "Kicked off"}},
@@ -1159,7 +1159,7 @@ class TestGtdCommitScope:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, execute={PROJECT_ID: "now"}
         )
         assert "cross_project" in {r["reason"] for r in result["data"]["rejected"]}
@@ -1177,7 +1177,7 @@ class TestGtdOrderNoteDC4:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, order=["c2", "c1"]
         )
         data = result["data"]
@@ -1209,7 +1209,7 @@ class TestGtdOrderNoteDC4:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             order=["c1", "c2"],
@@ -1237,7 +1237,7 @@ class TestGtdOrderNoteDC4:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(), project_id=PROJECT_ID, edits={"c1": {"priority": "1"}}
         )
         assert result["data"]["order_persisted"] is False
@@ -1251,9 +1251,7 @@ class TestGtdOrderNoteDC4:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
-            FakeContext(), project_id=PROJECT_ID, order=["c2", "c1"]
-        )
+        await tools["gtd_canvas_commit"](FakeContext(), project_id=PROJECT_ID, order=["c2", "c1"])
         stamped = [
             c
             for c in client.call.call_args_list
@@ -1390,7 +1388,7 @@ class TestGtdOrderNoteDC4:
         assert ids.index("111") < ids.index("222")  # producer first — the pin was clamped
 
 
-# ── gtd_create_project ───────────────────────────────────────────────────────
+# ── gtd_project_create ───────────────────────────────────────────────────────
 
 
 def _create_account():
@@ -1447,7 +1445,7 @@ class TestGtdCreateProject:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
 
-        result = await tools["gtd_create_project"](
+        result = await tools["gtd_project_create"](
             FakeContext(),
             frame={
                 "life": "personal",
@@ -1504,7 +1502,7 @@ class TestGtdCreateProject:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
 
-        result = await tools["gtd_create_project"](
+        result = await tools["gtd_project_create"](
             FakeContext(),
             frame={"life": "work", "focus": "Personal", "name": "P"},
             items=[{"id": "d", "type": "action", "text": "Already done", "done": True}],
@@ -1520,7 +1518,7 @@ class TestGtdCreateProject:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
 
-        result = await tools["gtd_create_project"](
+        result = await tools["gtd_project_create"](
             FakeContext(),
             frame={"life": "personal", "focus": "Personal", "name": "P"},
             items=[
@@ -1542,7 +1540,7 @@ class TestGtdCreateProject:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
 
-        result = await tools["gtd_create_project"](
+        result = await tools["gtd_project_create"](
             FakeContext(),
             frame='{"life": "personal", "focus": "Personal", "name": "P"}',
             items='[{"id": "a", "type": "action", "text": "A"}]',
@@ -1564,7 +1562,7 @@ class TestGtdCreateProject:
         )
         client.call = AsyncMock(side_effect=_create_dispatch(account))
 
-        result = await tools["gtd_create_project"](
+        result = await tools["gtd_project_create"](
             FakeContext(),
             frame={"life": "personal", "focus": "Family", "name": "P"},
             items=[{"type": "action", "text": "A"}],
@@ -1578,7 +1576,7 @@ class TestGtdCreateProject:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
 
-        result = await tools["gtd_create_project"](
+        result = await tools["gtd_project_create"](
             FakeContext(),
             frame={"life": "personal", "focus": "Nonexistent Area", "name": "P"},
             items=[{"type": "action", "text": "A"}],
@@ -1592,7 +1590,7 @@ class TestGtdCreateProject:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
 
-        result = await tools["gtd_create_project"](
+        result = await tools["gtd_project_create"](
             FakeContext(),
             frame={"life": "personal", "focus": "Personal"},  # no name
             items=[{"type": "action", "text": "A"}],
@@ -1612,7 +1610,7 @@ class TestGtdCreateProject:
         )  # missing ai_project_needs_finalise
         client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
 
-        result = await tools["gtd_create_project"](
+        result = await tools["gtd_project_create"](
             FakeContext(),
             frame={"life": "personal", "focus": "Personal", "name": "P"},
             items=[{"type": "action", "text": "A"}],
@@ -1640,7 +1638,7 @@ class TestGtdCreateProject:
         )
         client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
 
-        result = await tools["gtd_create_project"](
+        result = await tools["gtd_project_create"](
             FakeContext(),
             frame={"life": "personal", "focus": "Personal", "name": "P"},
             items=[{"id": "a", "type": "action", "text": "A", "execute": "now"}],
@@ -1652,7 +1650,7 @@ class TestGtdCreateProject:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
 
-        await tools["gtd_create_project"](
+        await tools["gtd_project_create"](
             FakeContext(),
             frame={"life": "personal", "focus": "Personal", "name": "P"},
             items=[{"type": "action", "text": "A"}],
@@ -1899,7 +1897,7 @@ class TestGtdProjectIndex:
         assert by_id["102"]["redacted"] is True  # cascade from the redacted project + focus
 
 
-# ── gtd_set_redaction ────────────────────────────────────────────────────────
+# ── gtd_item_set_redaction ────────────────────────────────────────────────────────
 
 
 def _redaction_tree(tags=None):
@@ -1929,7 +1927,7 @@ class TestGtdSetRedaction:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree()))
 
-        result = await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=True)
+        result = await tools["gtd_item_set_redaction"](FakeContext(), task_id="c1", redacted=True)
 
         add = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
         assert add.kwargs["tags"] == "redacted"
@@ -1945,7 +1943,7 @@ class TestGtdSetRedaction:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree(tags=["redacted"])))
 
-        result = await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=False)
+        result = await tools["gtd_item_set_redaction"](FakeContext(), task_id="c1", redacted=False)
 
         methods = [c.args[0] for c in client.call.call_args_list if c.args]
         assert "rtm.tasks.removeTags" in methods
@@ -1959,7 +1957,7 @@ class TestGtdSetRedaction:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree()))
 
-        result = await tools["gtd_set_redaction"](FakeContext(), task_id="nope", redacted=True)
+        result = await tools["gtd_item_set_redaction"](FakeContext(), task_id="nope", redacted=True)
 
         assert "error" in result["data"]
         assert "not found" in result["data"]["error"]["message"]
@@ -1973,7 +1971,7 @@ class TestGtdSetRedaction:
         client.get_account_tags = AsyncMock(return_value=set())  # #redacted not provisioned
         client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree()))
 
-        result = await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=True)
+        result = await tools["gtd_item_set_redaction"](FakeContext(), task_id="c1", redacted=True)
 
         assert result["data"]["error"]["details"]["strict_tag_mode"] is True
         assert "redacted" in result["data"]["error"]["details"]["rejected_tags"]
@@ -1982,19 +1980,19 @@ class TestGtdSetRedaction:
 
     @pytest.mark.asyncio
     async def test_round_trips_on_a_focus_shaped_task(self, gtd_tools):
-        # An Area of Focus is just a task (parent of #project tasks) — gtd_set_redaction resolves by
+        # An Area of Focus is just a task (parent of #project tasks) — gtd_item_set_redaction resolves by
         # id regardless of shape, so redacting a whole focus is the same one governed write.
         tools, client = gtd_tools
         focus_tree = _getlist([_ts("tsArea", AREA_ID, "Hive Mind", tags=["work", "focus"])])
         client.call = AsyncMock(side_effect=_redaction_dispatch(focus_tree))
 
-        add = await tools["gtd_set_redaction"](FakeContext(), task_id=AREA_ID, redacted=True)
+        add = await tools["gtd_item_set_redaction"](FakeContext(), task_id=AREA_ID, redacted=True)
         assert add["data"] == {"task_id": AREA_ID, "redacted": True}
         addc = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
         assert addc.kwargs["task_id"] == AREA_ID and addc.kwargs["tags"] == "redacted"
 
         client.call = AsyncMock(side_effect=_redaction_dispatch(focus_tree))
-        rem = await tools["gtd_set_redaction"](FakeContext(), task_id=AREA_ID, redacted=False)
+        rem = await tools["gtd_item_set_redaction"](FakeContext(), task_id=AREA_ID, redacted=False)
         assert rem["data"] == {"task_id": AREA_ID, "redacted": False}
         remc = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.removeTags")
         assert remc.kwargs["task_id"] == AREA_ID and remc.kwargs["tags"] == "redacted"
@@ -2004,7 +2002,7 @@ class TestGtdSetRedaction:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree()))
 
-        await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=True)
+        await tools["gtd_item_set_redaction"](FakeContext(), task_id="c1", redacted=True)
 
         note = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add")
         assert note.kwargs["note_title"] == "REDACTION"
@@ -2019,7 +2017,7 @@ class TestGtdSetRedaction:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree(tags=["redacted"])))
 
-        await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=False)
+        await tools["gtd_item_set_redaction"](FakeContext(), task_id="c1", redacted=False)
 
         note = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.notes.add")
         assert note.kwargs["note_title"] == "REDACTION"
@@ -2032,7 +2030,7 @@ class TestGtdSetRedaction:
         client.get_account_tags = AsyncMock(return_value=set())  # #redacted not provisioned
         client.call = AsyncMock(side_effect=_redaction_dispatch(_redaction_tree()))
 
-        await tools["gtd_set_redaction"](FakeContext(), task_id="c1", redacted=True)
+        await tools["gtd_item_set_redaction"](FakeContext(), task_id="c1", redacted=True)
 
         methods = {c.args[0] for c in client.call.call_args_list if c.args}
         assert "rtm.tasks.notes.add" not in methods  # nothing written, not even the audit note
@@ -2679,7 +2677,7 @@ class TestGtdCreateProjectDuplicateIds:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
 
-        result = await tools["gtd_create_project"](
+        result = await tools["gtd_project_create"](
             FakeContext(),
             frame={"life": "personal", "focus": "Personal", "name": "P"},
             items=[
@@ -2755,7 +2753,7 @@ class TestGtdStampTokens:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree()))
 
-        result = await tools["gtd_stamp_tokens"](FakeContext(), project_id="rp")
+        result = await tools["gtd_item_stamp_tokens"](FakeContext(), project_id="rp")
         data = result["data"]
         entry = data["projects"][0]
         assert entry["project_id"] == "rp"
@@ -2791,7 +2789,7 @@ class TestGtdStampTokens:
         )
         client.call = AsyncMock(side_effect=_stamp_dispatch(tree))
 
-        result = await tools["gtd_stamp_tokens"](FakeContext(), project_id="rp")
+        result = await tools["gtd_item_stamp_tokens"](FakeContext(), project_id="rp")
         data = result["data"]
         assert data["applied"] == []
         entry = data["projects"][0]
@@ -2806,7 +2804,7 @@ class TestGtdStampTokens:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree(rrule="")))
 
-        result = await tools["gtd_stamp_tokens"](FakeContext(), project_id="rp")
+        result = await tools["gtd_item_stamp_tokens"](FakeContext(), project_id="rp")
         entry = result["data"]["projects"][0]
         assert entry["skipped_reason"] == "not_repeating"
         assert entry["stamped"] == []
@@ -2818,7 +2816,7 @@ class TestGtdStampTokens:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree()))
 
-        result = await tools["gtd_stamp_tokens"](FakeContext(), project_id="rp", dry_run=True)
+        result = await tools["gtd_item_stamp_tokens"](FakeContext(), project_id="rp", dry_run=True)
         data = result["data"]
         assert data["dry_run"] is True
         assert data["applied"] == []
@@ -2833,7 +2831,7 @@ class TestGtdStampTokens:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree()))
 
-        result = await tools["gtd_stamp_tokens"](FakeContext(), project_id="nope")
+        result = await tools["gtd_item_stamp_tokens"](FakeContext(), project_id="nope")
         assert "error" in result["data"]
 
     @pytest.mark.asyncio
@@ -2846,7 +2844,7 @@ class TestGtdStampTokens:
         ]
         client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree(extra=oneoff)))
 
-        result = await tools["gtd_stamp_tokens"](FakeContext())  # no project_id → sweep
+        result = await tools["gtd_item_stamp_tokens"](FakeContext())  # no project_id → sweep
         ids = {p["project_id"] for p in result["data"]["projects"]}
         assert ids == {"rp"}  # only the repeating project
 
@@ -2855,7 +2853,7 @@ class TestGtdStampTokens:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_stamp_dispatch(_repeating_tree()))
 
-        await tools["gtd_stamp_tokens"](FakeContext(), project_id="rp")
+        await tools["gtd_item_stamp_tokens"](FakeContext(), project_id="rp")
         methods = [c.args[0] for c in client.call.call_args_list if c.args]
         assert methods[0] == "rtm.tasks.getList"  # one read first
         assert methods.count("rtm.tasks.getList") == 1
@@ -2883,7 +2881,7 @@ class TestGtdApplyCanvasCommitRepeatingAdds:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree_repeating(), _lists()))
 
-        result = await tools["gtd_apply_canvas_commit"](
+        result = await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             adds=[{"type": "action", "text": "New child"}],
@@ -2899,7 +2897,7 @@ class TestGtdApplyCanvasCommitRepeatingAdds:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
 
-        await tools["gtd_apply_canvas_commit"](
+        await tools["gtd_canvas_commit"](
             FakeContext(),
             project_id=PROJECT_ID,
             adds=[{"type": "action", "text": "New child"}],
@@ -2910,7 +2908,7 @@ class TestGtdApplyCanvasCommitRepeatingAdds:
         assert not any("TMPL-CHILD" in c.kwargs.get("note_title", "") for c in adds)
 
 
-# ── Engage renegotiation surface (gtd_engage_seed / gtd_apply_engage_commit) ──────────────────
+# ── Engage renegotiation surface (gtd_engage_seed / gtd_engage_commit) ──────────────────
 
 
 def _ets(ts_id, task_id, name, due="", tags=None, has_due_time="0", parent="", notes=None):
@@ -3024,12 +3022,12 @@ _PHASE0_ARGS: dict[str, dict[str, Any]] = {
     "gtd_research_candidates": {},
     "gtd_calendar_prep_candidates": {},
     "gtd_capture_candidates": {},
-    "gtd_topic_clusters": {},
-    "gtd_health_check": {},
+    "gtd_cluster_candidates": {},
+    "gtd_health_report": {},
     "gtd_query": {},
     "gtd_inbox_state": {},
     "gtd_waiting_for_queue": {},
-    "gtd_context": {"task_ref": "Alpha"},
+    "gtd_item_context": {"task_ref": "Alpha"},
 }
 
 
@@ -3125,7 +3123,7 @@ class TestGtdCreateItem:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
 
-        res = await tools["gtd_create_item"](
+        res = await tools["gtd_item_create"](
             FakeContext(),
             parent_ref=PROJECT_ID,
             kind="action",
@@ -3165,7 +3163,7 @@ class TestGtdCreateItem:
         system-list set, so a governed create no longer pays an rtm.lists.getList per write."""
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        await tools["gtd_create_item"](
+        await tools["gtd_item_create"](
             FakeContext(),
             parent_ref=PROJECT_ID,
             kind="action",
@@ -3184,7 +3182,7 @@ class TestGtdCreateItem:
     async def test_calendar_entry_carries_action_and_calendar_tag(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_create_item"](
+        res = await tools["gtd_item_create"](
             FakeContext(),
             parent_ref=PROJECT_ID,
             kind="calendar_entry",
@@ -3200,7 +3198,7 @@ class TestGtdCreateItem:
     async def test_dor_gap_rejects_without_writing(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_create_item"](
+        res = await tools["gtd_item_create"](
             FakeContext(),
             parent_ref=PROJECT_ID,
             kind="action",
@@ -3217,7 +3215,7 @@ class TestGtdCreateItem:
     async def test_off_enum_rejects_without_writing(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_create_item"](
+        res = await tools["gtd_item_create"](
             FakeContext(),
             parent_ref=PROJECT_ID,
             kind="action",
@@ -3234,7 +3232,7 @@ class TestGtdCreateItem:
     async def test_unresolvable_due_rejects_without_writing(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account(), parsed_time=None))
-        res = await tools["gtd_create_item"](
+        res = await tools["gtd_item_create"](
             FakeContext(),
             parent_ref=PROJECT_ID,
             kind="waiting_for",
@@ -3250,7 +3248,7 @@ class TestGtdCreateItem:
     async def test_unknown_parent_errors_without_writing(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_create_item"](
+        res = await tools["gtd_item_create"](
             FakeContext(),
             parent_ref="no-such-parent",
             kind="action",
@@ -3269,7 +3267,7 @@ class TestGtdAddNote:
     async def test_writes_conforming_title(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_add_note"](
+        res = await tools["gtd_note_add"](
             FakeContext(),
             task_ref="1001",
             note_type="PROGRESS",
@@ -3286,7 +3284,7 @@ class TestGtdAddNote:
     async def test_state_note_gets_snapshot_marker(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        await tools["gtd_add_note"](
+        await tools["gtd_note_add"](
             FakeContext(), task_ref="1001", note_type="STATE", summary="snap", body="where we are"
         )
         note = _kw_for(client, "rtm.tasks.notes.add")[0]
@@ -3298,7 +3296,7 @@ class TestGtdAddNote:
     async def test_side_effect_note_type_rejected_without_writing(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_add_note"](
+        res = await tools["gtd_note_add"](
             FakeContext(), task_ref="1001", note_type="DEPENDS-ON", summary="x", body=""
         )
         assert "invalid_note_type" in {r["reason"] for r in res["data"]["rejected"]}
@@ -3308,7 +3306,7 @@ class TestGtdAddNote:
     async def test_bad_block_order_rejected_without_writing(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_add_note"](
+        res = await tools["gtd_note_add"](
             FakeContext(),
             task_ref="1001",
             note_type="PROGRESS",
@@ -3324,7 +3322,7 @@ class TestGtdCapture:
     async def test_captures_raw_with_source_note_and_no_classification(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_capture"](FakeContext(), text="Remember the thing")
+        res = await tools["gtd_inbox_capture"](FakeContext(), text="Remember the thing")
         data = res["data"]
         assert data["list_name"] == "Inbox_Stuff" and data["task_id"] == "new1"
         # staged RAW: pipeline provenance only, no life-context / workflow-state tag
@@ -3339,7 +3337,7 @@ class TestGtdCapture:
     async def test_pre_analysis_adds_ai_analysis_note_and_review_tag(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_capture"](
+        res = await tools["gtd_inbox_capture"](
             FakeContext(),
             text="Batch remediation",
             source_type="consumer remediation",
@@ -3354,7 +3352,7 @@ class TestGtdCapture:
     async def test_empty_text_rejected_without_writing(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_capture"](FakeContext(), text="   ")
+        res = await tools["gtd_inbox_capture"](FakeContext(), text="   ")
         assert "missing_parameter" in {r["reason"] for r in res["data"]["rejected"]}
         assert not (set(_methods(client)) & WRITE_METHODS)
 
@@ -3364,7 +3362,7 @@ class TestGtdTransitionState:
     async def test_applies_transition_and_stamps_signal(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_transition_state"](
+        res = await tools["gtd_item_transition"](
             FakeContext(), task_ref="1001", add_tags=["someday"], remove_tags=["action"]
         )
         data = res["data"]
@@ -3383,7 +3381,7 @@ class TestGtdTransitionState:
     async def test_double_workflow_state_rejected_without_writing(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_transition_state"](
+        res = await tools["gtd_item_transition"](
             FakeContext(),
             task_ref="1001",
             add_tags=["someday"],  # existing already has `action`
@@ -3395,7 +3393,7 @@ class TestGtdTransitionState:
     async def test_empty_transition_rejected_without_writing(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_transition_state"](FakeContext(), task_ref="1001")
+        res = await tools["gtd_item_transition"](FakeContext(), task_ref="1001")
         assert "missing_parameter" in {r["reason"] for r in res["data"]["rejected"]}
         assert not (set(_methods(client)) & WRITE_METHODS)
 
@@ -3405,7 +3403,7 @@ class TestGtdTransitionState:
         client.config = MagicMock(strict_tags=True)
         client.get_account_tags = AsyncMock(return_value={"action", "ai_conversation"})
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_transition_state"](
+        res = await tools["gtd_item_transition"](
             FakeContext(), task_ref="1001", add_tags=["brand_new_tag"], remove_tags=["action"]
         )
         assert "strict_tag_rejected" in {r["reason"] for r in res["data"]["rejected"]}
@@ -3419,7 +3417,7 @@ class TestGtdPhase2Writes:
     async def test_complete_action_note_before_complete(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_complete_action"](
+        res = await tools["gtd_item_complete"](
             FakeContext(), task_ref="1001", completion="did it", cascade="project impact"
         )
         data = res["data"]
@@ -3450,9 +3448,7 @@ class TestGtdPhase2Writes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_complete_action"](
-            FakeContext(), task_ref="2001", completion="arrived"
-        )
+        res = await tools["gtd_item_complete"](FakeContext(), task_ref="2001", completion="arrived")
         events = res["data"]["fanout_events"]
         assert events == ["completed", "waiting_for_resolved"]
         written_tags = " ".join(k.get("tags", "") for k in _kw_for(client, "rtm.tasks.addTags"))
@@ -3475,14 +3471,14 @@ class TestGtdPhase2Writes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_complete_action"](
+        res = await tools["gtd_item_complete"](
             FakeContext(), task_ref="3001", completion="went well"
         )
         assert "missing_parameter" in {r["reason"] for r in res["data"]["rejected"]}
         assert not (set(_methods(client)) & WRITE_METHODS)
         # with an outcome it writes an OUTCOME note instead of COMPLETION
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        ok = await tools["gtd_complete_action"](
+        ok = await tools["gtd_item_complete"](
             FakeContext(), task_ref="3001", outcome="Decisions: ship it"
         )
         assert ok["data"]["note_type"] == "OUTCOME"
@@ -3503,7 +3499,7 @@ class TestGtdPhase2Writes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_complete_action"](FakeContext(), task_ref="4001", completion="done")
+        res = await tools["gtd_item_complete"](FakeContext(), task_ref="4001", completion="done")
         assert res["data"]["approval_transition"] is True
         assert any(
             "ai_output_approved" in k.get("tags", "") for k in _kw_for(client, "rtm.tasks.addTags")
@@ -3523,7 +3519,7 @@ class TestGtdPhase2Writes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_close_inbox_item"](
+        res = await tools["gtd_inbox_item_close"](
             FakeContext(), inbox_item_ref="5001", derived_refs=["5002"]
         )
         data = res["data"]
@@ -3540,7 +3536,7 @@ class TestGtdPhase2Writes:
         client.call = AsyncMock(
             side_effect=_write_dispatch(_getlist([_ts("tsI", "5001", "raw capture")]))
         )
-        res = await tools["gtd_close_inbox_item"](
+        res = await tools["gtd_inbox_item_close"](
             FakeContext(), inbox_item_ref="5001", derived_refs=["nope"]
         )
         assert "task_not_found" in {r["reason"] for r in res["data"]["rejected"]}
@@ -3571,7 +3567,9 @@ class TestGtdPhase2Writes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_set_properties"](FakeContext(), task_ref="6002", priority="must")
+        res = await tools["gtd_item_set_properties"](
+            FakeContext(), task_ref="6002", priority="must"
+        )
         data = res["data"]
         assert data["series_collapsed"] is True
         assert data["written_to_task_id"] == "6001"  # soonest-due open occurrence
@@ -3581,7 +3579,9 @@ class TestGtdPhase2Writes:
     async def test_set_properties_one_off_not_redirected(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_set_properties"](FakeContext(), task_ref="1001", priority="should")
+        res = await tools["gtd_item_set_properties"](
+            FakeContext(), task_ref="1001", priority="should"
+        )
         assert res["data"]["series_collapsed"] is False
         assert _kw_for(client, "rtm.tasks.setPriority")[0]["priority"] == "2"
 
@@ -3589,7 +3589,7 @@ class TestGtdPhase2Writes:
     async def test_set_properties_bad_date_rejects_without_writing(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account(), parsed_time=None))
-        res = await tools["gtd_set_properties"](
+        res = await tools["gtd_item_set_properties"](
             FakeContext(), task_ref="1001", due="the 32nd of Smarch"
         )
         assert "bad_date" in {r["reason"] for r in res["data"]["rejected"]}
@@ -3606,7 +3606,7 @@ class TestGtdPhase2Writes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_link_dependency"](
+        res = await tools["gtd_dependency_link"](
             FakeContext(), dependent_ref="7001", upstream_ref="7002", why="payload"
         )
         data = res["data"]
@@ -3622,7 +3622,7 @@ class TestGtdPhase2Writes:
     async def test_link_dependency_self_dep_rejected(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
-        res = await tools["gtd_link_dependency"](
+        res = await tools["gtd_dependency_link"](
             FakeContext(), dependent_ref="1001", upstream_ref="1001", why="x"
         )
         assert "self_dep" in {r["reason"] for r in res["data"]["rejected"]}
@@ -3639,7 +3639,7 @@ class TestGtdPhase2Writes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_batch_transition"](
+        res = await tools["gtd_item_transition_batch"](
             FakeContext(), items=["8001", "8002"], add_tags=["someday"], remove_tags=["action"]
         )
         data = res["data"]
@@ -3658,7 +3658,7 @@ class TestGtdPhase2Writes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_batch_transition"](
+        res = await tools["gtd_item_transition_batch"](
             FakeContext(),
             items=["8001", "does-not-exist"],
             add_tags=["someday"],
@@ -3680,7 +3680,7 @@ class TestGtdPhase2Writes:
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
         # adding `someday` without removing `action` would leave two workflow states
-        res = await tools["gtd_batch_transition"](
+        res = await tools["gtd_item_transition_batch"](
             FakeContext(), items=["8001"], add_tags=["someday"]
         )
         assert res["data"]["applied_count"] == 0
@@ -4033,7 +4033,7 @@ class TestGtdPhase4aNotes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_attach_output"](
+        res = await tools["gtd_note_attach_output"](
             FakeContext(),
             task_ref="1001",
             filing_path="work/p/spec.md",
@@ -4059,7 +4059,7 @@ class TestGtdPhase4aNotes:
         client.call = AsyncMock(
             side_effect=_write_dispatch(_getlist([_ts("a1", "1001", "A", tags=["work", "action"])]))
         )
-        res = await tools["gtd_attach_output"](
+        res = await tools["gtd_note_attach_output"](
             FakeContext(),
             task_ref="1001",
             filing_path="/absolute.md",
@@ -4090,7 +4090,7 @@ class TestGtdPhase4aNotes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        await tools["gtd_attach_output"](
+        await tools["gtd_note_attach_output"](
             FakeContext(),
             task_ref="1001",
             filing_path="p/new.md",
@@ -4106,7 +4106,7 @@ class TestGtdPhase4aNotes:
         tools, client = gtd_tools
         tree = _getlist([_ts("a1", "1001", "Research X", tags=["work", "action"])])
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_attach_contribution"](
+        res = await tools["gtd_contribution_attach"](
             FakeContext(),
             task_ref="1001",
             variant="contrib",
@@ -4129,7 +4129,7 @@ class TestGtdPhase4aNotes:
         client.call = AsyncMock(
             side_effect=_write_dispatch(_getlist([_ts("a1", "1001", "X", tags=["work", "action"])]))
         )
-        res = await tools["gtd_attach_contribution"](
+        res = await tools["gtd_contribution_attach"](
             FakeContext(),
             task_ref="1001",
             variant="speculative",
@@ -4143,7 +4143,7 @@ class TestGtdPhase4aNotes:
         tools, client = gtd_tools
         tree = _getlist([_ts("i1", "5001", "raw stuff", tags=["ai_conversation"])])
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_annotate_clarification"](
+        res = await tools["gtd_inbox_item_annotate"](
             FakeContext(),
             inbox_item_ref="5001",
             analysis_body="2 items found",
@@ -4165,7 +4165,7 @@ class TestGtdPhase4aNotes:
                 _getlist([_ts("i1", "5001", "raw", tags=["ai_conversation"])])
             )
         )
-        res = await tools["gtd_annotate_clarification"](
+        res = await tools["gtd_inbox_item_annotate"](
             FakeContext(),
             inbox_item_ref="5001",
             analysis_body="  ",
@@ -4180,7 +4180,7 @@ class TestGtdPhase4aNotes:
         tree = _getlist([_ts("a1", "1001", "A", tags=["work", "action"], notes=[note])])
         # replace_line: flip the status line
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_edit_note"](
+        res = await tools["gtd_note_edit"](
             FakeContext(),
             task_ref="1001",
             note_ref="n1",
@@ -4196,7 +4196,7 @@ class TestGtdPhase4aNotes:
         note = _note_dict("n1", "2026-07-20 — PROGRESS — x", "body")
         tree = _getlist([_ts("a1", "1001", "A", tags=["work", "action"], notes=[note])])
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_edit_note"](
+        res = await tools["gtd_note_edit"](
             FakeContext(),
             task_ref="1001",
             note_ref="n1",
@@ -4211,7 +4211,7 @@ class TestGtdPhase4aNotes:
         note = _note_dict("n1", "2026-07-20 — PROGRESS — x", "hello")
         tree = _getlist([_ts("a1", "1001", "A", tags=["work", "action"], notes=[note])])
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_edit_note"](
+        res = await tools["gtd_note_edit"](
             FakeContext(),
             task_ref="1001",
             note_ref="n1",
@@ -4225,7 +4225,7 @@ class TestGtdPhase4aNotes:
         tools, client = gtd_tools
         tree = _getlist([_ts("a1", "1001", "A", tags=["work", "action"])])
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_edit_note"](
+        res = await tools["gtd_note_edit"](
             FakeContext(),
             task_ref="1001",
             note_ref="nope",
@@ -4247,7 +4247,7 @@ class TestGtdPhase4aNotes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_transition_state"](
+        res = await tools["gtd_item_transition"](
             FakeContext(),
             task_ref="1001",
             add_tags=["ai_progress_requested"],
@@ -4267,7 +4267,7 @@ class TestGtdPhase4aNotes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_link_dependency"](
+        res = await tools["gtd_dependency_link"](
             FakeContext(),
             dependent_ref="7001",
             upstream_ref="7002",
@@ -4299,7 +4299,7 @@ class TestGtdPhase4aNotes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_link_dependency"](
+        res = await tools["gtd_dependency_link"](
             FakeContext(),
             dependent_ref="7001",
             upstream_ref="7002",
@@ -4321,7 +4321,7 @@ class TestGtdPhase4aNotes:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_link_dependency"](
+        res = await tools["gtd_dependency_link"](
             FakeContext(),
             dependent_ref="7001",
             upstream_ref="7002",
@@ -4346,7 +4346,7 @@ class TestGtdPhase3ProcessOps:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_inbox_zero"](
+        res = await tools["gtd_inbox_drain"](
             FakeContext(),
             dispositions=[
                 {"item_ref": "9001", "verb": "tag", "args": {"tags": ["note"]}},
@@ -4370,7 +4370,7 @@ class TestGtdPhase3ProcessOps:
         client.call = AsyncMock(
             side_effect=_write_dispatch(_getlist([_ts("i1", "9001", "raw one")]))
         )
-        res = await tools["gtd_inbox_zero"](
+        res = await tools["gtd_inbox_drain"](
             FakeContext(),
             dispositions=[
                 {"item_ref": "9001", "verb": "complete"},
@@ -4387,7 +4387,7 @@ class TestGtdPhase3ProcessOps:
         client.call = AsyncMock(
             side_effect=_write_dispatch(_getlist([_ts("i1", "9001", "raw one")]))
         )
-        res = await tools["gtd_inbox_zero"](
+        res = await tools["gtd_inbox_drain"](
             FakeContext(),
             dispositions=[
                 {"item_ref": "9001", "verb": "complete"},
@@ -4407,7 +4407,7 @@ class TestGtdPhase3ProcessOps:
         n = PROCESS_BATCH_CAP + 3
         tree = _getlist([_ts(f"i{i}", str(9000 + i), f"raw {i}") for i in range(n)])
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_inbox_zero"](
+        res = await tools["gtd_inbox_drain"](
             FakeContext(),
             dispositions=[{"item_ref": str(9000 + i), "verb": "leave"} for i in range(n)],
         )
@@ -4428,7 +4428,7 @@ class TestGtdPhase3ProcessOps:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_chase_sweep"](
+        res = await tools["gtd_waiting_for_sweep"](
             FakeContext(),
             verdicts=[
                 {"waiting_for_ref": "9101", "verdict": "retickle", "new_due": "next monday"},
@@ -4451,7 +4451,7 @@ class TestGtdPhase3ProcessOps:
         tools, client = gtd_tools
         tree = _getlist([_ts("w1", "9101", "Waiting A", tags=["work", "waiting_for"])])
         client.call = AsyncMock(side_effect=_write_dispatch(tree, parsed_time=None))
-        res = await tools["gtd_chase_sweep"](
+        res = await tools["gtd_waiting_for_sweep"](
             FakeContext(),
             verdicts=[
                 {"waiting_for_ref": "9101", "verdict": "retickle", "new_due": "the 32nd of Smarch"},
@@ -4474,7 +4474,7 @@ class TestGtdPhase3ProcessOps:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_chase_sweep"](
+        res = await tools["gtd_waiting_for_sweep"](
             FakeContext(),
             verdicts=[
                 {"waiting_for_ref": r, "verdict": "complete"} for r in ("9101", "9102", "9103")
@@ -4499,7 +4499,7 @@ class TestGtdPhase3ProcessOps:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_chase_sweep"](
+        res = await tools["gtd_waiting_for_sweep"](
             FakeContext(), verdicts=[{"waiting_for_ref": "9101", "verdict": "complete"}]
         )
         assert "completed" in res["data"]["fanout_events"]
@@ -4521,7 +4521,7 @@ class TestGtdPhase3ProcessOps:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        res = await tools["gtd_consolidate_apply"](
+        res = await tools["gtd_cluster_consolidate"](
             FakeContext(),
             moves=[
                 {"move_type": "reparent", "task_ref": "9201", "new_parent_ref": PROJECT_ID},
@@ -4548,7 +4548,7 @@ class TestGtdPhase3ProcessOps:
         client.call = AsyncMock(
             side_effect=_write_dispatch(_getlist([_ts("a1", "9201", "X", tags=["work", "action"])]))
         )
-        res = await tools["gtd_consolidate_apply"](
+        res = await tools["gtd_cluster_consolidate"](
             FakeContext(),
             moves=[
                 {
@@ -4573,7 +4573,7 @@ class TestGtdPhase3ProcessOps:
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        await tools["gtd_consolidate_apply"](
+        await tools["gtd_cluster_consolidate"](
             FakeContext(),
             moves=[
                 {"move_type": "promote", "task_ref": "9201"},
@@ -4616,7 +4616,7 @@ class TestGtdPhase0Reads:
     async def test_health_check_shape(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(return_value=_getlist([_ts("tp", "p", "Proj", tags=["project"])]))
-        data = (await tools["gtd_health_check"](FakeContext()))["data"]
+        data = (await tools["gtd_health_report"](FakeContext()))["data"]
         assert data["issues"][0]["category"] == "stuck_project"
         assert data["current_date"]
 
@@ -4631,7 +4631,7 @@ class TestGtdPhase0Reads:
                 ]
             )
         )
-        data = (await tools["gtd_topic_clusters"](FakeContext(), threshold=5))["data"]
+        data = (await tools["gtd_cluster_candidates"](FakeContext(), threshold=5))["data"]
         assert data["count"] == 1 and data["clusters"][0]["anchor"] == "acme"
 
     @pytest.mark.asyncio
@@ -4676,7 +4676,7 @@ class TestGtdPhase0Reads:
         client.call = AsyncMock(
             return_value=_getlist([_ts("t1", "1", "Something", tags=["action"])])
         )
-        res = await tools["gtd_context"](FakeContext(), task_ref="does-not-exist")
+        res = await tools["gtd_item_context"](FakeContext(), task_ref="does-not-exist")
         assert res["data"]["error"]["code"] == "task_not_found"
 
     @pytest.mark.asyncio
@@ -4691,7 +4691,9 @@ class TestGtdPhase0Reads:
         client.call = AsyncMock(
             return_value=_getlist([_ts("t1", "1", "My Task", tags=["action"], notes=[note])])
         )
-        data = (await tools["gtd_context"](FakeContext(), task_ref="1", depth="shallow"))["data"]
+        data = (await tools["gtd_item_context"](FakeContext(), task_ref="1", depth="shallow"))[
+            "data"
+        ]
         assert data["task"]["gtd_type"] == "action"
         assert data["notes"][0]["type"] == "STATE"
 
@@ -4702,7 +4704,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "a1", "verdict": "next_actions"}]
         )
         assert res["data"]["errors"] == []
@@ -4721,7 +4723,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "a1", "verdict": "today"}]
         )
         assert res["data"]["errors"] == []
@@ -4736,7 +4738,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "202", "verdict": "someday"}]
         )
         assert res["data"]["errors"] == []
@@ -4755,7 +4757,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "202", "verdict": "resurface"}]
         )
         assert res["data"]["errors"] == []
@@ -4774,7 +4776,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "a1", "verdict": "draft"}]
         )
         assert res["data"]["errors"] == []
@@ -4788,7 +4790,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "hd", "verdict": "keep"}]
         )
         assert res["data"]["errors"] == []
@@ -4800,7 +4802,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "a1", "verdict": "drop"}]
         )
         assert res["data"]["applied"] == []
@@ -4813,7 +4815,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "hd", "verdict": "next_actions"}]
         )
         assert res["data"]["applied"] == []
@@ -4826,7 +4828,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "a1", "verdict": "obliterate"}]
         )
         assert res["data"]["applied"] == []
@@ -4839,7 +4841,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree(), parse_iso=""))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(),
             items=[{"id": "a1", "verdict": "defer_start", "date_phrase": "the 32nd of Neveruary"}],
         )
@@ -4852,7 +4854,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(),
             items=[{"id": "a1", "verdict": "next_actions"}, {"id": "ghost", "verdict": "keep"}],
         )
@@ -4867,7 +4869,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        await tools["gtd_apply_engage_commit"](
+        await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "a1", "verdict": "next_actions"}]
         )
         assert client.record_transaction.call_count >= 1
@@ -4880,7 +4882,7 @@ class TestGtdApplyEngageCommit:
         # #someday is absent from the account → the gate rejects the someday commit
         client.get_account_tags = AsyncMock(return_value={"ai_conversation"})
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "a1", "verdict": "someday"}]
         )
         assert res["data"]["applied"] == []
@@ -4900,7 +4902,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(),
             items=[{"id": "a1", "verdict": "draft", "note": "chase Roshni re course"}],
         )
@@ -4922,7 +4924,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "a1", "verdict": "do_now", "note": "just do it"}]
         )
         assert res["data"]["errors"] == []
@@ -4939,7 +4941,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "wf", "verdict": "nudge", "note": "chase Bob"}]
         )
         assert res["data"]["errors"] == []
@@ -4955,7 +4957,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(),
             items=[
                 {"id": "a1", "verdict": "today", "note": "should be ignored"},
@@ -4970,7 +4972,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "a1", "verdict": "draft", "note": "x" * 700}]
         )
         assert res["data"]["errors"] == []
@@ -4983,7 +4985,7 @@ class TestGtdApplyEngageCommit:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_engage_dispatch(_engage_tree()))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "a1", "verdict": "draft", "note": {"not": "a string"}}]
         )
         assert res["data"]["errors"] == []
@@ -5019,7 +5021,7 @@ class TestGtdApplyEngageCommit:
         )
         client.call = AsyncMock(side_effect=_engage_dispatch(tree))
 
-        res = await tools["gtd_apply_engage_commit"](
+        res = await tools["gtd_engage_commit"](
             FakeContext(), items=[{"id": "a1", "verdict": "draft", "note": "chase Bob"}]
         )
         assert res["data"]["errors"] == []
@@ -5317,7 +5319,7 @@ class TestWave1bItemClassify:
         """Offline by construction — no read, no write, no timeline."""
         tools, client = gtd_tools
         client.call = AsyncMock()
-        data = (await tools["gtd_item_classify"](FakeContext(), name="Research the vendor"))["data"]
+        data = (await tools["gtd_item_shape"](FakeContext(), name="Research the vendor"))["data"]
         assert data["shape"] == "research"
         assert client.call.call_count == 0
         assert client.record_transaction.call_count == 0
@@ -5325,15 +5327,15 @@ class TestWave1bItemClassify:
     @pytest.mark.asyncio
     async def test_reports_the_known_ambiguity(self, gtd_tools):
         tools, _ = gtd_tools
-        data = (
-            await tools["gtd_item_classify"](FakeContext(), name="Evaluate the options for CRM")
-        )["data"]
+        data = (await tools["gtd_item_shape"](FakeContext(), name="Evaluate the options for CRM"))[
+            "data"
+        ]
         assert data["shape"] == "research" and data["also_matched"] == ["decide"]
 
     @pytest.mark.asyncio
     async def test_explains_a_none_via_knocked_out(self, gtd_tools):
         tools, _ = gtd_tools
-        data = (await tools["gtd_item_classify"](FakeContext(), name="Email about the research"))[
+        data = (await tools["gtd_item_shape"](FakeContext(), name="Email about the research"))[
             "data"
         ]
         assert data["shape"] == "none"
@@ -5568,3 +5570,106 @@ class TestWave1bContributionTransition:
         )
         assert res["data"]["error"]["code"] == "task_not_found"
         assert [c.args[0] for c in client.call.call_args_list if c.args] == ["rtm.tasks.getList"]
+
+
+# =========================================================================== #
+# v3.0.0 — alias delegation proven by CALLING, not by schema comparison
+# =========================================================================== #
+
+
+class TestAliasDelegation:
+    """`test_tool_schemas.TestDeprecatedAliases` proves the aliases ADVERTISE identically. This
+    proves they BEHAVE identically — same input, byte-identical output — because a rename whose
+    alias reaches the wrong implementation fails silently, which is the whole hazard of this wave.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("old", "new", "kwargs"),
+        [
+            ("gtd_health_check", "gtd_health_report", {}),
+            ("gtd_context", "gtd_item_context", {"task_ref": "Alpha"}),
+            ("gtd_topic_clusters", "gtd_cluster_candidates", {}),
+            ("gtd_item_classify", "gtd_item_shape", {"name": "Research the vendor landscape"}),
+        ],
+    )
+    async def test_read_alias_returns_exactly_what_the_new_name_returns(
+        self, gtd_tools, old, new, kwargs
+    ):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", "p1", "Proj", tags=["project", "work"]),
+                _ts("tsA", "10", "Alpha", parent="p1", tags=["action", "work", "acme"]),
+            ]
+        )
+        client.call = AsyncMock(return_value=tree)
+        via_new = await tools[new](FakeContext(), **kwargs)
+        client.call = AsyncMock(return_value=tree)
+        via_old = await tools[old](FakeContext(), **kwargs)
+        assert via_old["data"] == via_new["data"], f"{old} diverged from {new}"
+
+    @pytest.mark.asyncio
+    async def test_every_alias_is_registered_and_callable(self, gtd_tools):
+        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
+
+        tools, _ = gtd_tools
+        for old, new in DEPRECATED_ALIASES.items():
+            assert old in tools, f"alias not registered: {old}"
+            assert new in tools, f"target not registered: {new}"
+
+    @pytest.mark.asyncio
+    async def test_an_alias_logs_its_own_invocation(self, gtd_tools, caplog):
+        """The log is the GATE for dropping the aliases at v3.1.0 — zero hits across a full
+        scheduled-task cycle, not elapsed time. If it stops logging, the gate silently opens."""
+        import logging
+
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([]))
+        with caplog.at_level(logging.INFO, logger="rtm_mcp.tools.gtd"):
+            await tools["gtd_health_check"](FakeContext())
+        assert any(
+            "deprecated tool alias invoked" in r.message and "gtd_health_check" in r.message
+            for r in caplog.records
+        ), "no deprecation log emitted"
+
+    @pytest.mark.asyncio
+    async def test_the_new_name_does_NOT_log_a_deprecation(self, gtd_tools, caplog):
+        import logging
+
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([]))
+        with caplog.at_level(logging.INFO, logger="rtm_mcp.tools.gtd"):
+            await tools["gtd_health_report"](FakeContext())
+        assert not any("deprecated tool alias invoked" in r.message for r in caplog.records)
+
+
+class TestGtdQueryDispatcher:
+    """gtd_query is the one deprecated surface that SPLIT rather than renamed, so it dispatches."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("perspective", "target", "kwargs"),
+        [
+            ("todays_field", "gtd_item_today", {}),
+            ("next_actions_by_context", "gtd_next_actions", {}),
+            ("focus_projects", "gtd_focus_projects", {}),
+        ],
+    )
+    async def test_each_perspective_matches_its_replacement(
+        self, gtd_tools, perspective, target, kwargs
+    ):
+        tools, client = gtd_tools
+        tree = _getlist([_ts("tsA", "10", "Alpha", tags=["action", "work"])])
+        client.call = AsyncMock(return_value=tree)
+        via_new = await tools[target](FakeContext(), **kwargs)
+        client.call = AsyncMock(return_value=tree)
+        via_old = await tools["gtd_query"](FakeContext(), perspective=perspective)
+        assert via_old["data"] == via_new["data"], perspective
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_perspective_is_still_rejected(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value=_getlist([]))
+        res = await tools["gtd_query"](FakeContext(), perspective="nonsense")
+        assert res["data"]["error"]["code"] == "invalid_input"

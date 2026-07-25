@@ -216,7 +216,7 @@ def build_waiting_for_queue(
 
 
 # --------------------------------------------------------------------------- #
-# gtd_context — the STATE-first note-reading-protocol bundle
+# gtd_item_context — the STATE-first note-reading-protocol bundle
 # --------------------------------------------------------------------------- #
 
 

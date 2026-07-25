@@ -1,4 +1,4 @@
-"""Pure helpers for the gtd_apply_canvas_commit write tool.
+"""Pure helpers for the gtd_canvas_commit write tool.
 
 Pure (no IO). Holds the **closed canonical classifier→tag mapping** and the **pure validators**
 the commit tool runs up-front, so the grammar parse and every rejection path are unit-testable
@@ -34,7 +34,7 @@ AI_PROGRESS = "ai_progress_requested"
 AI_PROGRESS_DEFERRED = "ai_progress_deferred"
 # blocked, pending unblock (engine-set; a distinct concept, NOT user-deferred)
 AI_DEFERRED = "ai_deferred_pending_unblock"
-# overlay-refresh mark — stamped on the project by gtd_apply_canvas_commit after ANY successful
+# overlay-refresh mark — stamped on the project by gtd_canvas_commit after ANY successful
 # commit; drained (overlay recomputed + persisted, then removed) by the gtd-side gtd-project-finalise
 # engine. A NEW tag: under strict-tag mode it must be provisioned in RTM before this server version is
 # activated, else the up-front existence gate rejects every commit. The commit-path twin of
@@ -62,7 +62,7 @@ EXECUTE_CLEAR_TAGS = (AI_PROGRESS, AI_PROGRESS_DEFERRED, AI_DEFERRED)
 # note. Scope is a LABEL only — it does not change validation, gating, apply order, or batch_undo.
 VALID_SCOPES = frozenset({"instant", "item", "project", "plan"})
 
-# The complete `rejected[].reason` vocabulary gtd_apply_canvas_commit can emit — the canonical
+# The complete `rejected[].reason` vocabulary gtd_canvas_commit can emit — the canonical
 # source the output-schema model cites (so the advertised enum can never drift from the handler,
 # exactly as the input enums are pinned to VALID_SCOPES / VALID_EXECUTE_COMMIT). Five are produced
 # by `validate_commit` below; `invalid_scope` and `non_canonical_tag` are produced in the tool
