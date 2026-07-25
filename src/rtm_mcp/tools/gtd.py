@@ -7,6 +7,9 @@ data and keeps a future lift of all `gtd_*` tools into a separate server a clean
 mechanical move.
 """
 
+import functools
+import inspect
+import logging
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from zoneinfo import ZoneInfo
@@ -243,6 +246,7 @@ from ..models import (
     ENGAGE_SEED_OUTPUT,
     ENGINE_REPORT_OUTPUT,
     FOCUS_INDEX_OUTPUT,
+    FOCUS_PROJECTS_OUTPUT,
     GTD_CONTEXT_OUTPUT,
     GTD_QUERY_OUTPUT,
     HEALTH_CHECK_OUTPUT,
@@ -250,7 +254,9 @@ from ..models import (
     INBOX_ZERO_OUTPUT,
     ITEM_CLASSIFY_OUTPUT,
     ITEM_STALE_OUTPUT,
+    ITEM_TODAY_OUTPUT,
     LINK_DEPENDENCY_OUTPUT,
+    NEXT_ACTIONS_OUTPUT,
     PROJECT_CANVAS_OUTPUT,
     PROJECT_INDEX_OUTPUT,
     PROJECT_PLAN_OUTPUT,
@@ -312,6 +318,8 @@ from ..tool_params import (
     optional_string,
 )
 from ..urls import build_task_url
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_today() -> str:
@@ -432,10 +440,55 @@ _CONSOLIDATE_MOVE_SCHEMA: dict[str, Any] = {
 }
 
 
+#: Deprecated tool aliases: OLD name -> the v3.0.0 name it delegates to. Registered at the end of
+#: `register_gtd_tools`; removed at v3.1.0 once the alias-invocation log shows zero hits across a
+#: full scheduled-task cycle. An alias is NOT a tool and never appears in a tool count.
+DEPRECATED_ALIASES: dict[str, str] = {
+    "gtd_add_note": "gtd_note_add",
+    "gtd_annotate_clarification": "gtd_inbox_item_annotate",
+    "gtd_apply_canvas_commit": "gtd_canvas_commit",
+    "gtd_apply_engage_commit": "gtd_engage_commit",
+    "gtd_attach_contribution": "gtd_contribution_attach",
+    "gtd_attach_output": "gtd_note_attach_output",
+    "gtd_batch_transition": "gtd_item_transition_batch",
+    "gtd_capture": "gtd_inbox_capture",
+    "gtd_chase_sweep": "gtd_waiting_for_sweep",
+    "gtd_close_inbox_item": "gtd_inbox_item_close",
+    "gtd_complete_action": "gtd_item_complete",
+    "gtd_consolidate_apply": "gtd_cluster_consolidate",
+    "gtd_context": "gtd_item_context",
+    "gtd_create_item": "gtd_item_create",
+    "gtd_create_project": "gtd_project_create",
+    "gtd_edit_note": "gtd_note_edit",
+    "gtd_health_check": "gtd_health_report",
+    "gtd_inbox_zero": "gtd_inbox_drain",
+    "gtd_item_classify": "gtd_item_shape",
+    "gtd_link_dependency": "gtd_dependency_link",
+    "gtd_set_properties": "gtd_item_set_properties",
+    "gtd_set_redaction": "gtd_item_set_redaction",
+    "gtd_stamp_tokens": "gtd_item_stamp_tokens",
+    "gtd_topic_clusters": "gtd_cluster_candidates",
+    "gtd_transition_state": "gtd_item_transition",
+}
+
+
 def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     """Register GTD domain-composition tools."""
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=PROJECT_PLAN_OUTPUT)
+    # Every tool registers through `_tool` rather than `mcp.tool` directly, so its function,
+    # annotations and output schema are recorded once and the deprecated alias registered at the
+    # end of this function inherits them EXACTLY. Repeating them at the alias site would be two
+    # things to keep in step — the defect class this whole programme exists to remove.
+    _registry: dict[str, dict[str, Any]] = {}
+
+    def _tool(**kwargs: Any) -> Any:
+        def decorator(fn: Any) -> Any:
+            _registry[fn.__name__] = {"fn": fn, **kwargs}
+            return mcp.tool(**kwargs)(fn)
+
+        return decorator
+
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=PROJECT_PLAN_OUTPUT)
     async def gtd_project_plan(
         ctx: Context,
         project_id: Annotated[
@@ -527,7 +580,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         tz = await client.get_timezone()
         return build_response(data=build_envelope(parsed, pid, timezone=tz))
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=PROJECT_CANVAS_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=PROJECT_CANVAS_OUTPUT)
     async def gtd_project_canvas(
         ctx: Context,
         project_id: Annotated[
@@ -573,7 +626,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             absent when neither) so the execute pill reflects committed state on reload, and `redacted`
             (bool, from the item's #redacted tag) so the board can lock the row. `frame.redacted` is the
             project's own #redacted state (an open-but-redacted project renders its locked screen without
-            a second lookup). Set/clear #redacted via gtd_set_redaction.
+            a second lookup). Set/clear #redacted via gtd_item_set_redaction.
 
             File objects (per-action `files[]` and project-level `frame.files`) carry `{n, ext, kind,
             path}`; each also gains a `meta` block (the companion `.md`/`.yaml` frontmatter — title,
@@ -667,7 +720,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         return build_response(data=seed, analysis=analysis)
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=PROJECT_INDEX_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=PROJECT_INDEX_OUTPUT)
     async def gtd_project_index(
         ctx: Context,
         include_someday: Annotated[
@@ -753,8 +806,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             }
         )
 
-    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CANVAS_COMMIT_OUTPUT)
-    async def gtd_apply_canvas_commit(
+    @_tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CANVAS_COMMIT_OUTPUT)
+    async def gtd_canvas_commit(
         ctx: Context,
         project_id: Annotated[
             str,
@@ -995,7 +1048,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         rejections = list(validation["rejections"])
 
         gate = await enforce_strict_tags(
-            client, sorted(collect_commit_tags(ops)), tool="gtd_apply_canvas_commit"
+            client, sorted(collect_commit_tags(ops)), tool="gtd_canvas_commit"
         )
         if gate:
             rejections.append(as_rejection(gate))
@@ -1284,8 +1337,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CREATE_PROJECT_OUTPUT)
-    async def gtd_create_project(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CREATE_PROJECT_OUTPUT)
+    async def gtd_project_create(
         ctx: Context,
         frame: Annotated[
             dict[str, Any] | None,
@@ -1317,7 +1370,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ] = None,
     ) -> dict[str, Any]:
         """GTD — the single governed write surface for creating a NEW project from a canvas draft.
-        The create-sibling of gtd_apply_canvas_commit: where commit edits an existing project, this
+        The create-sibling of gtd_canvas_commit: where commit edits an existing project, this
         builds a brand-new one — the project task, its child items (parented, in dependency order),
         tags, priorities/dates/estimates, DEPENDS-ON notes, progression signals, create-then-complete
         for already-done draft items, and the #ai_project_needs_finalise mark that triggers the
@@ -1388,7 +1441,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # ── Phase 1: validate (no writes) ─────────────────────────────────
         rejections = list(validate_create(frame_d, items_l)["rejections"])
         gate = await enforce_strict_tags(
-            client, sorted(collect_create_tags(frame_d, items_l)), tool="gtd_create_project"
+            client, sorted(collect_create_tags(frame_d, items_l)), tool="gtd_project_create"
         )
         if gate:
             rejections.append(as_rejection(gate))
@@ -1649,8 +1702,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=STAMP_TOKENS_OUTPUT)
-    async def gtd_stamp_tokens(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=STAMP_TOKENS_OUTPUT)
+    async def gtd_item_stamp_tokens(
         ctx: Context,
         project_id: Annotated[
             str | None,
@@ -1849,7 +1902,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CHAT_POST_OUTPUT)
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CHAT_POST_OUTPUT)
     async def gtd_chat_post(
         ctx: Context,
         task_id: Annotated[
@@ -2069,7 +2122,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CHAT_THREAD_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CHAT_THREAD_OUTPUT)
     async def gtd_chat_thread(
         ctx: Context,
         task_id: Annotated[
@@ -2147,7 +2200,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         requested = AI_CHAT_REQUESTED in tags
         return build_response(data={"task_id": task["id"], "turns": turns, "requested": requested})
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CHAT_INFLIGHT_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CHAT_INFLIGHT_OUTPUT)
     async def gtd_chat_inflight(ctx: Context) -> dict[str, Any]:
         """GTD — the conversation cockpit's cross-project live band: every incomplete item with an
         open CHAT thread (#ai_chat), across all lists/projects, in one read. The per-project canvas
@@ -2174,8 +2227,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         result = await client.call("rtm.tasks.getList", filter="status:incomplete")
         return build_response(data=build_inflight(parse_tasks_response(result)))
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=SET_REDACTION_OUTPUT)
-    async def gtd_set_redaction(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=SET_REDACTION_OUTPUT)
+    async def gtd_item_set_redaction(
         ctx: Context,
         task_id: Annotated[
             str,
@@ -2236,7 +2289,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         }
 
         if redacted:
-            gate = await enforce_strict_tags(client, [REDACTED_TAG], tool="gtd_set_redaction")
+            gate = await enforce_strict_tags(client, [REDACTED_TAG], tool="gtd_item_set_redaction")
             if gate:
                 return build_response(data=gate)  # nothing written
             tag_method = "rtm.tasks.addTags"
@@ -2247,7 +2300,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # Record the tag-write transaction first (chronological — before the audit note below).
         tag_tx, tag_undoable = get_transaction_info(write_res)
         if tag_tx:
-            client.record_transaction(tag_tx, tag_method, tag_undoable, "gtd_set_redaction")
+            client.record_transaction(tag_tx, tag_method, tag_undoable, "gtd_item_set_redaction")
 
         # One-line audit note recording the toggle. It carries NO #ai_conversation marker — this is a
         # user viewing-state change, not an AI write. Best-effort (a note failure never undoes the tag
@@ -2264,7 +2317,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             note_tx, note_undoable = get_transaction_info(note_res)
             if note_tx:
                 client.record_transaction(
-                    note_tx, "rtm.tasks.notes.add", note_undoable, "gtd_set_redaction:audit"
+                    note_tx, "rtm.tasks.notes.add", note_undoable, "gtd_item_set_redaction:audit"
                 )
         except Exception:  # audit note is best-effort; the tag write is the durable state
             pass
@@ -2276,12 +2329,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id if tag_tx else None,
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ENGAGE_SEED_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ENGAGE_SEED_OUTPUT)
     async def gtd_engage_seed(ctx: Context) -> dict[str, Any]:
         """GTD — return the overdue + soft-parked set for the engage renegotiation sweep: every dated
         item at/after its date, each with server-derived flags. The read ground truth both engage
         surfaces (the chat funnel and the live board, incl. its advisory askClaude) reason over; the
-        read-sibling of gtd_apply_engage_commit. Model: gtd_project_index (same read-only discipline,
+        read-sibling of gtd_engage_commit. Model: gtd_project_index (same read-only discipline,
         same flag-emission style).
 
         Read-only. ONE signed rtm.tasks.getList (status:incomplete) plus a session-cached
@@ -2329,8 +2382,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         "draft": [AI_PROGRESS, AI_CONVERSATION],
     }
 
-    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=ENGAGE_COMMIT_OUTPUT)
-    async def gtd_apply_engage_commit(
+    @_tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=ENGAGE_COMMIT_OUTPUT)
+    async def gtd_engage_commit(
         ctx: Context,
         items: Annotated[
             list[dict[str, Any]] | None,
@@ -2354,7 +2407,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         Anti-Corruption Layer over an untrusted client (the board's askClaude is advisory — it stages
         intent but never authorises a write). Accepts a bounded payload and re-validates EVERYTHING
         server-side, writing NOTHING if any item is rejected (hard-fail, per the verdict grammar). The
-        write-counterpart of gtd_engage_seed; model: gtd_apply_canvas_commit.
+        write-counterpart of gtd_engage_seed; model: gtd_canvas_commit.
 
         The ACL — the ONLY trusted client inputs are each item's `id`, `verdict`, and optional
         `date_phrase` (a hint). Every legality flag (kind, has_deadline, blocked) is RE-DERIVED
@@ -2478,7 +2531,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         # Strict-tag existence gate over the tags the batch would write (all existing gtd tags).
         gate = await enforce_strict_tags(
-            client, sorted(collect_engage_tags(val_items)), tool="gtd_apply_engage_commit"
+            client, sorted(collect_engage_tags(val_items)), tool="gtd_engage_commit"
         )
         if gate:
             rejections.append(as_rejection(gate))
@@ -2703,7 +2756,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         call surface at exactly ["rtm.tasks.getList"])."""
         return parse_tasks_response(await client.call("rtm.tasks.getList", filter=filter_str))
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=REASSESSMENT_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=REASSESSMENT_OUTPUT)
     async def gtd_reassessment_candidates(
         ctx: Context,
         stale_threshold_days: Annotated[
@@ -2744,7 +2797,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=UNBLOCK_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=UNBLOCK_OUTPUT)
     async def gtd_unblock_candidates(
         ctx: Context,
         max_candidates: Annotated[
@@ -2799,7 +2852,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=DECISION_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=DECISION_OUTPUT)
     async def gtd_decision_candidates(
         ctx: Context,
         horizon_days: Annotated[
@@ -2838,7 +2891,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=DELIVERABLE_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=DELIVERABLE_OUTPUT)
     async def gtd_deliverable_candidates(
         ctx: Context,
         horizon_days: Annotated[
@@ -2875,7 +2928,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=RESEARCH_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=RESEARCH_OUTPUT)
     async def gtd_research_candidates(
         ctx: Context,
         horizon_days: Annotated[
@@ -2914,7 +2967,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CALENDAR_PREP_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CALENDAR_PREP_OUTPUT)
     async def gtd_calendar_prep_candidates(
         ctx: Context,
         horizon_days: Annotated[
@@ -2955,7 +3008,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CAPTURE_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CAPTURE_OUTPUT)
     async def gtd_capture_candidates(
         ctx: Context,
         window_days: Annotated[
@@ -2998,8 +3051,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TOPIC_CLUSTERS_OUTPUT)
-    async def gtd_topic_clusters(
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TOPIC_CLUSTERS_OUTPUT)
+    async def gtd_cluster_candidates(
         ctx: Context,
         threshold: Annotated[
             int, Field(description="Minimum items sharing a tag to form a cluster (default 5).")
@@ -3039,8 +3092,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=HEALTH_CHECK_OUTPUT)
-    async def gtd_health_check(ctx: Context) -> dict[str, Any]:
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=HEALTH_CHECK_OUTPUT)
+    async def gtd_health_report(ctx: Context) -> dict[str, Any]:
         """GTD — systemic health audit: stuck projects (no next action), items missing a life or
         workflow-state tag, stale waiting-fors, and actions carrying due dates. A faithful native
         port of `health-check.ms`.
@@ -3063,77 +3116,111 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     # Phase 0 reads — collection / context tools
     # ======================================================================= #
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GTD_QUERY_OUTPUT)
-    async def gtd_query(
+    # `gtd_query(perspective=…)` retired at v3.0.0 and split into the three tools below (D11).
+    # It failed all three parts of the tool-boundary test: `context` was valid only for one
+    # perspective and `focus` only for another; the rows carried different fields per
+    # perspective; and `focus_not_found` applied to one branch alone. Each tool below takes ONLY
+    # the parameters its own view needs, so an invalid combination is now unrepresentable rather
+    # than merely rejected.
+
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=NEXT_ACTIONS_OUTPUT)
+    async def gtd_next_actions(
         ctx: Context,
-        perspective: Annotated[
-            str,
-            Field(
-                description="Which view: 'next_actions_by_context' | 'todays_field' | "
-                "'focus_projects'.",
-                json_schema_extra=_PERSPECTIVE_ENUM,
-            ),
-        ] = "todays_field",
         context: Annotated[
             str | None,
             optional_string(
-                "For next_actions_by_context: filter to one action-context tag (e.g. "
-                "'location_home', 'using_device', 'conversation_email'). Omit for all contexts."
-            ),
-        ] = None,
-        focus: Annotated[
-            str | None,
-            optional_string(
-                "For focus_projects: an Area-of-Focus id or name to scope to. Omit for all foci."
+                "Scope to one action-context tag (e.g. 'location_home', 'using_device', "
+                "'conversation_email'). Omit for every context, grouped."
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """GTD — a GTD-shaped collection view in one read: next actions grouped by context, today's
-        field (due-today + overdue + untagged capture), or a focus area's projects.
+        """GTD — next actions organised by action context: the context lists you work from.
 
-        Read-only: one signed `rtm.tasks.getList` plus a cached timezone read; no write, no
-        timeline. `focus_projects` with a `focus` name resolves it server-side (ambiguous name →
-        candidates; a miss → an error).
+        Read-only: ONE signed `rtm.tasks.getList` plus a cached timezone read; no write, no
+        timeline.
+
+        `context` is a genuine SCOPE parameter, not a mode — it narrows the same row shape rather
+        than changing it, so the return contract is identical whether you pass it or not.
+
+        The bare name is a deliberate ubiquitous-language exception (like the `*_candidates`
+        family): *Next Actions* is GTD's canonical list name and prefixing it degrades it. It is
+        NOT `gtd_item_*` because it is action-only — a waiting-for is not a next action, and
+        neither is a calendar entry.
+
+        A next action is *defined* relative to a project but *organised* by context; this returns
+        the context-organised list. For the project relation, `gtd_project_index` carries a next
+        tickle per project and `gtd_health_report` flags projects with no next action at all.
 
         Args:
-            perspective: the view to return (advisory enum).
-            context: next_actions_by_context only — scope to one action-context tag.
-            focus: focus_projects only — an area id or name to scope to.
+            context: optional action-context tag to scope to.
 
-        Returns (on success): {"perspective", "rows": [{id, name, kind, priority, due, tags,
-            deep_link, ...}], "count"} (rows carry `context` / `focus` per perspective).
-        Returns (on ambiguity, focus name): {"candidates": [{id, name, list_id}]} — call again
-            with focus set to an id.
-        Returns (on bad input / focus miss): {"error": {"code": "invalid_input" (unknown
-            perspective) | "focus_not_found" | "missing_parameter", "message": ...}} — branch on
-            `error.code`, never the prose.
+        Returns (on success): {"perspective": "next_actions_by_context", "context", "rows":
+            [{id, name, kind, priority, due, tags, parent_id, deep_link, context}], "count"} —
+            sorted by context, then name. Cannot fail.
         """
-        if perspective not in VALID_PERSPECTIVES:
-            return build_response(
-                data=build_error(
-                    ErrorCode.INVALID_INPUT,
-                    f"Unknown perspective '{perspective}'. Use one of {sorted(VALID_PERSPECTIVES)}.",
-                    perspective=perspective,
-                )
-            )
         client: RTMClient = await get_client()
         tz = await client.get_timezone()
-        if perspective == "next_actions_by_context":
-            tasks = await _getlist(client, "tag:action AND status:incomplete AND NOT tag:test")
-            return build_response(
-                data=build_query_next_actions(tasks, context=context, timezone=tz)
-            )
-        if perspective == "todays_field":
-            # status:incomplete is REQUIRED here — the list-catalogue TODAY filter is a smart-list
-            # definition whose incomplete-scoping the UI implies; via the API its absence matches
-            # years of completed/recurring dated occurrences (measured: 39k+ rows live).
-            tasks = await _getlist(
-                client,
-                "status:incomplete AND NOT tag:test AND "
-                "((dueBefore:today OR due:today) OR (isTagged:false AND isSubtask:false))",
-            )
-            return build_response(data=build_query_todays_field(tasks, timezone=tz))
-        # focus_projects
+        tasks = await _getlist(client, "tag:action AND status:incomplete AND NOT tag:test")
+        return build_response(data=build_query_next_actions(tasks, context=context, timezone=tz))
+
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ITEM_TODAY_OUTPUT)
+    async def gtd_item_today(ctx: Context) -> dict[str, Any]:
+        """GTD — today's field: everything due today, everything overdue, and untagged top-level
+        capture still waiting to be clarified. The "what am I actually looking at today" read.
+
+        Read-only: ONE signed `rtm.tasks.getList` plus a cached timezone read; no write, no
+        timeline. No parameters — the day's field is the day's field.
+
+        `status:incomplete` is REQUIRED in the filter and is not redundant: the list-catalogue
+        TODAY smart list implies incomplete-scoping in the UI, but via the API its absence matches
+        years of completed and recurring dated occurrences (measured live: 39k+ rows).
+
+        Returns (on success): {"perspective": "todays_field", "rows": [{id, name, kind, priority,
+            due, tags, parent_id, deep_link}], "count"} — overdue first, then by due date.
+            Cannot fail.
+        """
+        client: RTMClient = await get_client()
+        tz = await client.get_timezone()
+        tasks = await _getlist(
+            client,
+            "status:incomplete AND NOT tag:test AND "
+            "((dueBefore:today OR due:today) OR (isTagged:false AND isSubtask:false))",
+        )
+        return build_response(data=build_query_todays_field(tasks, timezone=tz))
+
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=FOCUS_PROJECTS_OUTPUT)
+    async def gtd_focus_projects(
+        ctx: Context,
+        focus: Annotated[
+            str | None,
+            optional_string(
+                "An Area-of-Focus id (preferred) or name to scope to. Omit for every focus area."
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """GTD — the projects inside one Area of Focus (or every area, unscoped).
+
+        Read-only: ONE signed `rtm.tasks.getList` plus a cached timezone read; no write, no
+        timeline. A `focus` NAME is resolved server-side — an ambiguous name returns candidates, a
+        miss returns a typed error.
+
+        Kept as its own tool rather than folded into `gtd_project_index` (D14): that is a BFF
+        bundle built for the navigator, returning the whole portfolio plus the focus list plus a
+        flat action index. Answering "which projects are in THIS area?" from it would mean pulling
+        everything and filtering client-side — the N+1 argument inverted. Use `gtd_focus_index`
+        for the areas themselves (Horizon 2).
+
+        Args:
+            focus: an Area-of-Focus id or name to scope to; omit for all.
+
+        Returns (on success): {"perspective": "focus_projects", "rows": [{id, name, kind,
+            priority, due, tags, parent_id, deep_link, focus, focus_id}], "count"}.
+        Returns (on ambiguity): {"candidates": [{id, name, list_id}]} — call again with an id.
+        Returns (on miss): {"error": {"code": "focus_not_found", "message": ...}} — branch on
+            `error.code`, never the prose.
+        """
+        client: RTMClient = await get_client()
+        tz = await client.get_timezone()
         parsed = await _getlist(client, "status:incomplete")
         focus_id: str | None = None
         if focus:
@@ -3145,7 +3232,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             data=build_query_focus_projects(parsed, focus_id=focus_id, timezone=tz)
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=INBOX_STATE_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=INBOX_STATE_OUTPUT)
     async def gtd_inbox_state(ctx: Context) -> dict[str, Any]:
         """GTD — the three inbox-health signals for Inbox_Stuff in one read: depth, unprocessed
         (no pipeline tag), awaiting-review (`#ai_review`), and approved-but-unapplied
@@ -3163,7 +3250,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         tz = await client.get_timezone()
         return build_response(data=build_inbox_state(tasks, timezone=tz))
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=WAITING_FOR_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=WAITING_FOR_OUTPUT)
     async def gtd_waiting_for_queue(ctx: Context) -> dict[str, Any]:
         """GTD — the waiting-for chase queue: incomplete `#waiting_for` items with their due tickle
         (chase prompt), last-updated age, and a `stale` flag (updated >14 days ago).
@@ -3181,8 +3268,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             data=build_waiting_for_queue(tasks, today=_account_today(tz), timezone=tz)
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GTD_CONTEXT_OUTPUT)
-    async def gtd_context(
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GTD_CONTEXT_OUTPUT)
+    async def gtd_item_context(
         ctx: Context,
         task_ref: Annotated[
             str,
@@ -3297,8 +3384,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             query=task_ref,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CREATE_ITEM_OUTPUT)
-    async def gtd_create_item(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CREATE_ITEM_OUTPUT)
+    async def gtd_item_create(
         ctx: Context,
         parent_ref: Annotated[
             str, Field(description="The parent project/task — a task id (preferred) or a name.")
@@ -3307,7 +3394,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             str,
             Field(
                 description="What to create: 'action' | 'waiting_for' | 'calendar_entry'. "
-                "(A project is created with gtd_create_project.)",
+                "(A project is created with gtd_project_create.)",
                 json_schema_extra=_KIND_ENUM,
             ),
         ],
@@ -3476,7 +3563,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     )
                     | {OVERLAY_REFRESH}
                 ),
-                tool="gtd_create_item",
+                tool="gtd_item_create",
             )
             if gate:
                 rejections.append(as_rejection(gate))
@@ -3585,8 +3672,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ADD_NOTE_OUTPUT)
-    async def gtd_add_note(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ADD_NOTE_OUTPUT)
+    async def gtd_note_add(
         ctx: Context,
         task_ref: Annotated[
             str, Field(description="The task to journal against — a task id (preferred) or a name.")
@@ -3683,8 +3770,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CAPTURE_OUTPUT_SCHEMA)
-    async def gtd_capture(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CAPTURE_OUTPUT_SCHEMA)
+    async def gtd_inbox_capture(
         ctx: Context,
         text: Annotated[str, Field(description="The raw capture text, written verbatim.")],
         source_type: Annotated[
@@ -3748,7 +3835,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         tags = [AI_CONVERSATION] + ([AI_REVIEW] if pre_analysis else [])
         if not rejections:
-            gate = await enforce_strict_tags(client, sorted(tags), tool="gtd_capture")
+            gate = await enforce_strict_tags(client, sorted(tags), tool="gtd_inbox_capture")
             if gate:
                 rejections.append(as_rejection(gate))
         if rejections:
@@ -3829,8 +3916,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TRANSITION_OUTPUT)
-    async def gtd_transition_state(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TRANSITION_OUTPUT)
+    async def gtd_item_transition(
         ctx: Context,
         task_ref: Annotated[
             str, Field(description="The task to transition — a task id (preferred) or a name.")
@@ -3892,7 +3979,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         rejections = validate_transition(add_tags=add, remove_tags=remove, existing=existing)
         if not rejections and add:
             gate = await enforce_strict_tags(
-                client, sorted(collect_transition_tags(add)), tool="gtd_transition_state"
+                client, sorted(collect_transition_tags(add)), tool="gtd_item_transition"
             )
             if gate:
                 rejections.append(as_rejection(gate))
@@ -3963,8 +4050,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     # Phase 2 writes — completion, dependency, properties, bulk
     # ======================================================================= #
 
-    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=COMPLETE_ACTION_OUTPUT)
-    async def gtd_complete_action(
+    @_tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=COMPLETE_ACTION_OUTPUT)
+    async def gtd_item_complete(
         ctx: Context,
         task_ref: Annotated[
             str, Field(description="The action to complete — a task id (preferred) or a name.")
@@ -4046,7 +4133,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         add_tags, remove_tags = output_approval_transition(tags)
         if not rejections and add_tags:
             gate = await enforce_strict_tags(
-                client, sorted(set(add_tags) | {OVERLAY_REFRESH}), tool="gtd_complete_action"
+                client, sorted(set(add_tags) | {OVERLAY_REFRESH}), tool="gtd_item_complete"
             )
             if gate:
                 rejections.append(as_rejection(gate))
@@ -4153,8 +4240,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CLOSE_INBOX_OUTPUT)
-    async def gtd_close_inbox_item(
+    @_tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CLOSE_INBOX_OUTPUT)
+    async def gtd_inbox_item_close(
         ctx: Context,
         inbox_item_ref: Annotated[
             str, Field(description="The Inbox_Stuff item to close — a task id (preferred) or name.")
@@ -4272,8 +4359,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=SET_PROPERTIES_OUTPUT)
-    async def gtd_set_properties(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=SET_PROPERTIES_OUTPUT)
+    async def gtd_item_set_properties(
         ctx: Context,
         task_ref: Annotated[
             str, Field(description="The task to edit — a task id (preferred) or a name.")
@@ -4363,7 +4450,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 dates[label] = iso
 
         if energy and not rejections:
-            gate = await enforce_strict_tags(client, [energy], tool="gtd_set_properties")
+            gate = await enforce_strict_tags(client, [energy], tool="gtd_item_set_properties")
             if gate:
                 rejections.append(as_rejection(gate))
         if rejections:
@@ -4467,8 +4554,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=LINK_DEPENDENCY_OUTPUT)
-    async def gtd_link_dependency(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=LINK_DEPENDENCY_OUTPUT)
+    async def gtd_dependency_link(
         ctx: Context,
         dependent_ref: Annotated[
             str,
@@ -4625,7 +4712,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             same_task=str(dependent.get("id")) == str(upstream.get("id")),
         )
         if not rejections:
-            gate = await enforce_strict_tags(client, [OVERLAY_REFRESH], tool="gtd_link_dependency")
+            gate = await enforce_strict_tags(client, [OVERLAY_REFRESH], tool="gtd_dependency_link")
             if gate:
                 rejections.append(as_rejection(gate))
         if rejections:
@@ -4695,8 +4782,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=BATCH_TRANSITION_OUTPUT)
-    async def gtd_batch_transition(
+    @_tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=BATCH_TRANSITION_OUTPUT)
+    async def gtd_item_transition_batch(
         ctx: Context,
         items: Annotated[
             list[str] | None,
@@ -4775,7 +4862,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         if not rejections and add:
             gate = await enforce_strict_tags(
-                client, sorted(collect_transition_tags(add)), tool="gtd_batch_transition"
+                client, sorted(collect_transition_tags(add)), tool="gtd_item_transition_batch"
             )
             if gate:
                 rejections.append(as_rejection(gate))
@@ -4974,8 +5061,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             "list_id": t.get("list_id"),
         }
 
-    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=INBOX_ZERO_OUTPUT)
-    async def gtd_inbox_zero(
+    @_tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=INBOX_ZERO_OUTPUT)
+    async def gtd_inbox_drain(
         ctx: Context,
         dispositions: Annotated[
             list[dict[str, Any]] | None,
@@ -5065,13 +5152,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             items,
             rejections=rejections,
             ref_keys=("item_ref",),
-            tool="gtd_inbox_zero",
+            tool="gtd_inbox_drain",
             applier=_apply,
             gate_tags=gate_tags,
         )
 
-    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CHASE_SWEEP_OUTPUT)
-    async def gtd_chase_sweep(
+    @_tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CHASE_SWEEP_OUTPUT)
+    async def gtd_waiting_for_sweep(
         ctx: Context,
         verdicts: Annotated[
             list[dict[str, Any]] | None,
@@ -5194,13 +5281,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             items,
             rejections=rejections,
             ref_keys=("waiting_for_ref",),
-            tool="gtd_chase_sweep",
+            tool="gtd_waiting_for_sweep",
             applier=_apply,
             gate_tags=[AI_CONVERSATION, "action", OVERLAY_REFRESH],
         )
 
-    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CONSOLIDATE_OUTPUT)
-    async def gtd_consolidate_apply(
+    @_tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=CONSOLIDATE_OUTPUT)
+    async def gtd_cluster_consolidate(
         ctx: Context,
         moves: Annotated[
             list[dict[str, Any]] | None,
@@ -5218,7 +5305,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     ) -> dict[str, Any]:
         """GTD — apply an APPROVED cluster-consolidation move set in one governed call.
 
-        This tool APPLIES; it does not decide. Review clusters with `gtd_topic_clusters`, agree
+        This tool APPLIES; it does not decide. Review clusters with `gtd_cluster_candidates`, agree
         the moves, then pass them here. DESTRUCTIVE (reparent/complete/promote mutate
         pre-existing structure); transaction-recorded and reversible via `batch_undo`.
 
@@ -5323,7 +5410,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             items,
             rejections=rejections,
             ref_keys=("task_ref", "new_parent_ref", "dependent_ref", "upstream_ref"),
-            tool="gtd_consolidate_apply",
+            tool="gtd_cluster_consolidate",
             applier=_apply,
             gate_tags=[OVERLAY_REFRESH],
         )
@@ -5342,8 +5429,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         parts = raw.split("\n", 1)
         return parts[0], (parts[1] if len(parts) > 1 else "")
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ATTACH_OUTPUT_OUTPUT)
-    async def gtd_attach_output(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ATTACH_OUTPUT_OUTPUT)
+    async def gtd_note_attach_output(
         ctx: Context,
         task_ref: Annotated[
             str, Field(description="The action the output was produced for — a task id or name.")
@@ -5401,7 +5488,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         task = ref["task"]
         by_id = {str(t.get("id")): t for t in ref["parsed"]}
         if not rejections:
-            gate = await enforce_strict_tags(client, [AI_CONVERSATION], tool="gtd_attach_output")
+            gate = await enforce_strict_tags(
+                client, [AI_CONVERSATION], tool="gtd_note_attach_output"
+            )
             if gate:
                 rejections.append(as_rejection(gate))
         if rejections:
@@ -5497,8 +5586,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ATTACH_CONTRIB_OUTPUT)
-    async def gtd_attach_contribution(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ATTACH_CONTRIB_OUTPUT)
+    async def gtd_contribution_attach(
         ctx: Context,
         task_ref: Annotated[
             str,
@@ -5555,7 +5644,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         tag = contrib_tag(variant) if variant in CONTRIB_VARIANTS else ""
         if not rejections:
             gate = await enforce_strict_tags(
-                client, sorted({AI_CONVERSATION, tag}), tool="gtd_attach_contribution"
+                client, sorted({AI_CONVERSATION, tag}), tool="gtd_contribution_attach"
             )
             if gate:
                 rejections.append(as_rejection(gate))
@@ -5614,8 +5703,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ANNOTATE_OUTPUT)
-    async def gtd_annotate_clarification(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ANNOTATE_OUTPUT)
+    async def gtd_inbox_item_annotate(
         ctx: Context,
         inbox_item_ref: Annotated[
             str, Field(description="The Inbox_Stuff item being clarified — a task id or name.")
@@ -5665,7 +5754,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         qs = [q for q in (coerce_json(questions) or []) if str(q).strip()]
         if not rejections:
             gate = await enforce_strict_tags(
-                client, sorted({AI_REVIEW, AI_CONVERSATION}), tool="gtd_annotate_clarification"
+                client, sorted({AI_REVIEW, AI_CONVERSATION}), tool="gtd_inbox_item_annotate"
             )
             if gate:
                 rejections.append(as_rejection(gate))
@@ -5726,14 +5815,14 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=EDIT_NOTE_OUTPUT)
-    async def gtd_edit_note(
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=EDIT_NOTE_OUTPUT)
+    async def gtd_note_edit(
         ctx: Context,
         task_ref: Annotated[
             str, Field(description="The task the note is on — a task id (preferred) or a name.")
         ],
         note_ref: Annotated[
-            str, Field(description="The note id to edit (from gtd_context / get_task_notes).")
+            str, Field(description="The note id to edit (from gtd_item_context / get_task_notes).")
         ],
         edit: Annotated[
             dict[str, Any] | None,
@@ -5793,7 +5882,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 }
             )
         if not rejections:
-            gate = await enforce_strict_tags(client, [AI_CONVERSATION], tool="gtd_edit_note")
+            gate = await enforce_strict_tags(client, [AI_CONVERSATION], tool="gtd_note_edit")
             if gate:
                 rejections.append(as_rejection(gate))
         if rejections:
@@ -5872,7 +5961,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 return ln.split(":", 1)[1].strip()
         return ""
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=SURFACE_CREATE_OUTPUT)
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=SURFACE_CREATE_OUTPUT)
     async def gtd_surface_create(
         ctx: Context,
         item_type: Annotated[
@@ -6231,7 +6320,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @mcp.tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=SURFACE_RESOLVE_OUTPUT)
+    @_tool(annotations=DESTRUCTIVE_WRITE_ANNOTATIONS, output_schema=SURFACE_RESOLVE_OUTPUT)
     async def gtd_surface_resolve(
         ctx: Context,
         item_ref: Annotated[
@@ -6443,7 +6532,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             **{name: value},
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=SURFACE_QUEUE_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=SURFACE_QUEUE_OUTPUT)
     async def gtd_surface_queue(
         ctx: Context,
         surface: Annotated[
@@ -6537,7 +6626,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ENGINE_REPORT_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ENGINE_REPORT_OUTPUT)
     async def gtd_engine_report(
         ctx: Context,
         window_days: Annotated[
@@ -6616,7 +6705,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=DEPENDENCY_GAPS_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=DEPENDENCY_GAPS_OUTPUT)
     async def gtd_dependency_gaps(
         ctx: Context,
         max_projects: Annotated[
@@ -6670,7 +6759,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             data=build_dependency_gaps(parsed, max_projects=max_projects, timezone=tz)
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TAG_REPORT_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TAG_REPORT_OUTPUT)
     async def gtd_tag_report(ctx: Context) -> dict[str, Any]:
         """GTD — tag-taxonomy hygiene: every account tag classified against the canonical
         taxonomy, with active-usage counts, deletion candidates, and the minimum-tag-set gaps.
@@ -6714,7 +6803,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             data=build_tag_report(list(account_tags), tasks, today=_account_today(tz))
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=REVIEW_REPORT_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=REVIEW_REPORT_OUTPUT)
     async def gtd_review_report(
         ctx: Context,
         days: Annotated[
@@ -6774,7 +6863,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ITEM_STALE_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ITEM_STALE_OUTPUT)
     async def gtd_item_stale(
         ctx: Context,
         days: Annotated[
@@ -6828,7 +6917,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
         )
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=WORKLOAD_REPORT_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=WORKLOAD_REPORT_OUTPUT)
     async def gtd_workload_report(ctx: Context) -> dict[str, Any]:
         """GTD — committed load as an AGGREGATION: life context x workflow state, with estimate
         totals and estimate coverage per life context. Use for the weekly review's "is this
@@ -6863,7 +6952,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         tz = await client.get_timezone()
         return build_response(data=build_workload_report(tasks, today=_account_today(tz)))
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=FOCUS_INDEX_OUTPUT)
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=FOCUS_INDEX_OUTPUT)
     async def gtd_focus_index(
         ctx: Context,
         include_someday: Annotated[
@@ -6915,8 +7004,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     # Wave 1b — closing remembered-discipline gaps (v2.10.0)
     # ======================================================================= #
 
-    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ITEM_CLASSIFY_OUTPUT)
-    async def gtd_item_classify(
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=ITEM_CLASSIFY_OUTPUT)
+    async def gtd_item_shape(
         ctx: Context,
         name: Annotated[
             str,
@@ -6967,7 +7056,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         """
         return build_response(data=classify_shape(name))
 
-    @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CONTRIB_TRANSITION_OUTPUT)
+    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CONTRIB_TRANSITION_OUTPUT)
     async def gtd_contribution_transition(
         ctx: Context,
         task_ref: Annotated[
@@ -7146,3 +7235,109 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             },
             timeline_id=client.timeline_id,
         )
+
+    # ------------------------------------------------------------------- #
+    # `gtd_query` — the one deprecated surface that is a SPLIT, not a rename
+    # ------------------------------------------------------------------- #
+    # It cannot be an alias of a single tool, because `perspective` chose between three. So it is
+    # retained as a deprecated DISPATCHER that delegates to the three replacements — still no
+    # copied logic, still one implementation per view. Removed at v3.1.0 with the other aliases.
+
+    @mcp.tool(
+        annotations=READ_ONLY_ANNOTATIONS,
+        output_schema=GTD_QUERY_OUTPUT,
+        description=(
+            "DEPRECATED — split into gtd_next_actions / gtd_item_today / gtd_focus_projects in "
+            "v3.0.0; this alias is removed in v3.1.0. Call the tool for the view you want; "
+            "behaviour is identical.\n\nThis tool took a `perspective` MODE parameter, which is a "
+            "tool boundary rather than a parameter: `context` was valid only for "
+            "next_actions_by_context and `focus` only for focus_projects, the rows carried "
+            "different fields per perspective, and focus_not_found applied to one branch alone. "
+            "The three replacements each take only the parameters their own view needs.\n\n"
+            "Args:\n    perspective: which view — 'next_actions_by_context' | 'todays_field' | "
+            "'focus_projects'.\n    context: next_actions_by_context only.\n    focus: "
+            "focus_projects only.\n\nReturns (on success): whatever the delegated tool returns.\n"
+            'Returns (on bad input): {"error": {"code": "invalid_input" (unknown '
+            'perspective) | "focus_not_found", "message": ...}} — branch on `error.code`, '
+            "never the prose."
+        ),
+    )
+    async def gtd_query(
+        ctx: Context,
+        perspective: Annotated[
+            str,
+            Field(
+                description="DEPRECATED. Which view: 'next_actions_by_context' | 'todays_field' "
+                "| 'focus_projects'.",
+                json_schema_extra=_PERSPECTIVE_ENUM,
+            ),
+        ] = "todays_field",
+        context: Annotated[
+            str | None,
+            optional_string("DEPRECATED. next_actions_by_context only — an action-context tag."),
+        ] = None,
+        focus: Annotated[
+            str | None,
+            optional_string("DEPRECATED. focus_projects only — an Area-of-Focus id or name."),
+        ] = None,
+    ) -> dict[str, Any]:
+        """DEPRECATED — use gtd_next_actions / gtd_item_today / gtd_focus_projects."""
+        logger.info(
+            "deprecated tool alias invoked: gtd_query(perspective=%s) -> the three split tools "
+            "(removed in v3.1.0)",
+            perspective,
+        )
+        if perspective not in VALID_PERSPECTIVES:
+            return build_response(
+                data=build_error(
+                    ErrorCode.INVALID_INPUT,
+                    f"Unknown perspective '{perspective}'. Use one of "
+                    f"{sorted(VALID_PERSPECTIVES)}.",
+                    perspective=perspective,
+                )
+            )
+        if perspective == "next_actions_by_context":
+            return await gtd_next_actions(ctx, context=context)
+        if perspective == "todays_field":
+            return await gtd_item_today(ctx)
+        return await gtd_focus_projects(ctx, focus=focus)
+
+    # =================================================================== #
+    # Deprecated aliases — v3.0.0 renames, removed at v3.1.0
+    # =================================================================== #
+    # Each alias registers under its pre-v3.0.0 name (FastMCP takes an explicit `name=`) and
+    # DELEGATES to the renamed tool's own function. The wrapper below holds no logic beyond the
+    # deprecation log — there is exactly one implementation per tool, so an alias cannot drift
+    # from what it delegates to. Annotations and output schema come from `_registry`, i.e. from
+    # the tool itself, so the alias advertises a byte-identical schema.
+    #
+    # THE LOG IS THE GATE. Wave 3 drops these only once a full scheduled-task cycle shows zero
+    # alias hits — elapsed time is not the control, the absence of invocations is. That is the
+    # one thing the wrapper buys over registering the bare function, and it is why it exists.
+    #
+    # They exist for CROSS-REPO SEQUENCING, not for external callers: the server and its
+    # consumers live in separate repos behind an async hand-off, so one is necessarily ahead of
+    # the other, and BOTH orders break without them.
+    def _make_alias(target: Any, old_name: str, new_name: str) -> Any:
+        @functools.wraps(target)
+        async def _alias(*args: Any, **kwargs: Any) -> Any:
+            logger.info(
+                "deprecated tool alias invoked: %s -> %s (removed in v3.1.0)", old_name, new_name
+            )
+            return await target(*args, **kwargs)
+
+        _alias.__name__ = old_name
+        return _alias
+
+    for _old_name, _new_name in sorted(DEPRECATED_ALIASES.items()):
+        _entry = _registry[_new_name]
+        _doc = inspect.getdoc(_entry["fn"]) or ""
+        mcp.tool(
+            name=_old_name,
+            description=(
+                f"DEPRECATED — renamed to {_new_name} in v3.0.0; this alias is removed in "
+                f"v3.1.0. Call {_new_name} instead; behaviour is identical.\n\n{_doc}"
+            ),
+            annotations=_entry.get("annotations"),
+            output_schema=_entry.get("output_schema"),
+        )(_make_alias(_entry["fn"], _old_name, _new_name))

@@ -1,4 +1,4 @@
-"""Pure helpers for the gtd_create_project write tool.
+"""Pure helpers for the gtd_project_create write tool.
 
 Pure (no IO). The create sibling of `canvas_commit`: it owns the create-specific tags (the
 `#project` workflow tag, the life-context tags, and the `#ai_project_needs_finalise` mark) and the
@@ -32,7 +32,7 @@ LIFE_TAGS = frozenset({"work", "personal", "leanworking"})
 # provisioned in RTM, else every create is rejected up-front by the existence gate.
 FINALISE_MARK = "ai_project_needs_finalise"
 
-# The complete `rejected[].reason` vocabulary gtd_create_project can emit — the canonical source the
+# The complete `rejected[].reason` vocabulary gtd_project_create can emit — the canonical source the
 # output-schema model cites (drift-proof, like COMMIT_REJECT_REASONS). Seven are produced by
 # `validate_create` below; `non_canonical_tag` is produced in the tool wrapper by the strict-tag
 # existence gate.

@@ -33,8 +33,8 @@ LIFE_CONTEXTS = frozenset({"work", "leanworking", "client", "personal"})
 #: 2a. The full GTD workflow-state set — exactly one per task (used by transition validation).
 WORKFLOW_STATES = frozenset({"action", "project", "focus", "waiting_for", "someday"})
 
-#: 2b. The item kinds `gtd_create_item` can create. `project` is deliberately absent — it has its
-#: own governed tool (`gtd_create_project`) with a richer DoR (Area-of-Focus parent, INCEPTION
+#: 2b. The item kinds `gtd_item_create` can create. `project` is deliberately absent — it has its
+#: own governed tool (`gtd_project_create`) with a richer DoR (Area-of-Focus parent, INCEPTION
 #: note, vault folder). NOTE: `calendar_entry` is NOT a workflow state — it is a Special Tag, so a
 #: calendar entry materialises `action` + `calendar_entry` (see `item_tags`).
 ITEM_KINDS = frozenset({"action", "waiting_for", "calendar_entry"})
@@ -456,7 +456,7 @@ def depends_on_note(
     upstream_url: str = "",
     status: str = "active",
     captured_at: str,
-    captured_by: str = "rtm-mcp gtd_link_dependency",
+    captured_by: str = "rtm-mcp gtd_dependency_link",
 ) -> str:
     """The DEPENDS-ON note BODY. The validator hard-requires `Depends on:` + the full id triple +
     `Status:`; the remaining lines are documented-required and always emitted. Placed on the
@@ -810,7 +810,7 @@ def validate_consolidate(moves: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # Phase 4a — the note-family, note-edit, and dependency-flip grammar
 # =========================================================================== #
 
-# --- OUTPUT + FILING (gtd_attach_output) ----------------------------------- #
+# --- OUTPUT + FILING (gtd_note_attach_output) ----------------------------------- #
 # The server emits the NSC / validate-note.py model: ONE OUTPUT note carrying a FILING: LINE in
 # its body — NOT the GMI two-note pair. This server's own gtd_chat_thread already parses FILING as
 # a line inside an OUTPUT-typed note, so internal consistency forces the single-note shape.
@@ -893,7 +893,7 @@ def validate_attach_output(*, filing_path: str, output_summary: str) -> list[dic
     return rejections
 
 
-# --- CONTRIB family (gtd_attach_contribution) ------------------------------ #
+# --- CONTRIB family (gtd_contribution_attach) ------------------------------ #
 
 CONTRIB_VARIANTS = frozenset({"contrib", "contrib_update", "prep", "speculative"})
 CONTRIB_CATEGORIES = frozenset(
@@ -949,7 +949,7 @@ def validate_attach_contribution(
     return rejections
 
 
-# --- AI ANALYSIS (gtd_annotate_clarification) ------------------------------ #
+# --- AI ANALYSIS (gtd_inbox_item_annotate) ------------------------------ #
 
 AI_ANALYSIS_TYPE = "AI ANALYSIS"  # the one canonical space-bearing TYPE (note-shape-catalogue § 2)
 
@@ -971,7 +971,7 @@ def validate_annotate_clarification(*, analysis_body: str) -> list[dict[str, Any
     return []
 
 
-# --- gtd_edit_note — the bounded op-set (D2) -------------------------------- #
+# --- gtd_note_edit — the bounded op-set (D2) -------------------------------- #
 # The ONLY mutate-in-place note verb. `replace_substring` mirrors gtd:replace_in_note_body
 # (substring, first occurrence only); `replace_line` / `set_frontmatter_key` / `retitle` are
 # net-new bounded ops. There is deliberately NO free-form body overwrite — the bounded set is the
@@ -1049,7 +1049,7 @@ def apply_edit_op(title: str, body: str, edit: dict[str, Any]) -> tuple[str, str
     return None
 
 
-# --- DEPENDS-ON resolve/flip (gtd_link_dependency mode) --------------------- #
+# --- DEPENDS-ON resolve/flip (gtd_dependency_link mode) --------------------- #
 
 LINK_MODES = frozenset({"create", "resolve", "obsolete"})
 

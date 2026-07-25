@@ -157,7 +157,7 @@ _FENCE_SEARCH_LINES = 3
 #:    as type `AI`, and likewise `DEPENDS-ON`, `SOURCE-DRAFT`, `CONTRIB-UPDATE`, `TMPL-CHILD`.
 #:    Requiring the separator to carry surrounding WHITESPACE (which `note-shape-catalogue.md`
 #:    § 1 mandates) disambiguates it. Pre-existing and out of scope to change here — it would
-#:    alter `gtd_context` output — flagged in the v2.9.0 debrief.
+#:    alter `gtd_item_context` output — flagged in the v2.9.0 debrief.
 #:  * § 1's TYPE token excludes the UNDERSCORE, yet this server's own `gtd_surface_create`
 #:    writes `<date> — ACTIVITY_REPORT — <summary>` for the fifth item type. That title fails
 #:    § 1 outright (`note_shape.check_title` rejects it, so with RTM_STRICT_NOTES=shape the

@@ -1,4 +1,4 @@
-"""Engage verdict grammar (server-side) — the pure contract backing `gtd_apply_engage_commit`.
+"""Engage verdict grammar (server-side) — the pure contract backing `gtd_engage_commit`.
 
 The server-side twin of the gtd plugin's `scripts/validate-engage-verdict.py`. Both conform to the
 SAME source of truth — `plugins/gtd/skills/gtd/references/engage-verdict-grammar.md` (§§ 1-4) — but
@@ -10,7 +10,7 @@ invariant: a verdict is a governed extension of the contract, never a local inve
 
 Posture — HARD-FAIL (grammar § "Posture", unlike the report-and-resolve Definition-of-Ready): a
 verdict is a committed intent to write RTM, so an off-enum or type-illegal verdict fails the batch
-with a closest-legal suggestion; `gtd_apply_engage_commit` writes NOTHING when any item is rejected.
+with a closest-legal suggestion; `gtd_engage_commit` writes NOTHING when any item is rejected.
 This module is the deterministic legality core; the tool re-derives each item's kind / has_deadline /
 blocked SERVER-SIDE (the ACL — the client's flags are never trusted) and feeds them here.
 
@@ -64,7 +64,7 @@ VERDICT_FAMILY: dict[str, str] = {
 VERDICT_REJECT_REASONS = frozenset(
     {ErrorCode.OFF_ENUM, ErrorCode.UNKNOWN_KIND, ErrorCode.TYPE_ILLEGAL}
 )
-# The complete `rejected[].reason` vocabulary gtd_apply_engage_commit can emit — the canonical
+# The complete `rejected[].reason` vocabulary gtd_engage_commit can emit — the canonical
 # source the output-schema model cites (drift-proof, like COMMIT_REJECT_REASONS). It is
 # VERDICT_REJECT_REASONS (produced here by `validate`) plus the reasons produced in the tool
 # wrapper: `task_not_found` (id absent from the account — v2.0.0 reconciled the former bare

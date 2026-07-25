@@ -500,12 +500,12 @@ class AppliedOp(BaseModel):
 class CommitRejection(BaseModel):
     model_config = ConfigDict(extra="allow")
     # Enum sourced from the handler's canonical constant so the advertised vocabulary can never
-    # drift from what gtd_apply_canvas_commit actually emits (test_tool_schemas pins the equality).
+    # drift from what gtd_canvas_commit actually emits (test_tool_schemas pins the equality).
     reason: str = Field(json_schema_extra=_enum_extra(COMMIT_REJECT_REASONS))
 
 
 class CommitResult(BaseModel):
-    """gtd_apply_canvas_commit — covers both the success apply and the rejection (nothing
+    """gtd_canvas_commit — covers both the success apply and the rejection (nothing
     written) branches, so a caller reads `rejected` before trusting `applied`."""
 
     model_config = ConfigDict(extra="allow")
@@ -640,7 +640,7 @@ class EngageRejection(BaseModel):
 
 
 class EngageCommitResult(BaseModel):
-    """gtd_apply_engage_commit — success apply + the hard-fail rejection (nothing written)."""
+    """gtd_engage_commit — success apply + the hard-fail rejection (nothing written)."""
 
     model_config = ConfigDict(extra="allow")
     applied: list[AppliedOp]
@@ -696,7 +696,7 @@ class AddNoteResult(BaseModel):
 
 
 class GtdCaptureResult(BaseModel):
-    """gtd_capture — the TRUE post-state of a raw Inbox_Stuff capture."""
+    """gtd_inbox_capture — the TRUE post-state of a raw Inbox_Stuff capture."""
 
     model_config = ConfigDict(extra="allow")
     task_id: str = ""
@@ -731,7 +731,7 @@ class TransitionResult(BaseModel):
 
 
 class CompleteActionResult(BaseModel):
-    """gtd_complete_action — true post-state plus the fan-out events the caller should fire.
+    """gtd_item_complete — true post-state plus the fan-out events the caller should fire.
 
     `fanout_events` are gtd `progression-fanout` EVENT names, not tags: no RTM tag by those names
     exists and a server cannot invoke an agent, so they are returned as data while the sanctioned
@@ -766,7 +766,7 @@ class CloseInboxItemResult(BaseModel):
 
 
 class SetPropertiesResult(BaseModel):
-    """gtd_set_properties — priority/estimate are taskseries-level, so a write may be REDIRECTED
+    """gtd_item_set_properties — priority/estimate are taskseries-level, so a write may be REDIRECTED
     to the series' nearest-active occurrence; divergent proposals are surfaced, never picked."""
 
     model_config = ConfigDict(extra="allow")
@@ -1600,6 +1600,12 @@ TOPIC_CLUSTERS_OUTPUT = _envelope_schema("TopicClustersEnvelope", TopicClustersR
 HEALTH_CHECK_OUTPUT = _envelope_schema("HealthCheckEnvelope", HealthCheckResult)
 
 # GTD Phase 0 reads — collection / context
+# gtd_query retired at v3.0.0 (D11) — split into three tools, each with its own envelope. The
+# row model is shared because the row SHAPE was never the problem; the parameter set was.
+NEXT_ACTIONS_OUTPUT = _envelope_schema("NextActionsEnvelope", QueryResult)
+ITEM_TODAY_OUTPUT = _envelope_schema("ItemTodayEnvelope", QueryResult)
+FOCUS_PROJECTS_OUTPUT = _envelope_schema("FocusProjectsEnvelope", QueryResult, Candidates)
+# Retained ONLY for the deprecated `gtd_query` alias, removed at v3.1.0 with it.
 GTD_QUERY_OUTPUT = _envelope_schema("GtdQueryEnvelope", QueryResult, Candidates)
 INBOX_STATE_OUTPUT = _envelope_schema("InboxStateEnvelope", InboxStateResult)
 WAITING_FOR_OUTPUT = _envelope_schema("WaitingForEnvelope", WaitingForResult)

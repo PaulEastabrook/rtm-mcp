@@ -3,7 +3,7 @@
 Pure (no IO). Maps a flat, parsed `rtm.tasks.getList` result (as produced by
 `parsers.parse_tasks_response`) into the Phase C cockpit navigator's data: one row per active
 GTD project with at-a-glance state (open / blocked counts + next tickle). Vault-free by design —
-the same membrane as `gtd_project_canvas` / `gtd_apply_canvas_commit`: the enriched plan-graph
+the same membrane as `gtd_project_canvas` / `gtd_canvas_commit`: the enriched plan-graph
 overlay lives in AI Memory and is the gtd skill's concern, never the server's.
 
 Counts derive from the server's THIN plan-graph over each project's rows: it reuses
