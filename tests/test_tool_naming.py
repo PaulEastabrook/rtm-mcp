@@ -7,6 +7,7 @@ shape this programme has now found five times over. So every rule is exercised a
 fixture, and the unclassifiable path is asserted rather than assumed.
 """
 
+import sys
 from importlib import util
 from pathlib import Path
 
@@ -125,17 +126,112 @@ class TestAgainstTheLiveServer:
         bad = [r for r in rows if r["verdict"] in ("finding", "unclassifiable")]
         assert bad == [], f"non-conformant tool names: {bad}"
 
-    async def test_deprecated_aliases_are_bucketed_not_judged(self):
-        """The aliases ARE the non-conformant names — judging them would fire on all 26 by
-        construction, which is why the check is report-only until they are removed."""
-        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
+    async def test_nothing_is_bucketed_as_deprecated_any_more(self):
+        """The `deprecated` bucket existed only to excuse the aliases from judgement. With them
+        gone every gtd tool faces the same test — which is what made `--strict` promotable."""
+        rows = await check.collect()
+        assert [r for r in rows if r["verdict"] == "deprecated"] == []
 
-        rows = {r["tool"]: r for r in await check.collect()}
-        for old in (*DEPRECATED_ALIASES, "gtd_query"):
-            assert rows[old]["verdict"] == "deprecated", old
+    async def test_strict_mode_exits_zero_on_the_real_suite(self):
+        rows = await check.collect()
+        assert [r for r in rows if r["verdict"] in ("finding", "unclassifiable")] == []
 
     async def test_every_live_tool_reaches_a_verdict(self):
         """No tool may be absent from the report — silence is the failure mode."""
         rows = await check.collect()
         assert all(r["verdict"] for r in rows)
         assert len(rows) >= 55
+
+
+class TestStrictModeCanActuallyFail:
+    """Promoting a check to blocking is worthless if it cannot block. These assert the EXIT CODE,
+    because a `--strict` that always exits 0 is the same silent control in a new costume."""
+
+    @staticmethod
+    def _with_rows(monkeypatch, rows, *argv):
+        async def fake_collect():
+            return rows
+
+        monkeypatch.setattr(check, "collect", fake_collect)
+        monkeypatch.setattr(sys, "argv", ["check-tool-naming.py", *argv])
+        return check.main()
+
+    @pytest.mark.parametrize("verdict", ["finding", "unclassifiable"])
+    def test_strict_exits_non_zero_on_a_known_bad_fixture(self, monkeypatch, capsys, verdict):
+        rows = [{"tool": "gtd_item_classify", "read_only": True, "verdict": verdict, "detail": "d"}]
+        assert self._with_rows(monkeypatch, rows, "--strict") == 1
+        assert "gtd_item_classify" in capsys.readouterr().out
+
+    def test_report_only_mode_still_exits_zero_on_the_same_fixture(self, monkeypatch, capsys):
+        """The difference between the two modes is the exit code and nothing else."""
+        rows = [
+            {"tool": "gtd_item_classify", "read_only": True, "verdict": "finding", "detail": "d"}
+        ]
+        assert self._with_rows(monkeypatch, rows) == 0
+        assert "gtd_item_classify" in capsys.readouterr().out
+
+    def test_strict_exits_zero_when_clean(self, monkeypatch, capsys):
+        rows = [{"tool": "gtd_health_report", "read_only": True, "verdict": "ok", "detail": "d"}]
+        assert self._with_rows(monkeypatch, rows, "--strict") == 0
+        capsys.readouterr()
+
+    def test_strict_exits_zero_against_the_REAL_suite(self):
+        """The one that matters for CI: the actual server, the actual names, as a subprocess."""
+        import os
+        import subprocess
+
+        root = Path(__file__).resolve().parents[1]
+        # PYTHONPATH explicitly rather than relying on the editable install: a subprocess must not
+        # depend on the venv being healthy for a conformance check to be judged clean.
+        env = {**os.environ, "PYTHONPATH": str(root / "src")}
+        result = subprocess.run(
+            [sys.executable, str(root / "scripts" / "check-tool-naming.py"), "--strict"],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            env=env,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestNoStrayDeprecatedReferences:
+    """The removed names must not survive anywhere in live source or tests. `test_tool_schemas`
+    owns the removal list and is the single sanctioned exception."""
+
+    def test_no_source_or_test_still_names_a_removed_surface(self):
+        """Flags LIVE references, not prose — the distinction the Wave 3 attestation drew.
+
+        A removed name inside backticks is documentation explaining history (*"not a `gtd_query`
+        perspective"*, *"was `gtd_capture` until v3.0.0"*) and is correct to keep. A removed name
+        OUTSIDE backticks in source is a live reference: an identifier, a registry key, or —
+        as this test found on its first run — a runtime error message and the server's own
+        advertised instructions still directing callers at tools that no longer exist.
+        """
+        import re
+
+        root = Path(__file__).resolve().parents[1]
+        spec = util.spec_from_file_location("_schemas", root / "tests" / "test_tool_schemas.py")
+        assert spec and spec.loader
+        schemas = util.module_from_spec(spec)
+        spec.loader.exec_module(schemas)
+        removed = schemas.REMOVED_AT_V3_1_0
+        assert len(removed) == 26, "guard the guard — an empty list would pass vacuously"
+
+        pattern = re.compile(r"\b(" + "|".join(removed) + r")\b")
+        backticked = re.compile(r"`[^`]*`")
+        # Both sanctioned files exist to TALK about the removed names: one owns the removal list,
+        # the other uses them as the check's known-bad fixtures.
+        sanctioned = {
+            root / "tests" / "test_tool_schemas.py",
+            root / "tests" / "test_tool_naming.py",
+        }
+        offenders = []
+        for path in [*(root / "src").rglob("*.py"), *(root / "tests").rglob("*.py")]:
+            if "__pycache__" in str(path) or path in sanctioned:
+                continue
+            for i, line in enumerate(path.read_text().splitlines(), 1):
+                if line.lstrip().startswith("#"):
+                    continue
+                if pattern.search(backticked.sub("", line)):
+                    offenders.append(f"{path.relative_to(root)}:{i}: {line.strip()[:70]}")
+        assert offenders == [], "removed names still referenced:\n" + "\n".join(offenders)

@@ -5,9 +5,9 @@ Flags any tool whose **name form disagrees with its `readOnlyHint` annotation**:
 verb segment on a read, or a result-noun suffix on a write. It introspects the LIVE server, so it
 can never drift from what is actually advertised.
 
-**Report-only at v3.0.0, blocking at v3.1.0.** It cannot block while the deprecated aliases are
-exposed, because the aliases *are* the non-conformant names — it would fire on all 25 by
-construction. `--strict` exits non-zero and is what CI runs once they are gone.
+**Blocking since v3.1.0.** It ran report-only through v3.0.x, when it could not block: the
+deprecated aliases *were* the non-conformant names and it fired on all 26 by construction. They
+were removed at v3.1.0, so `--strict` — which exits non-zero on any finding — is what CI runs.
 
 **A name matching neither lexicon is reported `unclassifiable` and NEVER silently passes.** That
 rule is the point of the check, not a detail of it. A control that quietly passes what it does not
@@ -17,8 +17,8 @@ filter RTM ignores, an audit threshold measuring bytes when the property was cou
 first-token-vs-whole-line `State:` parse. It is also precisely how a novel verb would escape.
 
 Usage:
-    uv run python scripts/check-tool-naming.py            # report-only (exit 0)
-    uv run python scripts/check-tool-naming.py --strict   # exit 1 on any finding
+    uv run python scripts/check-tool-naming.py            # report (exit 0)
+    uv run python scripts/check-tool-naming.py --strict   # exit 1 on any finding — CI runs this
     uv run python scripts/check-tool-naming.py --json     # machine-readable
 """
 
@@ -143,10 +143,10 @@ def classify(name: str, read_only: bool) -> tuple[str, str]:
 
 
 async def collect() -> list[dict[str, object]]:
+    # The `deprecated` bucket is gone at v3.1.0 along with the aliases it excused. Every gtd tool
+    # now faces the same judgement, which is what made promoting `--strict` possible.
     from rtm_mcp.server import mcp
-    from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
 
-    deprecated = set(DEPRECATED_ALIASES) | {"gtd_query"}
     rows: list[dict[str, object]] = []
     for tool in await mcp.list_tools():
         mcp_tool = tool.to_mcp_tool()
@@ -155,24 +155,13 @@ async def collect() -> list[dict[str, object]]:
             continue  # bare-verb RTM primitives are outside the domain-composition standard
         read_only = bool(getattr(mcp_tool.annotations, "readOnlyHint", False))
         verdict, detail = classify(name, read_only)
-        rows.append(
-            {
-                "tool": name,
-                "read_only": read_only,
-                "verdict": "deprecated" if name in deprecated else verdict,
-                "detail": (
-                    "deprecated alias — non-conformant BY CONSTRUCTION, removed at v3.1.0"
-                    if name in deprecated
-                    else detail
-                ),
-            }
-        )
+        rows.append({"tool": name, "read_only": read_only, "verdict": verdict, "detail": detail})
     return sorted(rows, key=lambda r: str(r["tool"]))
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--strict", action="store_true", help="exit 1 on any finding (v3.1.0+)")
+    ap.add_argument("--strict", action="store_true", help="exit 1 on any finding (CI default)")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args()
 
@@ -186,8 +175,8 @@ def main() -> int:
         buckets: dict[str, int] = {}
         for r in rows:
             buckets[str(r["verdict"])] = buckets.get(str(r["verdict"]), 0) + 1
-        print("D9 tool-naming conformance — report-only at v3.0.0\n")
-        for verdict in ("finding", "unclassifiable", "exempt", "ok", "deprecated"):
+        print("D9 tool-naming conformance\n")
+        for verdict in ("finding", "unclassifiable", "exempt", "ok"):
             if verdict in buckets:
                 print(f"  {verdict:16} {buckets[verdict]:3}")
         for label, group in (("FINDINGS", findings), ("UNCLASSIFIABLE", unclassifiable)):
@@ -196,7 +185,7 @@ def main() -> int:
                 for r in group:
                     print(f"  {r['tool']}\n      {r['detail']}")
         if not findings and not unclassifiable:
-            print("\nNo findings. Every non-deprecated gtd tool classifies and conforms.")
+            print("\nNo findings. Every gtd tool classifies and conforms.")
 
     if args.strict and (findings or unclassifiable):
         return 1

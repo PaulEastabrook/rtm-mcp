@@ -90,5 +90,5 @@ def enforce_list_target(
         return None
 
     code, reason = verdict
-    logger.info("strict_list_targets rejected %r via %s (%s)", list_name, tool, code.value)
+    logger.warning("strict_list_targets rejected %r via %s (%s)", list_name, tool, code.value)
     return guided_error(list_name, code, reason)

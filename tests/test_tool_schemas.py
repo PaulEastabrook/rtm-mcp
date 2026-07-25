@@ -17,7 +17,7 @@ from rtm_mcp.canvas_commit import COMMIT_REJECT_REASONS, VALID_EXECUTE_COMMIT, V
 from rtm_mcp.canvas_create import CREATE_REJECT_REASONS
 from rtm_mcp.engage_commit import ENGAGE_REJECT_REASONS, VERDICT_FAMILY
 from rtm_mcp.gtd_chat import VALID_MODES, VALID_ROLES
-from rtm_mcp.gtd_reads import VALID_DEPTHS, VALID_PERSPECTIVES
+from rtm_mcp.gtd_reads import VALID_DEPTHS
 from rtm_mcp.gtd_writes import (
     ACTION_CONTEXTS,
     COMMS_MODES,
@@ -91,12 +91,10 @@ READ_ONLY_TOOLS = {
     "gtd_focus_index",
     # Wave 1b (v2.10.0) — offline, pure string matching; no RTM call at all.
     "gtd_item_shape",
-    # v3.0.0 — the three tools gtd_query split into, plus gtd_query itself, which stays a
-    # read-only tool until the alias is removed at v3.1.0.
+    # v3.0.0 — the three tools gtd_query split into (gtd_query itself removed at v3.1.0).
     "gtd_item_today",
     "gtd_next_actions",
     "gtd_focus_projects",
-    "gtd_query",
 }
 DESTRUCTIVE_TOOLS = {
     "delete_task",
@@ -279,14 +277,8 @@ class TestToolAnnotations:
             assert ann.get("destructiveHint") is True, f"{name}: not destructiveHint"
 
     async def test_additive_writes_are_non_readonly_non_destructive(self):
-        # Deprecated aliases are excluded: each one INHERITS its target's annotations (pinned by
-        # TestDeprecatedAliases.test_every_alias_advertises_the_same_schema_as_its_target), so
-        # re-listing them here would duplicate that assertion and drift from it at v3.1.0.
-        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
-
         tools = await _tools()
-        aliases = set(DEPRECATED_ALIASES) | {"gtd_query"}
-        additive = set(tools) - READ_ONLY_TOOLS - DESTRUCTIVE_TOOLS - aliases
+        additive = set(tools) - READ_ONLY_TOOLS - DESTRUCTIVE_TOOLS
         assert additive, "expected some additive-write tools"
         for name in additive:
             ann = await _annotations(name)
@@ -340,9 +332,6 @@ class TestClosedVocabularyEnums:
     async def test_engage_commit_items_verdict_enum(self):
         items = (await _props("gtd_engage_commit"))["items"]
         assert items["items"]["properties"]["verdict"]["enum"] == sorted(VERDICT_FAMILY)
-
-    async def test_query_perspective_enum(self):
-        assert (await _props("gtd_query"))["perspective"]["enum"] == sorted(VALID_PERSPECTIVES)
 
     async def test_context_depth_enum(self):
         assert (await _props("gtd_item_context"))["depth"]["enum"] == sorted(VALID_DEPTHS)
@@ -562,72 +551,110 @@ class TestAdvertisedErrorContract:
 # --------------------------------------------------------------------------- #
 
 
-class TestDeprecatedAliases:
-    """A rename is only safe if the old name reaches the SAME implementation. These prove the
-    delegation rather than assuming it — the failure mode of a rename is silent."""
+#: The 26 surfaces removed at v3.1.0, owned BY THIS FILE and not imported.
+#:
+#: This is the load-bearing detail. If the list came from `rtm_mcp.tools.gtd`, deleting the
+#: constant would break the import — and worse, leaving it behind as an empty dict would make the
+#: loop below iterate nothing and pass trivially. A test that silently stops testing is the exact
+#: failure this programme has found five times over; here it would take the form of a removal test
+#: that proves nothing. Hence the literal list, and the length assertion before any iteration.
+REMOVED_AT_V3_1_0 = (
+    "gtd_add_note",
+    "gtd_annotate_clarification",
+    "gtd_apply_canvas_commit",
+    "gtd_apply_engage_commit",
+    "gtd_attach_contribution",
+    "gtd_attach_output",
+    "gtd_batch_transition",
+    "gtd_capture",
+    "gtd_chase_sweep",
+    "gtd_close_inbox_item",
+    "gtd_complete_action",
+    "gtd_consolidate_apply",
+    "gtd_context",
+    "gtd_create_item",
+    "gtd_create_project",
+    "gtd_edit_note",
+    "gtd_health_check",
+    "gtd_inbox_zero",
+    "gtd_item_classify",
+    "gtd_link_dependency",
+    "gtd_query",
+    "gtd_set_properties",
+    "gtd_set_redaction",
+    "gtd_stamp_tokens",
+    "gtd_topic_clusters",
+    "gtd_transition_state",
+)
 
-    async def test_the_alias_set_is_exactly_the_25_renames_plus_gtd_query(self):
-        """Pinned so an alias can be neither quietly forgotten nor quietly added."""
-        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
 
+class TestDeprecatedSurfacesAreGone:
+    """v3.1.0 removed the 25 aliases and the `gtd_query` dispatcher. 26 -> 0."""
+
+    def test_the_removal_list_is_the_expected_size(self):
+        """Asserted BEFORE anything iterates it — a list that had silently emptied would make
+        every test below pass without checking a single name."""
+        assert len(REMOVED_AT_V3_1_0) == 26
+        assert len(set(REMOVED_AT_V3_1_0)) == 26, "duplicates would inflate the count"
+
+    async def test_every_deprecated_name_is_unresolvable(self):
         tools = await _tools()
-        assert len(DEPRECATED_ALIASES) == 25
-        for old in DEPRECATED_ALIASES:
-            assert old in tools, f"alias missing from the server: {old}"
-        assert "gtd_query" in tools, "the split surface must remain for one release"
+        assert len(REMOVED_AT_V3_1_0) == 26  # belt and braces: this loop must have 26 iterations
+        still_present = [name for name in REMOVED_AT_V3_1_0 if name in tools]
+        assert still_present == [], f"deprecated surfaces still advertised: {still_present}"
 
-    async def test_every_alias_advertises_the_same_schema_as_its_target(self):
-        """Same input schema, same output schema, same annotations — so a caller on the old name
-        sees no difference at all until it is removed."""
-        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
+    async def test_the_alias_constant_itself_is_gone(self):
+        """The mechanism, not just the surfaces — a leftover map is how one gets re-registered."""
+        import rtm_mcp.tools.gtd as gtd_tools
 
+        assert not hasattr(gtd_tools, "DEPRECATED_ALIASES")
+
+    async def test_the_live_names_all_still_resolve(self):
         tools = await _tools()
-        for old, new in DEPRECATED_ALIASES.items():
-            a, b = tools[old].to_mcp_tool(), tools[new].to_mcp_tool()
-            assert a.inputSchema == b.inputSchema, old
-            assert a.outputSchema == b.outputSchema, old
-            assert a.annotations == b.annotations, old
+        replacements = (
+            "gtd_note_add",
+            "gtd_inbox_item_annotate",
+            "gtd_canvas_commit",
+            "gtd_engage_commit",
+            "gtd_contribution_attach",
+            "gtd_note_attach_output",
+            "gtd_item_transition_batch",
+            "gtd_inbox_capture",
+            "gtd_waiting_for_sweep",
+            "gtd_inbox_item_close",
+            "gtd_item_complete",
+            "gtd_cluster_consolidate",
+            "gtd_item_context",
+            "gtd_item_create",
+            "gtd_project_create",
+            "gtd_note_edit",
+            "gtd_health_report",
+            "gtd_inbox_drain",
+            "gtd_item_shape",
+            "gtd_dependency_link",
+            "gtd_item_set_properties",
+            "gtd_item_set_redaction",
+            "gtd_item_stamp_tokens",
+            "gtd_cluster_candidates",
+            "gtd_item_transition",
+            "gtd_item_today",
+            "gtd_next_actions",
+            "gtd_focus_projects",
+        )
+        missing = [n for n in replacements if n not in tools]
+        assert missing == [], f"replacements missing: {missing}"
 
-    async def test_every_alias_names_its_replacement_and_removal_version(self):
-        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
-
-        tools = await _tools()
-        for old, new in DEPRECATED_ALIASES.items():
-            desc = tools[old].to_mcp_tool().description or ""
-            assert desc.startswith("DEPRECATED — renamed to "), old
-            assert new in desc.split("\n")[0], old
-            assert "removed in v3.1.0" in desc, old
-        query_desc = tools["gtd_query"].to_mcp_tool().description or ""
-        assert query_desc.startswith("DEPRECATED — split into ")
-        assert "removed in v3.1.0" in query_desc
-
-    async def test_aliases_are_excluded_from_the_tool_count(self):
-        """55 tools, 26 deprecated surfaces. An alias is not a tool."""
-        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
-
+    async def test_the_gtd_tool_count_is_pinned_at_55(self):
         tools = await _tools()
         gtd = {n for n in tools if n.startswith("gtd_")}
-        deprecated = set(DEPRECATED_ALIASES) | {"gtd_query"}
-        assert len(gtd - deprecated) == 55
-        assert len(gtd & deprecated) == 26
+        assert len(gtd) == 55, sorted(gtd)
 
-    async def test_no_alias_target_is_itself_an_alias(self):
-        """A chain would mean a caller on an old name resolves through two hops and the removal
-        at v3.1.0 would break the survivor."""
-        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
-
-        assert not (set(DEPRECATED_ALIASES.values()) & set(DEPRECATED_ALIASES))
-
-    async def test_the_committed_fingerprints_cover_aliases_too(self):
-        """Aliases are advertised, so they carry fingerprints — the freshness guard must see the
-        whole surface, not just the tools."""
+    async def test_no_fingerprint_records_a_deprecated_surface(self):
         import json
 
-        from rtm_mcp.tools.gtd import DEPRECATED_ALIASES
-
         committed = json.loads((_REPO_ROOT / "tool-fingerprints.json").read_text())["tools"]
-        for old in (*DEPRECATED_ALIASES, "gtd_query"):
-            assert f"mcp__rtm__{old}" in committed, old
+        leftover = [n for n in REMOVED_AT_V3_1_0 if f"mcp__rtm__{n}" in committed]
+        assert leftover == [], f"stale fingerprints: {leftover}"
 
 
 class TestGtdQuerySplit:

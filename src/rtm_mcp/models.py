@@ -1605,8 +1605,6 @@ HEALTH_CHECK_OUTPUT = _envelope_schema("HealthCheckEnvelope", HealthCheckResult)
 NEXT_ACTIONS_OUTPUT = _envelope_schema("NextActionsEnvelope", QueryResult)
 ITEM_TODAY_OUTPUT = _envelope_schema("ItemTodayEnvelope", QueryResult)
 FOCUS_PROJECTS_OUTPUT = _envelope_schema("FocusProjectsEnvelope", QueryResult, Candidates)
-# Retained ONLY for the deprecated `gtd_query` alias, removed at v3.1.0 with it.
-GTD_QUERY_OUTPUT = _envelope_schema("GtdQueryEnvelope", QueryResult, Candidates)
 INBOX_STATE_OUTPUT = _envelope_schema("InboxStateEnvelope", InboxStateResult)
 WAITING_FOR_OUTPUT = _envelope_schema("WaitingForEnvelope", WaitingForResult)
 GTD_CONTEXT_OUTPUT = _envelope_schema("GtdContextEnvelope", ContextResult, Candidates)
