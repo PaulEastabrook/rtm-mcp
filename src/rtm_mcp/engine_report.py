@@ -51,6 +51,8 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from .contribution import CONTRIB_STATES as CANONICAL_CONTRIB_STATES
+from .contribution import INVALIDATED_STATES, JUDGED_STATES, RETIRED_STATES
 from .gtd_writes import (
     AUTO_CLOSED,
     Q_ACKNOWLEDGED,
@@ -74,22 +76,11 @@ DEFERRED_FILTER = "tag:ai_deferred_pending_unblock AND status:incomplete AND NOT
 CONTRIB_CATEGORIES = frozenset(
     {"research", "draft", "brief", "decision", "unblock", "capture", "consolidate", "monitor"}
 )
-#: Two published vocabularies disagree: `journaling-lifecycle.md` says
-#: `drafted|accepted|edited|discarded|superseded|stale`; `tag-taxonomy.md` § ai_contrib_drafted
-#: says `drafted|offered|accepted|discarded|superseded|stale|archived`. The union is used, the
-#: divergence is reported as a gap rather than silently resolved server-side.
-CONTRIB_STATES = frozenset(
-    {
-        "drafted",
-        "offered",
-        "accepted",
-        "edited",
-        "discarded",
-        "superseded",
-        "stale",
-        "archived",
-    }
-)
+#: The SIX canonical states, imported from the state-machine module rather than restated — one
+#: vocabulary, one home (`journaling-lifecycle.md` § "The contribution state machine" is the
+#: authority). The v2.9.0 divergence between two published lists was resolved gtd-side on
+#: 2026-07-25; `offered` / `archived` / `surfaced` are RETIRED and are no longer expected.
+CONTRIB_STATES = CANONICAL_CONTRIB_STATES
 
 #: Queue-bloat thresholds (`ai-surface.md` § Cost discipline).
 QUESTIONS_BLOAT_THRESHOLD = 20
@@ -192,8 +183,10 @@ def build_contributions(tasks: list[dict[str, Any]], *, window_start: datetime) 
         category, state = contribution_facets(contribution_note(t))
         categories.append(category)
         states.append(state)
-        bucket = per_category.setdefault(category, {"total": 0, "accepted": 0})
+        bucket = per_category.setdefault(category, {"total": 0, "accepted": 0, "judged": 0})
         bucket["total"] += 1
+        if state in JUDGED_STATES:
+            bucket["judged"] += 1
         if state == "accepted":
             bucket["accepted"] += 1
 
@@ -202,6 +195,12 @@ def build_contributions(tasks: list[dict[str, Any]], *, window_start: datetime) 
     accepted = by_state.get("accepted", 0)
     edited = by_state.get("edited", 0)
     discarded = by_state.get("discarded", 0)
+    # THE DENOMINATOR IS THE JUDGED SET, NOT THE COHORT. A `superseded` or `stale` contribution
+    # was never assessed, so counting it as a miss reads as a rejection Paul never made
+    # (`journaling-lifecycle.md` § "Why judged and invalidated are different"). An UNKNOWN state —
+    # a note the old wiring never transitioned — is likewise not a judgement and is excluded.
+    judged = accepted + edited + discarded
+    invalidated = sum(by_state.get(s, 0) for s in INVALIDATED_STATES)
     return {
         "drafted_in_window": total,
         "touched_in_window": touched,
@@ -214,12 +213,18 @@ def build_contributions(tasks: list[dict[str, Any]], *, window_start: datetime) 
         "edited_count": edited,
         "discarded_count": discarded,
         "stale_count": by_state.get("stale", 0),
-        "acceptance_rate_pct": _pct(accepted, total),
-        "edit_rate_pct": _pct(edited, total),
-        "discard_rate_pct": _pct(discarded, total),
+        "judged_count": judged,
+        "invalidated_count": invalidated,
+        "unjudged_count": total - judged - invalidated,
+        "acceptance_rate_pct": _pct(accepted, judged),
+        "edit_rate_pct": _pct(edited, judged),
+        "discard_rate_pct": _pct(discarded, judged),
+        "rate_denominator": "judged (accepted + edited + discarded) — invalidated and "
+        "not-yet-transitioned contributions are excluded",
         "per_category_acceptance_rate_pct": {
-            k: _pct(v["accepted"], v["total"]) for k, v in sorted(per_category.items())
+            k: _pct(v["accepted"], v["judged"]) for k, v in sorted(per_category.items())
         },
+        "retired_states_observed": sorted({s for s in by_state if s in RETIRED_STATES}),
     }
 
 
@@ -354,14 +359,6 @@ def build_engine_report(
             "metric": "scheduled_task_run_health",
             "reason": "Runs / errors / durations live in the scheduled-task framework's own "
             "notifications, not in RTM.",
-        },
-        {
-            "metric": "contrib_state_vocabulary",
-            "reason": "Two published vocabularies disagree — journaling-lifecycle.md § CONTRIB "
-            "lists drafted|accepted|edited|discarded|superseded|stale; tag-taxonomy.md § "
-            "ai_contrib_drafted lists drafted|offered|accepted|discarded|superseded|stale|archived "
-            "(no `edited`). The union is counted and observed values are reported verbatim; "
-            "reconciling the two is a gtd-side decision.",
         },
     ]
 

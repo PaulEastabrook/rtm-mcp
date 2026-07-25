@@ -523,6 +523,29 @@ owning module's docstring and pinned by a test.
 - `gtd_focus_index` - every active Area of Focus grouped by life context, with project and direct-item
   counts: the **Horizon-2 view**, a new capability. Pairs with `gtd_project_index` one horizon down.
 
+##### GTD Wave 1b — closing remembered-discipline gaps (v2.10.0)
+Each item replaces a rule an agent had to *remember* with one the server enforces.
+- `gtd_item_classify` - classify ONE action name into a contribution shape (`research` | `draft` |
+  `decide` | `none`) with the matched pattern, any also-matched runner-up, and any anti-pattern
+  knock-out. **Offline** — no RTM call at all. Reuses the detectors' own compiled patterns, so the
+  `shape-patterns.md` lockstep holds by construction. `brief` is not returned (it is the
+  `#calendar_entry` tag, not a lexical shape); no match returns `none`, never a guess.
+- `gtd_chat_post(clear_signal=…)` - an `ai` turn no longer forces the drain-signal clear.
+  Default **True** (the final reply, unchanged); pass `False` for an interim step note so the
+  board's live poll survives mid-turn. Replaces a documented instruction to bypass the governed
+  write entirely.
+- **`ACTIVITY-REPORT` (was `ACTIVITY_REPORT`)** - the surface body-note TYPE token is now MAPPED
+  from the item type rather than derived by `.upper()`. The derived form carried an underscore,
+  which the note-title grammar forbids — so the server could write a title its own note-shape gate
+  rejects (latent only because that gate is off by default). No existing note is rewritten.
+- `gtd_contribution_transition` - move a contribution to a terminal state: rewrite the CONTRIB
+  note's `State:` line and journal a `CONTRIB-UPDATE`, in one governed call. Six states —
+  `drafted` → `accepted`/`edited`/`discarded` (**judged**) or `superseded`/`stale`
+  (**invalidated**). The split is load-bearing: `gtd_engine_report`'s acceptance rate now uses the
+  **judged** denominator, because counting a never-assessed contribution as a miss reads as a
+  rejection Paul never made. Nothing had ever transitioned a contribution (live: 32 `drafted`,
+  zero terminal), which is why the reported 0% acceptance rate was a property of the wiring.
+
 ##### GTD Phase 1 writes (governed, additive — the everyday write path)
 Four governed write tools collapsing the generic multi-call dance into one atomic call:
 validate-then-apply (**a rejected write mutates nothing**), **true post-state** (the real id triple

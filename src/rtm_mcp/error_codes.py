@@ -107,6 +107,7 @@ class ErrorCode(str, Enum):
     # Input was well-formed, but the target's current state forbids the operation.
     TASK_NOT_COMPLETED = "task_not_completed"  # uncomplete_task on an open task
     CONVERSATION_READ_ONLY = "conversation_read_only"  # chat post to a completed task
+    NO_CONTRIBUTION_NOTE = "no_contribution_note"  # no CONTRIB/PREP note to transition
     LOCKED_SYSTEM_LIST = "locked_system_list"  # delete/rename of Inbox, Sent, …
     UNKNOWN_TRANSACTION = "unknown_transaction"  # undo id not in this session's log
     TRANSACTION_ALREADY_UNDONE = "transaction_already_undone"

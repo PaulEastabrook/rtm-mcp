@@ -1442,6 +1442,49 @@ class FocusIndexResult(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# Wave 1b — shape classification + the contribution state machine (v2.10.0)
+# --------------------------------------------------------------------------- #
+
+
+class ShapeKnockOut(BaseModel):
+    shape: str
+    anti_pattern: str
+
+
+class ItemClassifyResult(BaseModel):
+    name: str
+    shape: str
+    matched_pattern: str
+    also_matched: list[str] = []
+    knocked_out: list[ShapeKnockOut] = []
+
+
+class ContribRejection(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    reason: str
+    detail: str
+
+
+class ContribTransitionResult(BaseModel):
+    """Success and rejection share one shape (the rejection path omits the applied-only fields)."""
+
+    model_config = ConfigDict(extra="allow")
+    task_id: str
+    state: str
+    previous_state: str
+    kind: str = ""
+    category: str = ""
+    contrib_note_id: str = ""
+    update_note_id: str = ""
+    artefact_path: str = ""
+    vault_mirror_pending: str = ""
+    rejected: list[ContribRejection] | None = None
+    applied: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    message: str
+
+
+# --------------------------------------------------------------------------- #
 # Envelope schema builder — {data: <Success…> | ErrorData, metadata, analysis?}
 # --------------------------------------------------------------------------- #
 
@@ -1571,3 +1614,9 @@ REVIEW_REPORT_OUTPUT = _envelope_schema("ReviewReportEnvelope", ReviewReportResu
 ITEM_STALE_OUTPUT = _envelope_schema("ItemStaleEnvelope", ItemStaleResult)
 WORKLOAD_REPORT_OUTPUT = _envelope_schema("WorkloadReportEnvelope", WorkloadReportResult)
 FOCUS_INDEX_OUTPUT = _envelope_schema("FocusIndexEnvelope", FocusIndexResult)
+
+# GTD Wave 1b — shape classification + the contribution state machine (v2.10.0)
+ITEM_CLASSIFY_OUTPUT = _envelope_schema("ItemClassifyEnvelope", ItemClassifyResult)
+CONTRIB_TRANSITION_OUTPUT = _envelope_schema(
+    "ContribTransitionEnvelope", ContribTransitionResult, Candidates
+)

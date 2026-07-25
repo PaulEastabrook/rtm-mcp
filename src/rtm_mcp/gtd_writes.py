@@ -1116,6 +1116,25 @@ SURFACE_TYPE_LETTER: dict[str, str] = {
     "activity_report": "AR",
 }
 
+#: item_type -> the note TYPE token in the BODY note's title. EXPLICIT, never `item_type.upper()`.
+#: This is the same class of defect as `q_activity` vs `q_activity_report` above: an INPUT
+#: vocabulary (`activity_report`) leaking into an OUTPUT vocabulary. Derived, it produced
+#: `ACTIVITY_REPORT` — and the note-title TYPE token is `[A-Z][A-Z -]*`, with NO underscore, so
+#: `note_shape.check_title` REJECTS it. Latent only because RTM_STRICT_NOTES=shape is off by
+#: default; with the gate on, every activity-report creation through a gated path was blocked.
+#: `ACTIVITY-REPORT` is the conforming spelling (the four existing compound types SOURCE-DRAFT /
+#: CONTRIB-UPDATE / DEPENDS-ON / AI-LINK are all hyphenated) and is registered in
+#: `note-shape-catalogue.md` § 2 as of gtd v0.186.0.
+#: THE RULE: the input enum and the output token are different vocabularies and must be MAPPED,
+#: never derived.
+SURFACE_BODY_NOTE_TYPE: dict[str, str] = {
+    "question": "QUESTION",
+    "alert": "ALERT",
+    "notification": "NOTIFICATION",
+    "surface": "SURFACE",
+    "activity_report": "ACTIVITY-REPORT",  # NOT ACTIVITY_REPORT — see above
+}
+
 #: Auto-close TTL in days. None = never (questions/alerts). Per-type, NOT one constant.
 SURFACE_TTL_DAYS: dict[str, int | None] = {
     "question": None,
