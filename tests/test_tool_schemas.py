@@ -736,6 +736,15 @@ OVER_BUDGET_EXEMPTIONS = {
     "gtd_tag_report": "Documents the three-way classification and the people-tag caveat.",
     "gtd_item_complete": "Marginally over (17 bytes) once em-dashes are counted as UTF-8; "
     "trimming would cost a documented completion caveat.",
+    # v4.0.0 — pushed over solely by the ~190-byte receipt block that `receipt.RECEIPT_DOC`
+    # appends to EVERY governed write. Both were within ~180 bytes of the cap beforehand, so
+    # the overrun is the receipt's cost, not description growth. Accepted deliberately: the
+    # receipt is the only tier-1 statement that `not_applied[]` exists at all, and the
+    # posture-in-front assertion below still holds for both.
+    "gtd_surface_resolve": "Over by the shared receipt block only; was 177 bytes under before "
+    "it. The receipt earns its place — it is what tells a caller to read not_applied[].",
+    "gtd_dependency_link": "Over by the shared receipt block only; was 124 bytes under before "
+    "it. Same reasoning as gtd_surface_resolve.",
 }
 
 #: Cues that show a description's front block states the tool's posture. Presence of any one

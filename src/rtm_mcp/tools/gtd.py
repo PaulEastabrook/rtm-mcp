@@ -7,6 +7,8 @@ data and keeps a future lift of all `gtd_*` tools into a separate server a clean
 mechanical move.
 """
 
+import functools
+import inspect
 import logging
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -292,6 +294,8 @@ from ..project_plan import (
     resolve_focus,
     resolve_project,
 )
+from ..receipt import RECEIPT_DOC, is_facet, not_applied_entry
+from ..receipt import attach as attach_receipt
 from ..response_builder import (
     ADDITIVE_WRITE_ANNOTATIONS,
     DESTRUCTIVE_WRITE_ANNOTATIONS,
@@ -331,6 +335,86 @@ def _account_today(tz: str | None) -> str:
         return datetime.now(ZoneInfo(tz)).date().isoformat() if tz else _utc_today()
     except Exception:
         return _utc_today()
+
+
+def _at_default(value: Any, default: Any) -> bool:
+    """Whether an argument is indistinguishable from its declared default.
+
+    FastMCP binds defaults before the tool body runs, so a wrapper cannot see whether the caller
+    omitted a parameter or passed its default value explicitly (measured on 3.4.4). It does not
+    need to — the two are behaviourally identical, so the receipt treats them as one. Falls back
+    to identity for a value whose `==` raises or returns a non-bool (numpy-style), because an
+    unanswerable comparison must never fail a legitimate write.
+    """
+    try:
+        return bool(value == default)
+    except Exception:  # pragma: no cover — defensive; no current default type can reach it
+        return value is default
+
+
+def _with_receipt(fn: Any, annotations: Any) -> Any:
+    """Wrap a governed write so its response carries the teaching receipt (`receipt.py`).
+
+    Reads pass through **unwrapped** — the receipt answers "did what I asked for actually land?",
+    which is meaningless for a tool that writes nothing, and wrapping them would put a null
+    `advisory` on every read in the server.
+
+    `functools.wraps` is load-bearing rather than cosmetic: FastMCP builds the advertised
+    `inputSchema` from `inspect.signature`, which follows `__wrapped__`, and the
+    `_FullDocstringMCP` shim reads `inspect.getdoc`, which follows `__doc__`. Both are preserved,
+    so the advertised surface is byte-identical to the unwrapped function — verified by the
+    fingerprint guard, which would fail loudly on any drift.
+    """
+    if getattr(annotations, "readOnlyHint", False):
+        return fn
+
+    # Declared optionals, resolved ONCE at registration: a parameter with a default. `ctx` has
+    # none, so it is correctly excluded without being special-cased.
+    signature = inspect.signature(fn)
+    # Declared optional FACETS: a parameter with a default that carries a value. Control flags
+    # (booleans) are excluded — see `receipt.is_facet` for why a stripped boolean can never be
+    # the silent-partial-write this advisory exists to surface.
+    defaults = {
+        name: p.default
+        for name, p in signature.parameters.items()
+        if p.default is not inspect.Parameter.empty and is_facet(p.default)
+    }
+    declared = sorted(defaults)
+
+    @functools.wraps(fn)
+    async def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        result = await fn(*args, **kwargs)
+        if not isinstance(result, dict) or "data" not in result:
+            return result
+        # Bind rather than read `kwargs` directly: FastMCP calls with keywords, but a direct
+        # in-process caller (every test in this repo) may pass positionally, and reading kwargs
+        # alone reported those arguments ABSENT — measured, and it inflated the advisory rate
+        # from 25% to 82% before it was caught. A binding failure can only mean the call itself
+        # was malformed, which the tool has already reported; fall back rather than mask it.
+        try:
+            supplied = dict(signature.bind(*args, **kwargs).arguments)
+        except TypeError:  # pragma: no cover — unreachable via a bound call
+            supplied = dict(kwargs)
+        absent = [
+            name
+            for name, default in defaults.items()
+            if _at_default(supplied.get(name, default), default)
+        ]
+        attach_receipt(
+            result["data"],
+            tool_name=fn.__name__,
+            absent_optional=absent,
+            declared_optional=declared,
+        )
+        return result
+
+    # Document the receipt on the SAME surface that carries it. `functools.wraps` has just
+    # copied the original `__doc__`; appending here (rather than editing 25 docstrings) means a
+    # governed write added later is documented by the act of being registered. The shim reads
+    # `inspect.getdoc` off this wrapper, so the appended block reaches the advertised
+    # description — and `inspect.getdoc` normalises indentation, hence the bare join.
+    _wrapped.__doc__ = f"{(fn.__doc__ or '').rstrip()}\n\n{RECEIPT_DOC}"
+    return _wrapped
 
 
 # Advisory input-constraint metadata (surface 4) — every enum is sourced from the canonical
@@ -439,15 +523,18 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     """Register GTD domain-composition tools."""
 
     # Every tool registers through `_tool` rather than `mcp.tool` directly, so its function,
-    # annotations and output schema are recorded once and the deprecated alias registered at the
-    # end of this function inherits them EXACTLY. Repeating them at the alias site would be two
-    # things to keep in step — the defect class this whole programme exists to remove.
+    # annotations and output schema are recorded once and applied consistently. Since v4.0.0 it
+    # also attaches the teaching receipt to every governed write — centrally, for the same
+    # reason `RejectUnknownParameters` is one middleware rather than 99 per-tool configs: 25
+    # hand-wired call sites would be 25 things to keep in step, and the next tool added would
+    # silently ship without a receipt.
     _registry: dict[str, dict[str, Any]] = {}
 
     def _tool(**kwargs: Any) -> Any:
         def decorator(fn: Any) -> Any:
-            _registry[fn.__name__] = {"fn": fn, **kwargs}
-            return mcp.tool(**kwargs)(fn)
+            registered = _with_receipt(fn, kwargs.get("annotations"))
+            _registry[fn.__name__] = {"fn": registered, **kwargs}
+            return mcp.tool(**kwargs)(registered)
 
         return decorator
 
@@ -1030,6 +1117,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # ── Phase 2: apply (durable-first), recording transactions ────────
         applied: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        not_applied: list[dict[str, Any]] = []
         created_item_triples: list[dict[str, Any]] = []  # for instant/item audit-note placement
 
         async def _write(
@@ -1160,6 +1248,19 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                         rid,
                         tags=",".join(present),
                         **_ids(rid),
+                    )
+                else:
+                    not_applied.append(
+                        not_applied_entry(
+                            "execute:off",
+                            reason=ErrorCode.NO_CHANGE,
+                            detail=(
+                                "the item carried no progression directive to clear, so the "
+                                "clear was already satisfied and nothing was written."
+                            ),
+                            requested="off",
+                            item_id=rid,
+                        )
                     )
                 continue
             progress_tag, stale_sibling = execute_progress_tags(mode)
@@ -1294,6 +1395,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "project_id": pid,
                 "applied": applied,
                 "errors": errors,
+                "not_applied": not_applied,
                 "order_persisted": order_persisted,
                 "message": f"Applied {len(applied)} write(s); {len(errors)} error(s).",
             },
@@ -1304,14 +1406,15 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     async def gtd_project_create(
         ctx: Context,
         frame: Annotated[
-            dict[str, Any] | None,
+            dict[str, Any],
             BeforeValidator(coerce_json),
             WithJsonSchema(
                 coerced_object_schema(
-                    "{life (work|personal|leanworking), focus (area name/id), name (required), outcome}."
+                    "REQUIRED. {life (work|personal|leanworking), focus (area name/id), "
+                    "name (required), outcome}."
                 )
             ),
-        ] = None,
+        ],
         items: Annotated[
             list[dict[str, Any]] | None,
             BeforeValidator(coerce_json),
@@ -1851,12 +1954,30 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             projects_out.append(entry)
 
         verb = "Would stamp" if dry_run else "Stamped"
+        # A project named (or swept up) but never stamped. `not_repeating` is the one that can
+        # surprise a caller who asked for a specific project by id — the per-project
+        # `skipped_reason` already says so, but only if you dig into `projects[]`. `dry_run` is
+        # deliberately NOT reported: the caller asked for a preview and got one.
+        not_applied = [
+            not_applied_entry(
+                "stamp-tokens",
+                reason=ErrorCode.NOT_ELIGIBLE,
+                detail=(
+                    "not a repeating templated project — a one-off project keeps raw-id "
+                    "dependencies and is never stamped."
+                ),
+                item_id=str(p["project_id"]),
+            )
+            for p in projects_out
+            if p.get("skipped_reason") == "not_repeating"
+        ]
         return build_response(
             data={
                 "projects": projects_out,
                 "dry_run": dry_run,
                 "applied": applied,
                 "errors": errors,
+                "not_applied": not_applied,
                 "message": (
                     f"{verb} tokens across {len(projects_out)} project(s); "
                     f"{len(applied)} write(s), {len(errors)} error(s)."
@@ -2349,16 +2470,16 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     async def gtd_engage_commit(
         ctx: Context,
         items: Annotated[
-            list[dict[str, Any]] | None,
+            list[dict[str, Any]],
             BeforeValidator(coerce_json),
             WithJsonSchema(
                 coerced_obj_array_schema(
-                    "[{id, verdict, date_phrase?, note?}] — the renegotiation verdicts to apply "
-                    "(re-validated server-side; nothing written if any is rejected).",
+                    "REQUIRED. [{id, verdict, date_phrase?, note?}] — the renegotiation verdicts "
+                    "to apply (re-validated server-side; nothing written if any is rejected).",
                     item_schema=_ENGAGE_ITEM_SCHEMA,
                 )
             ),
-        ] = None,
+        ],
         confirm_destructive: Annotated[
             bool,
             Field(
@@ -2553,6 +2674,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         applied: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = []
+        not_applied: list[dict[str, Any]] = []
         refresh_projects: set[str] = set()
 
         async def _write(
@@ -2605,12 +2727,19 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 return
             for n in by_id.get(rid, {}).get("notes") or []:
                 if steer_note_text(extract_note_body(n)) == clean:
-                    applied.append(
-                        {
-                            "op": f"engage:{verb}:steer-note (skipped, duplicate)",
-                            "id": rid,
-                            "transaction_id": None,
-                        }
+                    # v4.0.0: this used to sit in `applied[]` labelled "(skipped, duplicate)" —
+                    # an entry that said, inside the applied list, that nothing was applied.
+                    not_applied.append(
+                        not_applied_entry(
+                            f"engage:{verb}:steer-note",
+                            reason=ErrorCode.NO_CHANGE,
+                            detail=(
+                                "an identical STEER note is already on the item; re-posting it "
+                                "would duplicate the instruction, so nothing was written."
+                            ),
+                            requested=clean,
+                            item_id=rid,
+                        )
                     )
                     return
             title, text = make_steer_note(local_stamp(tz), verb, clean)
@@ -2629,7 +2758,23 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             ids = _ids(rid)
 
             if verb in ("keep", "do_now"):
-                applied.append({"op": f"engage:{verb}", "id": rid, "transaction_id": None})
+                # Grammar § 4: both verdicts are decisions, not state changes — `keep` leaves the
+                # item exactly as it is and `do_now` says "I am doing it now", so neither has a
+                # durable RTM write. v4.0.0 moves them out of `applied[]` (where they sat with a
+                # null transaction_id, inflating the "Applied N write(s)" count with non-writes)
+                # into the receipt, which is the field that actually means "nothing was written".
+                not_applied.append(
+                    not_applied_entry(
+                        f"engage:{verb}",
+                        reason=ErrorCode.NO_DURABLE_WRITE,
+                        detail=(
+                            f"'{verb}' is a decision with no RTM state change; the item is "
+                            "unchanged by design. Any steer note you sent was still attached."
+                        ),
+                        requested=v["verdict"],
+                        item_id=rid,
+                    )
+                )
                 await _attach_steer(rid, verb, v.get("note"), ids)  # do_now → note-to-self
                 continue
             if verb == "drop":
@@ -2704,6 +2849,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "applied": applied,
                 "errors": errors,
                 "warnings": warnings,
+                "not_applied": not_applied,
                 "count": len(val_items),
                 "message": f"Applied {len(applied)} write(s); {len(errors)} error(s).",
             },
@@ -3651,7 +3797,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             ),
         ],
         summary: Annotated[str, Field(description="The title's brief summary (after the TYPE).")],
-        body: Annotated[str, Field(description="The note body (the narrative).")] = "",
+        body: Annotated[
+            str,
+            Field(
+                description="REQUIRED. The note body (the narrative) — a journal note with a "
+                "title and no content is never legitimate."
+            ),
+        ],
         timestamp: Annotated[
             bool,
             Field(description="Include HH:MM in the title (default False — date only)."),
@@ -3961,12 +4113,39 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         applied: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        not_applied: list[dict[str, Any]] = []
         _write = _writer(applied, errors, client)
         ids = {
             "task_id": task.get("id"),
             "taskseries_id": task.get("taskseries_id"),
             "list_id": task.get("list_id"),
         }
+        # The requested tag changes that were ALREADY true. RTM's addTags/removeTags are
+        # idempotent, so these cost nothing and raise nothing — which is exactly why a caller
+        # cannot tell from `applied[]` whether its transition moved anything. Computed against
+        # the pre-write tag set the validator already read, so it costs no extra call.
+        redundant_adds = sorted(t for t in add if t in existing)
+        redundant_removes = sorted(t for t in remove if t not in existing)
+        if redundant_adds:
+            not_applied.append(
+                not_applied_entry(
+                    "transition:add",
+                    reason=ErrorCode.NO_CHANGE,
+                    detail="already present on the item before this call.",
+                    requested=redundant_adds,
+                    item_id=str(task.get("id")),
+                )
+            )
+        if redundant_removes:
+            not_applied.append(
+                not_applied_entry(
+                    "transition:remove",
+                    reason=ErrorCode.NO_CHANGE,
+                    detail="not on the item before this call, so there was nothing to remove.",
+                    requested=redundant_removes,
+                    item_id=str(task.get("id")),
+                )
+            )
         if remove:
             await _write(
                 "rtm.tasks.removeTags",
@@ -4005,6 +4184,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "signal_stamped": OVERLAY_REFRESH,
                 "applied": applied,
                 "errors": errors,
+                "not_applied": not_applied,
                 "message": f"Transition applied with {len(applied)} write(s).",
             },
             timeline_id=client.timeline_id,
@@ -4211,16 +4391,17 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             str, Field(description="The Inbox_Stuff item to close — a task id (preferred) or name.")
         ],
         derived_refs: Annotated[
-            list[str] | None,
+            list[str],
             BeforeValidator(coerce_json),
             WithJsonSchema(
                 coerced_str_array_schema(
-                    "Task ids of the items derived from this capture. Each is resolved and listed "
-                    "in the COMPLETION note; an unresolvable id rejects the close (never orphan "
-                    "the source)."
+                    "REQUIRED. Task ids of the items derived from this capture. Each is resolved "
+                    "and listed in the COMPLETION note; an unresolvable id rejects the close "
+                    "(never orphan the source). Pass [] only for a capture that genuinely "
+                    "derived nothing."
                 )
             ),
-        ] = None,
+        ],
     ) -> dict[str, Any]:
         """GTD — close the clarify loop on an Inbox_Stuff item: write the COMPLETION note listing
         every derived item with its deep link, then complete the source.
@@ -4750,12 +4931,14 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     async def gtd_item_transition_batch(
         ctx: Context,
         items: Annotated[
-            list[str] | None,
+            list[str],
             BeforeValidator(coerce_json),
             WithJsonSchema(
-                coerced_str_array_schema("Task ids to transition. Every item is validated first.")
+                coerced_str_array_schema(
+                    "REQUIRED. Task ids to transition. Every item is validated first."
+                )
             ),
-        ] = None,
+        ],
         add_tags: Annotated[
             list[str] | None,
             BeforeValidator(coerce_json),
@@ -5029,16 +5212,16 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     async def gtd_inbox_drain(
         ctx: Context,
         dispositions: Annotated[
-            list[dict[str, Any]] | None,
+            list[dict[str, Any]],
             BeforeValidator(coerce_json),
             WithJsonSchema(
                 coerced_obj_array_schema(
-                    "The REVIEWED disposition set: [{item_ref, verb, args}] where verb is "
-                    "'tag' (args.tags) | 'move' (args.list_name) | 'complete' | 'leave'.",
+                    "REQUIRED. The REVIEWED disposition set: [{item_ref, verb, args}] where verb "
+                    "is 'tag' (args.tags) | 'move' (args.list_name) | 'complete' | 'leave'.",
                     item_schema=_INBOX_DISP_SCHEMA,
                 )
             ),
-        ] = None,
+        ],
     ) -> dict[str, Any]:
         """GTD — apply an APPROVED Inbox_Stuff disposition set in one governed call.
 
@@ -5125,17 +5308,17 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     async def gtd_waiting_for_sweep(
         ctx: Context,
         verdicts: Annotated[
-            list[dict[str, Any]] | None,
+            list[dict[str, Any]],
             BeforeValidator(coerce_json),
             WithJsonSchema(
                 coerced_obj_array_schema(
-                    "The REVIEWED chase verdict set: [{waiting_for_ref, verdict, new_due?}] where "
-                    "verdict is 'retickle' (needs new_due) | 'convert_to_action' | 'complete' | "
-                    "'leave'.",
+                    "REQUIRED. The REVIEWED chase verdict set: [{waiting_for_ref, verdict, "
+                    "new_due?}] where verdict is 'retickle' (needs new_due) | "
+                    "'convert_to_action' | 'complete' | 'leave'.",
                     item_schema=_CHASE_VERDICT_SCHEMA,
                 )
             ),
-        ] = None,
+        ],
     ) -> dict[str, Any]:
         """GTD — apply an APPROVED chase-queue verdict set over waiting-fors in one governed call.
 
@@ -5254,18 +5437,18 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     async def gtd_cluster_consolidate(
         ctx: Context,
         moves: Annotated[
-            list[dict[str, Any]] | None,
+            list[dict[str, Any]],
             BeforeValidator(coerce_json),
             WithJsonSchema(
                 coerced_obj_array_schema(
-                    "The REVIEWED consolidation move set: [{move_type, ...refs}] where move_type "
-                    "is 'reparent' (task_ref + new_parent_ref) | 'link_dependency' "
+                    "REQUIRED. The REVIEWED consolidation move set: [{move_type, ...refs}] where "
+                    "move_type is 'reparent' (task_ref + new_parent_ref) | 'link_dependency' "
                     "(dependent_ref + upstream_ref + why) | 'complete' (task_ref) | 'promote' "
                     "(task_ref — to top level).",
                     item_schema=_CONSOLIDATE_MOVE_SCHEMA,
                 )
             ),
-        ] = None,
+        ],
     ) -> dict[str, Any]:
         """GTD — apply an APPROVED cluster-consolidation move set in one governed call.
 

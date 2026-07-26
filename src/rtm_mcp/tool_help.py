@@ -336,6 +336,12 @@ RECOVERY: dict[str, str] = {
     ErrorCode.DESTRUCTIVE_UNCONFIRMED: "Pass `confirm_destructive=True` to proceed.",
     ErrorCode.COMMIT_REJECTED: "One or more ops failed validation; `rejected[]` names each reason. NOTHING was written.",
     ErrorCode.WRITE_FAILED: "The write reached RTM and failed. `errors[]` carries the per-op detail; earlier ops in the batch may have applied.",
+    # Outcome reasons, not failures — these appear ONLY as `not_applied[].reason` on an
+    # otherwise-successful write, so "recovery" here means "decide whether you still need
+    # something to happen", not "fix an error".
+    ErrorCode.NO_CHANGE: "Not an error — the item was already in the state you asked for, so nothing was written. Nothing to do unless you expected a change, in which case re-read the item: your view of it was stale.",
+    ErrorCode.NO_DURABLE_WRITE: "Not an error — the operation is a decision or marker with no RTM state change by design. Do not retry; it will never write. If you needed a durable change, pick the verb that makes one.",
+    ErrorCode.NOT_ELIGIBLE: "Not an error — the target does not qualify for this operation, so it was skipped. `detail` says why. Retrying will skip it again; act on a qualifying target instead.",
 }
 
 
@@ -563,6 +569,48 @@ def build_index(tools: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+#: The teaching-receipt contract, served on every governed write's tier-2 contract. Authored
+#: here because tier 2 has budget where the description does not: the description carries only
+#: the imperative (`receipt.RECEIPT_DOC`, ~190 bytes charged against ~2 KB), and this carries
+#: the reasoning behind it. Neither restates the other, which is the § 3 rule.
+#:
+#: Why a caller should care, stated once: the hosted client deletes an undeclared argument
+#: before this server sees it, so a misspelt OPTIONAL modifier does not fail — the write lands
+#: without it and reports success. The receipt is how that becomes visible after the fact.
+RECEIPT_CONTRACT: dict[str, Any] = {
+    "applied": (
+        "One entry per RTM write that actually happened, each with the `transaction_id` "
+        "`undo`/`batch_undo` needs. Since v4.0.0 it contains ONLY real writes — an operation "
+        "that wrote nothing is in `not_applied[]`, so `len(applied)` is an honest count."
+    ),
+    "not_applied": (
+        "One entry per operation you requested that produced NO write, as "
+        "`{op, id, requested, reason, detail}`. `reason` is a stable code (`no_change` — "
+        "already in that state; `no_durable_write` — a decision with no RTM change; "
+        "`not_eligible` — the target does not qualify); `detail` is prose, never parse it. "
+        "ALWAYS PRESENT, empty when everything landed — so branch on it unconditionally."
+    ),
+    "guidance": (
+        "One plain next step when the outcome was not a clean full success — a validation "
+        "rejection (nothing written), a partial batch (some writes durable, some failed), or "
+        "a narrower-than-asked result. `null` on a clean success."
+    ),
+    "advisory": (
+        "Set when the call arrived carrying NONE of this tool's optional parameters, naming "
+        "them. Not a rejection and never blocking — a minimal call is often legitimate. It "
+        "exists because some MCP clients silently DROP a misspelt optional before the server "
+        "sees it: the write then succeeds without that property and reports success, and "
+        "absence is the only evidence left. If you sent an optional and see this, it did not "
+        "arrive — re-send with the exact name."
+    ),
+    "how_to_use": (
+        "After any governed write: if `not_applied[]` is non-empty, reconcile it against what "
+        "you intended before telling the user it is done; if `advisory` is set and you meant "
+        "to pass an optional, re-send it; follow `guidance` when present."
+    ),
+}
+
+
 def build_contract(tool: dict[str, Any]) -> dict[str, Any]:
     """The named view: one tool's full contract, projected from its own advertised schema."""
     name = str(tool.get("name"))
@@ -580,6 +628,11 @@ def build_contract(tool: dict[str, Any]) -> dict[str, Any]:
         "returns": returns_prose(description),
         "errors": error_catalogue(description),
     }
+    # The receipt rides on governed writes only — it answers "did what I asked for land?",
+    # which a read has no answer to. Gated on the same posture the wrapper gates on, so the
+    # contract can never advertise a receipt the tool does not attach.
+    if not contract["posture"]["read_only"] and contract["taxonomy"]["domain"] == "gtd":
+        contract["receipt"] = dict(RECEIPT_CONTRACT)
     edges = CHAIN.get(name)
     if edges:
         contract["chain"] = {

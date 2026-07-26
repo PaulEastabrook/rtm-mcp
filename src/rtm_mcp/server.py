@@ -71,31 +71,31 @@ RTM MCP Server — Remember The Milk task management, plus a GTD domain layer ov
 Two tool families. Pick the family first, then the tool.
 
 **Generic RTM primitives** (44, bare verbs) map close to one RTM method each: `list_tasks`,
-`add_task`, `complete_task`, `delete_task`, `postpone_task`, `move_task`, the `set_task_*`
-setters, `set_parent_task`, notes (`add_note`, `edit_note`, `get_task_notes`), lists
-(`get_lists`, `add_list`, `rename_list`), tags (`add_task_tags`, `set_task_tags`,
-`get_tags`), deep links (`get_task_url`), and utilities (`undo`, `batch_undo`,
-`parse_time`, `get_settings`, `test_connection`).
-Keywords: task, to-do, reminder, due date, priority, tag, list, note, recurrence,
-estimate, RTM.
+`add_task`, `complete_task`, `delete_task`, `move_task`, the `set_task_*` setters,
+`set_parent_task`, notes (`add_note`, `edit_note`), lists (`get_lists`, `add_list`), tags
+(`add_task_tags`, `set_task_tags`), and utilities (`undo`, `batch_undo`, `parse_time`).
+Keywords: task, to-do, reminder, due date, priority, tag, list, note, recurrence, RTM.
 
 **GTD domain compositions** (55, `gtd_` prefix) speak Getting Things Done rather than
 mapping 1:1 to an API method: inbox and capture (`gtd_inbox_*`), projects and plans
 (`gtd_project_*`, `gtd_canvas_commit`), items (`gtd_item_*`), next actions and today
-(`gtd_next_actions`, `gtd_item_today`), waiting-fors, reviews and hygiene reports
-(`gtd_*_report`, `gtd_*_candidates`), the engage sweep (`gtd_engage_*`), in-board
-conversations (`gtd_chat_*`), and the AI surface (`gtd_surface_*`).
+(`gtd_next_actions`, `gtd_item_today`), reviews and hygiene reports (`gtd_*_report`,
+`gtd_*_candidates`), the engage sweep (`gtd_engage_*`), conversations (`gtd_chat_*`), and
+the AI surface (`gtd_surface_*`).
 Keywords: GTD, next action, inbox, clarify, weekly review, project plan, waiting for, area
-of focus, someday, engage, blocked, dependency, canvas.
+of focus, someday, engage, blocked, canvas.
 
 **Start with `rtm_tool_help()`.** No argument returns the whole-server index — one purpose
 line per tool, the cheap "which tool?" answer. A tool name returns that tool's full
-contract: the combination rules the JSON schema cannot express, worked examples, every
-return case, the typed-error catalogue with recovery, and which tools feed into it.
+contract: combination rules the schema cannot express, worked examples, every return case,
+the typed-error catalogue with recovery, and which tools feed it.
 
 Writes carry a `transaction_id`; `undo` / `batch_undo` reverse them. Destructive tools
-require `confirm_destructive=True`. A call carrying a parameter the tool does not define is
-rejected with the accepted set named, and nothing written.
+require `confirm_destructive=True`. An undefined parameter is rejected, nothing written.
+
+**Every `gtd_` write returns a receipt.** `applied[]` is what was written; `not_applied[]`
+is what you asked for that was NOT, with a reason. Check `not_applied[]` before reporting
+success — a write can succeed while doing less than you asked.
 
 This product uses the Remember The Milk API but is not endorsed or certified by Remember
 The Milk.

@@ -118,6 +118,18 @@ class ErrorCode(str, Enum):
     NOTE_SHAPE_REJECTED = "note_shape_rejected"  # note title fails the mechanical grammar
     DESTRUCTIVE_UNCONFIRMED = "destructive_unconfirmed"  # confirm_destructive not set
 
+    # ------------------------------------------------------------------- outcome
+    # NOT failures — these are the `not_applied[].reason` vocabulary (the teaching receipt,
+    # v4.0.0): why a requested operation produced no write on an otherwise-successful call.
+    # They live here because the designed change requires ONE reason vocabulary across the
+    # envelope error, the commit engines' `rejected[]`, and the receipt — a second registry
+    # would recreate exactly the drift v2.0.0 removed. That does widen this enum's meaning
+    # from "failure" to "machine-branchable outcome"; the widening is deliberate and recorded
+    # rather than silent. None of these is ever an `error.code`.
+    NO_CHANGE = "no_change"  # already in the requested state — the write would be a no-op
+    NO_DURABLE_WRITE = "no_durable_write"  # the op is a decision/marker with no RTM write
+    NOT_ELIGIBLE = "not_eligible"  # the target does not qualify for this operation
+
     # -------------------------------------------------------------------- commit
     COMMIT_REJECTED = "commit_rejected"  # envelope code; details.rejected[] is granular
 
