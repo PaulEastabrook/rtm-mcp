@@ -414,7 +414,13 @@ Rules:
   survives without leaking into the semantic code name.
 - **Optional keys go under `details`** (`candidates`, `how_to_proceed`, `strict_tag_mode`,
   `query`, …). `ErrorBody` is `extra="forbid"` — the top level is a closed four-field contract.
-- **The registry is ADDITIVE-ONLY.** A new failure gets a new member; a shipped code is never
+- **The registry holds OUTCOMES, not only failures** (v4.1.0). It also carries the receipt's
+  `not_applied[].reason` vocabulary (`no_change` / `no_durable_write` / `not_eligible`), which
+  describes operations that wrote nothing on an otherwise-**successful** call. **The
+  discriminator is the field, not the registry:** a code in `not_applied[].reason` is an
+  outcome; a code in `error.code` is a failure. Never let an outcome member reach `error.code` —
+  `tests/test_receipt.py` enforces it.
+- **The registry is ADDITIVE-ONLY.** A new outcome gets a new member; a shipped code is never
   renamed or removed. (The v2.0.0 envelope restructure was a one-time break, not a licence to
   mutate the registry.)
 - **Two error shapes, one governed here.** This section covers the *envelope* error and the

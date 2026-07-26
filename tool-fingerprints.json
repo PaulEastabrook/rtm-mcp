@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "server": "rtm",
-  "generated_at": "2026-07-26T18:56:40Z",
-  "source_version": "4.0.1",
+  "generated_at": "2026-07-26T19:01:24Z",
+  "source_version": "4.1.0",
   "tools": {
     "mcp__rtm__add_list": "42e3e964294a92a8220fe25928b923ef1dcfcd9296dc917a3c7ae495ab6ee53b",
     "mcp__rtm__add_note": "1df0daca067689c724008cf92f8e2b1163493343463447ecc012c20a8f7b5030",
