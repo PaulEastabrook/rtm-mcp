@@ -426,3 +426,66 @@ class TestReceiptSurvivesMcpSerialisation:
         text = "".join(getattr(b, "text", "") for b in res.content)
         assert "not_applied" in text, "receipt missing from the serialised text block"
         assert json.loads(text)["data"]["not_applied"] == []
+
+
+class TestReceiptDocIsVersionIndependent:
+    """The appended block must not leave source indentation in the advertised description.
+
+    This guards a real cross-version bug that CI caught and a local run could not. Python 3.13+
+    dedents docstrings at COMPILE time; 3.11 and 3.12 do not. `inspect.getdoc` dedents by the
+    common leading whitespace of the continuation lines — so composing from the RAW `__doc__`
+    and appending an UNINDENTED block drops that common prefix to zero, and every line keeps its
+    source indentation on 3.11/3.12 only. Measured on CI: `gtd_item_set_redaction` was 1,946
+    bytes on 3.14 and 2,106 on 3.12, which also broke the committed fingerprints.
+
+    Asserted on the wrapper directly, so it holds whatever Python the suite happens to run on.
+    """
+
+    def test_wrapping_normalises_before_appending(self):
+        from rtm_mcp.tools.gtd import _with_receipt
+
+        async def sample(ctx: Any, thing: str = "") -> dict[str, Any]:
+            """GTD — a sample governed write.
+
+            A continuation line that is indented in source.
+
+            Returns:
+                {"applied": [...]}.
+            """
+            return {"data": {}}
+
+        wrapped = _with_receipt(sample, None)
+        doc = inspect.getdoc(wrapped) or ""
+        body = [ln for ln in doc.splitlines() if "indented in source" in ln]
+        assert body, "the original docstring body was lost"
+        assert not body[0].startswith(" "), (
+            f"source indentation leaked into the advertised description: {body[0]!r}. "
+            "Compose from inspect.getdoc(fn), not fn.__doc__."
+        )
+        assert doc.endswith(RECEIPT_DOC)
+
+    @pytest.mark.asyncio
+    async def test_every_advertised_description_is_fully_dedented(self):
+        """The same property on the REAL server, checked precisely.
+
+        The signature of the bug is that the docstring's own common indentation survives. So:
+        strip the appended block (whose lines are unindented by construction and would mask the
+        measurement), then assert the remaining body still reaches column 0 somewhere. Pre-fix on
+        3.11/3.12 every original line sat at 8+; post-fix the minimum is 0 on every version.
+
+        A deep-indented line on its own is NOT the bug — a two-level `Args:` continuation is
+        legitimately 8 spaces after a correct dedent, which is why the naive check was wrong."""
+        tools = await _tools()
+        offenders = {}
+        for name, tool in tools.items():
+            mcp_tool = tool.to_mcp_tool()
+            if not _is_governed_write(name, mcp_tool):
+                continue
+            body = (mcp_tool.description or "").replace(RECEIPT_DOC, "")
+            lines = [ln for ln in body.splitlines()[1:] if ln.strip()]
+            if lines and min(len(ln) - len(ln.lstrip()) for ln in lines) != 0:
+                offenders[name] = min(len(ln) - len(ln.lstrip()) for ln in lines)
+        assert not offenders, (
+            f"descriptions still carrying their source indentation (min indent per tool): "
+            f"{offenders}. Compose from inspect.getdoc(fn), not fn.__doc__."
+        )

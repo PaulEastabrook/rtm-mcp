@@ -410,10 +410,18 @@ def _with_receipt(fn: Any, annotations: Any) -> Any:
 
     # Document the receipt on the SAME surface that carries it. `functools.wraps` has just
     # copied the original `__doc__`; appending here (rather than editing 25 docstrings) means a
-    # governed write added later is documented by the act of being registered. The shim reads
-    # `inspect.getdoc` off this wrapper, so the appended block reaches the advertised
-    # description — and `inspect.getdoc` normalises indentation, hence the bare join.
-    _wrapped.__doc__ = f"{(fn.__doc__ or '').rstrip()}\n\n{RECEIPT_DOC}"
+    # governed write added later is documented by the act of being registered, and the shim
+    # picks it up via `inspect.getdoc` on this wrapper.
+    #
+    # `inspect.getdoc(fn)`, NOT `fn.__doc__` — and the difference is a real cross-version bug
+    # that CI caught and a local run could not. Python 3.13+ dedents docstrings at COMPILE time;
+    # 3.11/3.12 do not. `inspect.getdoc` dedents by the common leading whitespace of the
+    # continuation lines, so appending an UNINDENTED block first would drop that common prefix
+    # to zero and leave every line's original source indentation in the advertised description —
+    # on 3.11/3.12 only. Measured: `gtd_item_set_redaction` 1,946 B on 3.14 vs 2,106 B on 3.12.
+    # Normalising BEFORE the join makes the description byte-identical on every supported
+    # version, which is also what the committed fingerprints require.
+    _wrapped.__doc__ = f"{(inspect.getdoc(fn) or '').rstrip()}\n\n{RECEIPT_DOC}"
     return _wrapped
 
 

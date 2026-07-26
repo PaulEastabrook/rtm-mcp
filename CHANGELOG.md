@@ -4,6 +4,29 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v4.0.1 — the receipt docstring is now version-independent
+
+**Bug fix, found by CI on Python 3.11/3.12 after v4.0.0 was pushed; the local gate runs 3.14 and
+could not see it.**
+
+`_with_receipt` composed each governed write's advertised description from the raw `fn.__doc__` and
+appended an unindented receipt block. **Python 3.13+ dedents docstrings at compile time; 3.11 and
+3.12 do not** — and appending an unindented block drops `inspect.getdoc`'s common-prefix dedent to
+zero, so on those versions every line kept its source indentation. Measured: `gtd_item_set_redaction`
+**1,946 bytes on 3.14 vs 2,106 on 3.12**, breaking both the description-budget assertion and the
+committed fingerprints. **All 25 governed writes were affected** on 3.11/3.12.
+
+Composing from `inspect.getdoc(fn)` normalises first. Verified by hashing `inputSchema` +
+`description` for all 100 tools under 3.12 and 3.14: **zero differences**.
+
+Two guards added, both confirmed to **fail** on the reverted form under 3.12 — a unit test on the
+wrapper, and a server-wide check that each governed write's description still reaches column 0 once
+the appended block is removed. (The first attempt asserted "no deeply-indented line" and was wrong:
+a two-level `Args:` continuation is legitimately 8 spaces after a correct dedent.)
+
+**Note for the siblings:** this bug is invisible on Python 3.13+. Any server appending to a docstring
+must normalise first, and must run CI on the oldest supported version to see it.
+
 ## v4.0.0 — the teaching receipt, and eight parameters that were never legitimately absent
 
 **BREAKING** (§ 2 below). Implements the approved designed change
