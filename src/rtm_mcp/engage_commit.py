@@ -74,6 +74,7 @@ VERDICT_REJECT_REASONS = frozenset(
 # strict-tag existence gate — formerly `non_canonical_tag`).
 ENGAGE_REJECT_REASONS = VERDICT_REJECT_REASONS | frozenset(
     {
+        ErrorCode.MISSING_PARAMETER,  # tool: `items` arrived present but empty (v5.0.0)
         ErrorCode.TASK_NOT_FOUND,
         ErrorCode.DESTRUCTIVE_UNCONFIRMED,
         ErrorCode.BAD_DATE,

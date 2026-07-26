@@ -456,6 +456,8 @@ _HELPER_CODES: dict[str, set[str]] = {
     "error_from_exception": {"auth_failed", "service_unavailable", "network_error"},
     # The Wave 1 reads' shared window/threshold guard rail.
     "_bounded_int": {"invalid_input"},
+    # v5.0.0 — the present-but-empty payload gate on the eight payload parameters.
+    "check_payload": {"missing_parameter"},
 }
 
 

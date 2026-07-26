@@ -224,6 +224,44 @@ def _reject(reason: ErrorCode, detail: str, **extra: Any) -> dict[str, Any]:
     return {"reason": reason.value, "detail": detail, **extra}
 
 
+def check_payload(param: str, value: Any, *, carries: str) -> list[dict[str, Any]]:
+    """Reject a payload parameter that arrived **present but empty** (v5.0.0).
+
+    Scoped deliberately narrowly: only the eight parameters **whose value IS the work** — the
+    verdict set, the disposition set, the note body. v4.0.0 made them required, which closed
+    *absence*; `[]` / `{}` / `""` stayed legal and produced a silent no-op, and v4.1.0's
+    `guidance` narrowing then removed the one signal that made that no-op visible. Rather than
+    restore the signal, the silent case is removed.
+
+    **This is NOT a general empty-check.** A genuine optional facet (`due`, `energy`,
+    `extra_tags`) is legitimately absent or empty and is covered by the receipt, never by
+    rejection; a boolean is a mode switch, not data (`receipt.is_facet`); and a no-argument
+    call like `rtm_tool_help()` is a designed view selector, not an empty payload.
+
+    Generalises the rule `validate_transition` already applies to `add_tags`/`remove_tags`, and
+    reuses its `MISSING_PARAMETER` reason rather than minting a code — a new member would churn
+    all 100 fingerprints for a failure the registry already spells.
+
+    A whitespace-only string counts as empty: a note body of `"   "` is contentless by exactly
+    the same argument, and accepting it would leave the hole half-closed.
+    """
+    empty = value is None or (
+        isinstance(value, list | dict | str)
+        and not (value.strip() if isinstance(value, str) else value)
+    )
+    if not empty:
+        return []
+    return [
+        _reject(
+            ErrorCode.MISSING_PARAMETER,
+            f"`{param}` arrived empty. It carries the {carries} this tool applies, so an empty "
+            f"value would write nothing at all. Send the {carries} — or, if there is nothing to "
+            "do, do not call this tool.",
+            parameter=param,
+        )
+    ]
+
+
 def validate_create_item(
     *,
     kind: str,

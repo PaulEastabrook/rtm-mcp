@@ -38,6 +38,7 @@ FINALISE_MARK = "ai_project_needs_finalise"
 # existence gate.
 CREATE_REJECT_REASONS = frozenset(
     {
+        ErrorCode.MISSING_PARAMETER,  # tool: `frame` arrived present but empty (v5.0.0)
         ErrorCode.MISSING_NAME,  # validate_create: no project title
         ErrorCode.INVALID_LIFE,  # validate_create: life outside LIFE_TAGS
         ErrorCode.DUPLICATE_ID,  # validate_create: two items resolve to the same in-draft id
