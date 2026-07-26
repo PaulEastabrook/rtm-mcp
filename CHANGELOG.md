@@ -4,6 +4,91 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v4.0.0 — the teaching receipt, and eight parameters that were never legitimately absent
+
+**BREAKING** (§ 2 below). Implements the approved designed change
+`2026-07-26-tool-receipts-and-parameter-tightening.md` §§ 2–3, as a **TRIAL on this server only** —
+the three sibling MCP servers are explicitly gated on this release's debrief.
+
+### 1. The teaching receipt (additive)
+
+v3.3.0 shipped tiers 1 and 2 of the Tool Affordance Model and proved tier 3 **unreachable** on the
+hosted client: Claude Desktop deletes an undeclared argument before the server sees it. That leaves
+one real failure — a misspelt **optional modifier** on a governed write produces a **silent partial
+write**: the item lands without the property, and success is reported. You cannot throw on what you
+were never told, so this closes it from the other end by making the *outcome* impossible to misread.
+
+Every one of the **25 governed `gtd_*` writes** now returns three additional fields:
+
+| Field | Contract |
+|---|---|
+| `not_applied[]` | One entry per requested operation that produced **no write** — `{op, id, requested, reason, detail}`. **Always present, empty when everything landed** (zero-not-absent, so a consumer branches unconditionally). |
+| `guidance` | One plain next step when the outcome was not a clean full success — rejection / partial batch / narrower-than-asked. `null` otherwise. |
+| `advisory` | Set when the call arrived carrying **none** of the tool's optional value-bearing parameters, naming them. Never a rejection, never blocking. |
+
+Attached **centrally** at registration (`tools/gtd.py::_tool` → `receipt.py`), not at 25 call sites —
+the same one-place-cannot-drift reasoning as the `RejectUnknownParameters` middleware. A new
+governed write gets a receipt by the act of being registered. Verified schema-transparent: input
+schemas and descriptions are **byte-identical across all 100 tools** to the unwrapped functions
+(measured against a v3.3.0 worktree, with a control proving the baseline really loaded).
+
+Three new `ErrorCode` members form the `not_applied[].reason` vocabulary — the **fourth** scoped view
+of the one registry: `no_change`, `no_durable_write`, `not_eligible`. They are **outcomes, not
+failures**, and never appear as an `error.code`; the widening of the registry's meaning is deliberate
+and recorded in `error_codes.py`.
+
+**Two entries moved out of `applied[]`** in `gtd_engage_commit`, which is a visible change to that
+array's contents (not to any field): a `keep` / `do_now` verdict, and a skipped duplicate STEER note
+that literally sat in the *applied* list labelled `"(skipped, duplicate)"`. Both wrote nothing and
+inflated the `"Applied N write(s)"` count with non-writes. They are now `not_applied[]` entries, and
+the count is honest.
+
+**Where a caller learns this exists** — three surfaces, none restating another: the server
+`instructions` carry the imperative (*"Check `not_applied[]` before reporting success"*, held at
+**2,046 bytes**, unchanged, by trimming tool enumerations that `rtm_tool_help()` serves on demand);
+each governed write's description carries a ~190-byte block; and `rtm_tool_help("<tool>")` carries the
+full contract with no budget pressure. `gtd_surface_resolve` and `gtd_dependency_link` cross the 2 KB
+description budget **solely** because of that shared block and are added to the exemption list with
+that reason stated.
+
+### 2. Eight parameters tightened to required — BREAKING
+
+Each permitted a call that was never legitimate. A previously-accepted call now errors:
+
+| Tool | Now required | What the old call did |
+|---|---|---|
+| `gtd_engage_commit` | `items` | empty commit |
+| `gtd_inbox_drain` | `dispositions` | no-op |
+| `gtd_waiting_for_sweep` | `verdicts` | no-op |
+| `gtd_cluster_consolidate` | `moves` | no-op |
+| `gtd_item_transition_batch` | `items` | no-op |
+| `gtd_project_create` | `frame` | malformed project |
+| `gtd_note_add` | `body` | **a note with a title and no content** |
+| `gtd_inbox_item_close` | `derived_refs` | closed without naming what it derived |
+
+Justified because every such call already produced an empty or wrong outcome, and the new failure is
+loud and immediate. **Not tightened**, deliberately: `gtd_item_create`'s `due` / `energy` / `comms`
+and similar genuine facets, where absence is legitimate — those are what § 1 covers.
+
+### 3. Measured during the trial
+
+- **The advisory fired on 82% of governed-write calls** on first implementation — two real bugs, both
+  caught by measuring rather than reasoning: it fired on *any* absent optional instead of *all*, and
+  the wrapper read `kwargs` directly, so arguments passed positionally were reported absent.
+  Corrected: **17.3%**.
+- **Tightening and the advisory interact.** Once the eight payloads became required, the only
+  optionals left on `gtd_engage_commit` and `gtd_note_add` were control flags, so both fired on
+  **100%** of legitimate calls. Excluding booleans (`receipt.is_facet`) took both to 0%. This is a
+  correctness rule, not tuning: a stripped boolean gets the call rejected or changes documented
+  default behaviour — it can never be the silently-lost value the advisory exists for.
+
+### Activation
+
+Vault-free, no new tag, no strict-tag interaction. **All 100 fingerprints churn** — structural, from
+the `ErrorCode` enum being inlined into every `ErrorBody.code` plus the output-schema and description
+additions; it is not 100 tools changing behaviour. To go live: restart the server on v4.0.0. § 1 is
+additive and § 2 is a revert, so there is no one-way door.
+
 ## v3.3.0 — the Tool Affordance Standard: front-loaded selection, help on demand, teaching rejections
 
 Implements the family Tool Affordance Standard (git-ops `mcp-tool-documentation-standard.md`

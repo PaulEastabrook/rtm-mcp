@@ -15,6 +15,7 @@ src/rtm_mcp/
 ├── config.py           # Pydantic settings (env + file + rate limits + connection retry)
 ├── parsers.py          # RTM response parsing, formatting, normalization, analysis
 ├── error_codes.py      # Canonical ErrorCode registry (typed error vocabulary) + RTM numeric→code map; ADDITIVE-ONLY leaf module
+├── receipt.py          # The teaching receipt (v4.0.0) — the three fields every governed gtd_* write returns: not_applied[] (requested but NOT written, zero-not-absent), guidance (the next step when the outcome was not a clean success), advisory (the call carried none of its optional value-bearing params). Pure leaf (imports only error_codes); attached centrally by tools/gtd.py::_tool, never at 25 call sites
 ├── response_builder.py # MCP response envelope + structured error constructors + transaction recording + tool behaviour-annotation constants
 ├── models.py           # Schema-only Pydantic output-schema models (per-tool @mcp.tool(output_schema=...)); not used at runtime
 ├── lookup.py           # Shared name-to-ID resolution for tasks and lists
@@ -69,6 +70,7 @@ src/rtm_mcp/
 | `middleware.py` | The **call-boundary gate**: `RejectUnknownParameters`, one `on_call_tool` middleware refusing any tool call that carries a parameter the tool does not define. Zero API calls, no envelope — it raises `ToolError` before the tool body runs, matching the protocol-level shape the existing missing-required-parameter rejection already uses (deliberately NOT an `ErrorCode`, which would churn every fingerprint for a failure that is not a tool's own). The valid-name set is read live from the tool's advertised `parameters["properties"]`, so it cannot drift from what clients are told |
 | `tool_help.py` | The **tier-2 affordance surface** — pure (no-IO) projections behind `rtm_tool_help`: `build_index` (the whole-server purpose table, the cheap "which tool?" answer) and `build_contract` (one tool's full contract). **Defined by subtraction**: it carries only what the other surfaces cannot — the combination rules JSON Schema cannot express (the family bans advertised `anyOf`), worked examples, the multi-case `Returns` in prose, the `annotations` facts rendered as prose (this client never shows them to the model), the typed-error catalogue with recovery, and the mechanical chain edges. Almost everything is **derived** from the live advertised schema, so help cannot drift; only `COMBINATION_RULES` / `EXAMPLES` / `CHAIN` / `BFF_TOOLS` are authored. The error catalogue is derived from the codes the description NAMES — complete by construction, because `TestAdvertisedErrorContract` already asserts a description names every code its tool can reach. `RECOVERY` covers all 50 `ErrorCode` members and is written for the caller's actual context (a governed-domain failure names the mechanical fix AND points at the wrapping skill that owns the judgement — a pointer only, never a copy of gtd's vocabulary) |
 | `guided_rejection.py` | The **tier-3 affordance surface** — one rejection shape, three producers. `build_rejection` assembles the teaching payload (tool purpose, the typed parameter table projected from the tool's own `inputSchema`, a nearest-name guess, the violated combination rule, the help pointer) and `render_prose` renders it for the protocol-level `ToolError` path. Converges the two pre-existing shapes (`strict_tags.guided_error`'s `how_to_proceed`, `engage_commit.validate`'s closest-legal suggestion) rather than adding a third. A rejection is the ONE moment the server *makes* a caller read something, which is why the teaching lives here |
+| `receipt.py` | The **teaching receipt** — `not_applied[]` / `guidance` / `advisory` on every governed `gtd_*` write. Exists because tier 3 cannot fire: the hosted client deletes an undeclared argument before this server sees it, so a misspelt *optional modifier* produces a **silent partial write** and there is no anomaly to detect — you cannot throw on what you were never told. So it attacks the other end and makes the OUTCOME unmissable. `not_applied_entry` (one requested op that wrote nothing, `reason` from `RECEIPT_REASONS` — the fourth scoped view of the `ErrorCode` registry, and **outcomes not failures**); `build_advisory` (fires only when EVERY optional facet is absent — reasoning about *absence* is the one thing still observable after a strip); `is_facet` (a boolean is a mode switch, not data — a stripped control flag gets the call rejected or changes documented default behaviour, so it can never be the silently-lost value; measured, this took two tools from firing on 100% of legitimate calls to 0%); `build_guidance` (severity-ordered: rejection > partial batch > narrower-than-asked); `attach` (guarantees the keys, preserves what a tool body populated, and returns an **error** envelope untouched — `data.error` is the union discriminator). Pure leaf, no async, no client import — all three pinned by test, because the receipt must never become a gate |
 | `response_builder.py` | Wrap tool output in the standard MCP response envelope; build every structured error (`build_error` / `error_from_exception`); hold the three tool behaviour-annotation constants (`READ_ONLY_`/`ADDITIVE_WRITE_`/`DESTRUCTIVE_WRITE_ANNOTATIONS`) |
 | `models.py` | Schema-only Pydantic models generating each tool's MCP `outputSchema` (attached via `@mcp.tool(output_schema=...)`); **not used at runtime** — tools still return the `response_builder` dict, FastMCP advertises the schema without validating. `data` is always a `success \| ErrorData` union — since v2.0.0 `ErrorData.error` is the nested `ErrorBody` (`{code, message, rtm_code, details}`, `extra="forbid"`), not a prose string; the six-surface tool-documentation standard (CONTRIBUTING § 3) |
 | `lookup.py` | Resolve human-readable names (task name, list name) to RTM IDs |
@@ -161,6 +163,11 @@ All tools return a consistent envelope:
     }
 }
 ```
+
+Since **v4.0.0** a governed `gtd_*` write's **success** `data` additionally carries the teaching
+receipt — `not_applied[]` (always present, `[]` when everything landed), `guidance`, `advisory`.
+Attached centrally by `tools/gtd.py::_tool`, never at the call site; an **error** envelope carries
+none of it. See the receipt section above and CONTRIBUTING § 4.1.
 
 ### HTTP Transport
 
@@ -298,6 +305,74 @@ better one. An `_`-prefix rule would have been worse still — `_type_tags` is a
 **Membrane / activation.** No new tag, no schema change (all 99 fingerprints byte-identical), no
 new `ErrorCode`, vault-free. To go live: restart the server on v3.2.0. Rollback is one line
 (removing the `add_middleware` call), so this is recoverable rather than a one-way door.
+
+### The teaching receipt — closing the silent-partial-write gap (since v4.0.0)
+
+Implements the approved designed change `2026-07-26-tool-receipts-and-parameter-tightening.md`
+§§ 2–3, as a **TRIAL on this server only**; the three sibling MCP servers are gated on its debrief.
+
+**The gap, precisely scoped.** v3.3.0 proved tier 3 unreachable on the hosted client. What remains
+is one narrow, real failure:
+
+| Case | Behaviour | Risk |
+|---|---|---|
+| Misspelt **required** parameter | Loud error — stripped → required key missing → binding rejects | None |
+| Misspelt **optional identifier** | Loud error — resolution finds nothing | None |
+| Stripped **payload** (`items`, …) | No-op — empty `applied[]`, visible | Low (and § 3 below removes it) |
+| **Stripped optional modifier** on a write | **Silent partial** — the write succeeds minus the property | **The whole exposure** |
+
+**You cannot throw on what you were never told.** The server receives `gtd_inbox_capture(text=…)`,
+a completely valid call; the information was destroyed client-side. The caller knows its *intent*
+and the server knows the *outcome*, so the fix is to make the outcome impossible to misread.
+
+**Three fields on all 25 governed writes.** `not_applied[]` (requested but not written —
+**always present, empty when clean**, so a consumer branches unconditionally), `guidance` (the next
+step when the outcome was not a clean full success), `advisory` (the call carried none of its
+optional value-bearing parameters, named). All three are **advisory data, never a gate** — a caller
+that ignores them still gets a correct, complete result.
+
+**Attached centrally, and that is the point.** `tools/gtd.py::_tool` wraps each non-read-only gtd
+tool, so the receipt cannot drift as tools are added — the same reasoning as one middleware over 99
+per-tool configs. `functools.wraps` is load-bearing: FastMCP builds the advertised schema from
+`inspect.signature` (which follows `__wrapped__`) and the docstring shim reads `inspect.getdoc`.
+Verified rather than assumed — input schemas and descriptions measured **byte-identical across all
+100 tools** against a v3.3.0 worktree, with a control proving the baseline really loaded.
+
+**Two `applied[]` entries were reclassified** in `gtd_engage_commit`: a `keep`/`do_now` verdict (no
+durable write by grammar § 4) and a skipped duplicate STEER note — the latter sat *inside* `applied[]`
+labelled `"(skipped, duplicate)"`, contradicting the list it was in and inflating `"Applied N
+write(s)"` with non-writes. A visible change to that array's contents, not to any field.
+
+**Where a caller learns it exists** — three surfaces, none restating another (§ 3's no-double-authoring
+rule): the server `instructions` carry the imperative and stay at **2,046 bytes** (paid for by
+trimming tool enumerations `rtm_tool_help()` serves on demand); each governed write's description
+carries a ~190-byte block appended by the same wrapper; `rtm_tool_help("<tool>")` carries the full
+contract where there is no budget. Two tools cross the 2 KB budget **solely** because of the shared
+block and are exempted with that reason.
+
+**Measured during the trial** (both numbers belong in the debrief, and both came from measuring
+rather than reasoning): the advisory fired on **82%** of governed-write calls on first
+implementation — it fired on *any* absent optional rather than *all*, and the wrapper read `kwargs`
+directly so positionally-passed arguments were reported absent. Corrected: **17.3%**. Then
+tightening (§ 3) and the advisory turned out to **interact**: with the payloads required, the only
+optionals left on `gtd_engage_commit` and `gtd_note_add` were control flags, so both fired on 100%
+of legitimate calls. `receipt.is_facet` excludes booleans and took both to 0% — a correctness rule,
+not tuning, because a stripped boolean is rejected or changes documented default behaviour and can
+never be the silently-lost value.
+
+**Eight parameters tightened to required (BREAKING).** `gtd_engage_commit.items`,
+`gtd_inbox_drain.dispositions`, `gtd_waiting_for_sweep.verdicts`, `gtd_cluster_consolidate.moves`,
+`gtd_item_transition_batch.items`, `gtd_project_create.frame`, `gtd_note_add.body`,
+`gtd_inbox_item_close.derived_refs`. Each permitted a call that was never legitimate (an empty
+commit, a no-op, a note with a title and no content). Genuine facets — `gtd_item_create`'s `due` /
+`energy` / `comms` — are deliberately **not** tightened; absence is legitimate there, and forcing
+explicit nulls would not help anyway since a typo'd facet alongside a correct one still strips.
+
+**Membrane / activation.** Vault-free, **no new tag**, no strict-tag interaction. Three new
+`ErrorCode` members (the receipt's outcome vocabulary), so **all 100 fingerprints churn** —
+structural, from the enum being inlined into every `ErrorBody.code`, not 100 tools changing
+behaviour. To go live: restart the server on v4.0.0. Additive plus a revertable signature change —
+no one-way door.
 
 ### The Tool Affordance Standard — three tiers of documentation (since v3.3.0)
 
@@ -1542,8 +1617,9 @@ call-surface assertion, strict-tag rejection setup) are canonical in
 
 This inventory is the canonical per-file test count (keep it in sync — CONTRIBUTING.md § 9).
 
-Test files (1653 tests total):
-- `tests/test_tool_schemas.py` — the six-surface tool-documentation contract, introspecting the REAL server (`rtm_mcp.server.mcp` → `get_tools()` → `to_mcp_tool()`): every tool + param described; behaviour annotations correct per class (read-only / additive / destructive; openWorldHint everywhere); closed-vocabulary enums asserted EQUAL to the canonical constants (priority/direction/scope/role/mode/execute/verdict — drift-proof); complex params expose a clean single-typed schema; every `outputSchema.properties.data` is a `success|error` union; success-shape spot-checks; the committed `tool-fingerprints.json` freshness guard (recomputes per-tool sha256 from the live server, asserts equality with the file, and asserts qualified-`mcp__rtm__` sha256 shape — family standard § 5); **the advertised error contract** (`TestAdvertisedErrorContract`, v2.1.1) — every tool that can return an envelope error documents one, and every code it can actually produce (derived from its own source via `ast`: direct `ErrorCode` refs + what `resolve_task_ids`/`resolve_list_id`/`enforce_strict_tags`/`error_from_exception` surface on its behalf) is NAMED in the description, so a new failure path fails the suite until documented; plus a guard-the-guard that some tools stay classified non-failable (else the other two pass vacuously); the perspective/depth advisory enums asserted equal to VALID_PERSPECTIVES/VALID_DEPTHS; the eight Wave 1 reads registered read-only and `_bounded_int` registered as an error-surfacing helper so their invalid_input contract is genuinely enforced; the contribution-state enum asserted equal to TERMINAL_STATES with the open state absent, and the shape-verdict vocabulary sourced from the detector constants; **the v3.1.0 removal contract** (a test-OWNED list of the 26 removed surfaces whose length is asserted BEFORE any iteration — an imported list that had emptied would pass vacuously; every removed name unresolvable; the `DEPRECATED_ALIASES` constant itself gone; all 28 replacements resolving; the tool count pinned at 55; no fingerprint records a removed surface) and **the `gtd_query` split** (each tool takes only its own parameters, none carries `perspective` forward, the cross-perspective parameters are gone, all three read-only); **the v3.3.0 selection-surface budgets** (`TestSelectionSurfaceBudgets`) — server `instructions` ≤ 2 KB and not leading with the legal disclaimer; every description ≤ 2 KB **or** on the reasoned `OVER_BUDGET_EXEMPTIONS` list, with a guard-the-guard asserting no exemption is stale (one that now fits would quietly license regrowth) and none names a dead tool; **every exempt tool states its read/write posture inside the front block that survives truncation** — the assertion that actually protects a caller, since the cap itself is only a proxy for front-loading; and every description opening as `<Domain> — <purpose>`, the marker being the model-readable half of the taxonomy (47 tests)
+Test files (1690 tests total):
+- `tests/test_tool_schemas.py` — the six-surface tool-documentation contract, introspecting the REAL server (`rtm_mcp.server.mcp` → `get_tools()` → `to_mcp_tool()`): every tool + param described; behaviour annotations correct per class (read-only / additive / destructive; openWorldHint everywhere); closed-vocabulary enums asserted EQUAL to the canonical constants (priority/direction/scope/role/mode/execute/verdict — drift-proof); complex params expose a clean single-typed schema; every `outputSchema.properties.data` is a `success|error` union; success-shape spot-checks; the committed `tool-fingerprints.json` freshness guard (recomputes per-tool sha256 from the live server, asserts equality with the file, and asserts qualified-`mcp__rtm__` sha256 shape — family standard § 5); **the advertised error contract** (`TestAdvertisedErrorContract`, v2.1.1) — every tool that can return an envelope error documents one, and every code it can actually produce (derived from its own source via `ast`: direct `ErrorCode` refs + what `resolve_task_ids`/`resolve_list_id`/`enforce_strict_tags`/`error_from_exception` surface on its behalf) is NAMED in the description, so a new failure path fails the suite until documented; plus a guard-the-guard that some tools stay classified non-failable (else the other two pass vacuously); the perspective/depth advisory enums asserted equal to VALID_PERSPECTIVES/VALID_DEPTHS; the eight Wave 1 reads registered read-only and `_bounded_int` registered as an error-surfacing helper so their invalid_input contract is genuinely enforced; the contribution-state enum asserted equal to TERMINAL_STATES with the open state absent, and the shape-verdict vocabulary sourced from the detector constants; **the v3.1.0 removal contract** (a test-OWNED list of the 26 removed surfaces whose length is asserted BEFORE any iteration — an imported list that had emptied would pass vacuously; every removed name unresolvable; the `DEPRECATED_ALIASES` constant itself gone; all 28 replacements resolving; the tool count pinned at 55; no fingerprint records a removed surface) and **the `gtd_query` split** (each tool takes only its own parameters, none carries `perspective` forward, the cross-perspective parameters are gone, all three read-only); **the v3.3.0 selection-surface budgets** (`TestSelectionSurfaceBudgets`) — server `instructions` ≤ 2 KB and not leading with the legal disclaimer; every description ≤ 2 KB **or** on the reasoned `OVER_BUDGET_EXEMPTIONS` list, with a guard-the-guard asserting no exemption is stale (one that now fits would quietly license regrowth) and none names a dead tool; **every exempt tool states its read/write posture inside the front block that survives truncation** — the assertion that actually protects a caller, since the cap itself is only a proxy for front-loading; and every description opening as `<Domain> — <purpose>`, the marker being the model-readable half of the taxonomy; the v4.0.0 exemption list gains `gtd_surface_resolve` / `gtd_dependency_link`, both over budget SOLELY by the shared receipt block (47 tests)
+- `tests/test_receipt.py` — the teaching receipt (v4.0.0). The two load-bearing properties are asserted against the **REAL server**, not a fixture, because the failure mode is a tool shipping without a receipt: every governed write documents it, and **no read does** (a receipt on a read would be a null advisory on every read in the server). Plus the reason vocabulary (`RECEIPT_REASONS` ⊆ `ErrorCode`, and an `ast` sweep asserting no call site stamps a *failure* code into `not_applied[]` — that would make a successful write look failed); the advisory's rules, each pinned to the measurement that produced it (fires only when EVERY facet is absent — the any-vs-all bug measured 82% vs 17.3%; silent when the tool declares no optionals; **a boolean is not a facet**, with a guard that `True` is excluded even though `isinstance(True, int)`); guidance severity ordering (a partial write must say PARTIAL and name `batch_undo`, or a blind retry double-applies what succeeded); `attach` preserving tool-populated entries and leaving an **error** envelope untouched; the eight tightened parameters asserted required + non-nullable on the **advertised** schema and rejected over a real in-memory client; that the receipt survives **MCP serialisation** in BOTH `structured_content` and the text block (the FakeMCP tests call functions directly and bypass that path entirely) — a test that must stub `RTMConfig.load` AND install its fake INSIDE the client context, because entering `Client(mcp)` runs the real lifespan and overwrites the client global, silently sending the call to the live account; and that `receipt.py` is a pure leaf with no async and no client import, so it can never become a gate (37 tests)
 - `tests/test_client.py` — client signing, API calls, settings + account-tag caching (incl. failure-not-cached + concurrent-timeline lock), transaction log, 503 retry, connection retry incl. connect-phase-timeout-on-write retry + mid-flight ReadError wrap + non-JSON response, POST/GET split (47 tests)
 - `tests/test_config.py` — config load/save, file fallback (corrupt/wrong-type/unreadable JSON), RTM_AUTH_TOKEN env + token/auth_token kwargs, safety-margin bounds, 0600 save permissions, strict-tag toggle, write-gate flags (both default off, strict_notes mode vocabulary + normalisation + loud failure on a typo, list-target env toggle) (31 tests)
 - `tests/test_error_codes.py` — the typed-error registry + v2.0.0 envelope: registry integrity (unique values, lower_snake_case spelling guard, str-mixin wire equality), RTM numeric mapping (key-set parity with `exceptions.ERROR_CODE_MAP`, known numerics, unmapped/None → `invalid_input`), `build_error` (minimal shape, `details` omitted-not-null, rtm_code preserved, prose carried verbatim, code serialised as a plain string), `error_from_exception` (RTM code mapped + numeric preserved; non-RTM fallback), the unified reject vocabularies (every reason is a registry member; shared reasons have one spelling; `destructive_unconfirmed` reconciliation; the three lockstep verdict reasons), and `ErrorBody` (`extra="forbid"`; canonical shape), write-boundary gate codes (note-shape has its own; list-target REUSES the pre-existing smart/locked codes; no synonym minted) (28 tests)

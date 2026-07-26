@@ -337,6 +337,45 @@ Every tool returns the standard envelope via `response_builder.py`:
   extracts the transaction, records it on the client (for `undo`/`batch_undo`/`get_timeline_info`),
   and wraps the envelope in one call. Never hand-roll the transaction fields.
 
+### 4.1 The teaching receipt (governed `gtd_*` writes, since v4.0.0)
+
+Every governed write's **success** payload additionally carries three fields. They are attached
+**centrally** by `tools/gtd.py::_tool` (via `receipt.py`), so you do not write them — but you must
+know they exist, because one of them is yours to populate:
+
+```python
+{"not_applied": [{"op", "id", "requested", "reason", "detail"}],   # always present, [] when clean
+ "guidance": "…next step…" | None,                                  # derived from the payload
+ "advisory": "…no optional parameter arrived…" | None}              # derived from the call
+```
+
+**Why it exists.** The hosted client deletes an undeclared argument before this server sees it
+(`middleware.py`), so a misspelt *optional modifier* produces a silent partial write: the item lands
+without the property and success is reported. Nothing server-side can detect that — so the receipt
+makes the **outcome** unmissable instead of trying to catch the input.
+
+Rules when writing or changing a governed write:
+
+- **Populate `not_applied[]` wherever the tool knowingly writes nothing** for something the caller
+  asked for — a tag already present, an idempotent skip, a verdict with no durable write. Use
+  `receipt.not_applied_entry(...)`, put the list in your `data`, and the wrapper leaves it alone.
+  If you find yourself appending to `applied[]` with `transaction_id: None`, that entry belongs in
+  `not_applied[]`: `applied[]` means *a write happened*.
+- **`reason` comes from `receipt.RECEIPT_REASONS`** (`no_change` / `no_durable_write` /
+  `not_eligible`) — the fourth scoped view of the one `ErrorCode` registry (§ 5). These are
+  **outcomes, not failures**; never let one reach an `error.code`. A test derives the call sites
+  from source and fails on any other code.
+- **Never gate on the receipt.** It is advisory data. A caller that ignores all three fields must
+  still get a correct, complete result — that is an invariant, not a preference, and
+  `tests/test_receipt.py` pins that the module is a pure leaf with no async and no client import.
+- **An error envelope carries no receipt.** `data.error` is the `success | error` discriminator and
+  a failure already teaches; `receipt.attach` returns it untouched.
+- **Reads get nothing.** "Did what I asked for land?" has no meaning for a tool that writes nothing.
+- **Documentation is already handled** — the description block, the `rtm_tool_help` contract and the
+  `outputSchema` all derive. Use `models._write_envelope_schema` (not `_envelope_schema`) for a new
+  governed write's output schema and the three fields appear; a test iterating the real server
+  fails if you forget.
+
 ## 5. Error handling — the typed vocabulary
 
 Since **v2.0.0** every envelope error is a **structured object** carrying a stable,

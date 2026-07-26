@@ -33,6 +33,7 @@ from .canvas_create import CREATE_REJECT_REASONS
 from .engage_commit import ENGAGE_REJECT_REASONS
 from .error_codes import ErrorCode
 from .gtd_writes import GTD_WRITE_REJECT_REASONS
+from .receipt import RECEIPT_REASONS
 
 
 def _enum_extra(reasons: frozenset[ErrorCode]) -> dict[str, Any]:
@@ -1545,6 +1546,34 @@ class ToolHelpIndex(BaseModel):
     next_step: str
 
 
+class NotApplied(BaseModel):
+    """One requested operation that produced NO write (`receipt.not_applied_entry`).
+
+    `reason` is drawn from the same `ErrorCode` registry as the envelope error and the commit
+    engines' `rejected[]`, but the members it uses are the OUTCOME group (`no_change`,
+    `no_durable_write`, `not_eligible`) — a `not_applied[]` entry never reports a failure."""
+
+    model_config = ConfigDict(extra="allow")
+    op: str
+    reason: str = Field(json_schema_extra=_enum_extra(RECEIPT_REASONS))
+    detail: str
+    id: str | None = None
+    requested: Any = None
+
+
+class Receipt(BaseModel):
+    """The three receipt fields every governed write carries (v4.0.0).
+
+    Mixed into each write's success model by `_write_envelope_schema` rather than restated on
+    25 result classes — the same reason `tools/gtd.py::_tool` attaches the receipt centrally
+    instead of at 25 call sites."""
+
+    model_config = ConfigDict(extra="allow")
+    not_applied: list[NotApplied] = []
+    guidance: str | None = None
+    advisory: str | None = None
+
+
 def _envelope_schema(name: str, *success: type[BaseModel]) -> dict[str, Any]:
     """The JSON schema for a tool's result: the standard envelope whose `data` is a union of the
     tool's success payload(s) and the shared ErrorData. `analysis` is an optional sibling (some
@@ -1561,6 +1590,20 @@ def _envelope_schema(name: str, *success: type[BaseModel]) -> dict[str, Any]:
         analysis=(dict[str, Any] | None, None),
     )
     return env.model_json_schema()
+
+
+def _write_envelope_schema(name: str, *success: type[BaseModel]) -> dict[str, Any]:
+    """`_envelope_schema` for a GOVERNED WRITE: every success payload also carries the receipt.
+
+    The subclass keeps its parent's `__name__`, so the advertised model title — which
+    `tests/test_tool_schemas.py::_find_model` locates models by — is unchanged. Only the error
+    branch is left alone: an error envelope carries no receipt (`receipt.attach` returns it
+    untouched), so advertising one there would promise a field that never arrives."""
+    enriched = tuple(
+        create_model(s.__name__, __base__=(s, Receipt))
+        for s in success  # type: ignore[call-overload]
+    )
+    return _envelope_schema(name, *enriched)
 
 
 # Tasks
@@ -1598,49 +1641,57 @@ LIST_URL_OUTPUT = _envelope_schema("ListUrlEnvelope", ListUrlResult)
 PROJECT_PLAN_OUTPUT = _envelope_schema("ProjectPlanEnvelopeSchema", ProjectPlanEnvelope, Candidates)
 PROJECT_CANVAS_OUTPUT = _envelope_schema("ProjectCanvasEnvelope", CanvasSeedResult, Candidates)
 PROJECT_INDEX_OUTPUT = _envelope_schema("ProjectIndexEnvelope", ProjectIndexResult)
-CANVAS_COMMIT_OUTPUT = _envelope_schema("CanvasCommitEnvelope", CommitResult)
-CREATE_PROJECT_OUTPUT = _envelope_schema("CreateProjectEnvelope", CreateProjectResult, Candidates)
-STAMP_TOKENS_OUTPUT = _envelope_schema("StampTokensEnvelope", StampTokensResult)
-CHAT_POST_OUTPUT = _envelope_schema("ChatPostEnvelope", ChatPostResult)
+CANVAS_COMMIT_OUTPUT = _write_envelope_schema("CanvasCommitEnvelope", CommitResult)
+CREATE_PROJECT_OUTPUT = _write_envelope_schema(
+    "CreateProjectEnvelope", CreateProjectResult, Candidates
+)
+STAMP_TOKENS_OUTPUT = _write_envelope_schema("StampTokensEnvelope", StampTokensResult)
+CHAT_POST_OUTPUT = _write_envelope_schema("ChatPostEnvelope", ChatPostResult)
 CHAT_THREAD_OUTPUT = _envelope_schema("ChatThreadEnvelope", ChatThreadResult)
 CHAT_INFLIGHT_OUTPUT = _envelope_schema("ChatInflightEnvelope", ChatInflightResult)
-SET_REDACTION_OUTPUT = _envelope_schema("SetRedactionEnvelope", RedactionResult)
+SET_REDACTION_OUTPUT = _write_envelope_schema("SetRedactionEnvelope", RedactionResult)
 ENGAGE_SEED_OUTPUT = _envelope_schema("EngageSeedEnvelope", EngageSeedResult)
-ENGAGE_COMMIT_OUTPUT = _envelope_schema("EngageCommitEnvelope", EngageCommitResult)
+ENGAGE_COMMIT_OUTPUT = _write_envelope_schema("EngageCommitEnvelope", EngageCommitResult)
 
 # GTD Phase 1 writes
-CREATE_ITEM_OUTPUT = _envelope_schema("CreateItemEnvelope", CreateItemResult, Candidates)
-ADD_NOTE_OUTPUT = _envelope_schema("GtdAddNoteEnvelope", AddNoteResult, Candidates)
-CAPTURE_OUTPUT_SCHEMA = _envelope_schema("GtdCaptureEnvelope", GtdCaptureResult)
-TRANSITION_OUTPUT = _envelope_schema("TransitionEnvelope", TransitionResult, Candidates)
+CREATE_ITEM_OUTPUT = _write_envelope_schema("CreateItemEnvelope", CreateItemResult, Candidates)
+ADD_NOTE_OUTPUT = _write_envelope_schema("GtdAddNoteEnvelope", AddNoteResult, Candidates)
+CAPTURE_OUTPUT_SCHEMA = _write_envelope_schema("GtdCaptureEnvelope", GtdCaptureResult)
+TRANSITION_OUTPUT = _write_envelope_schema("TransitionEnvelope", TransitionResult, Candidates)
 
 # GTD Phase 2 writes
-COMPLETE_ACTION_OUTPUT = _envelope_schema(
+COMPLETE_ACTION_OUTPUT = _write_envelope_schema(
     "CompleteActionEnvelope", CompleteActionResult, Candidates
 )
-CLOSE_INBOX_OUTPUT = _envelope_schema("CloseInboxEnvelope", CloseInboxItemResult, Candidates)
-SET_PROPERTIES_OUTPUT = _envelope_schema("SetPropertiesEnvelope", SetPropertiesResult, Candidates)
-LINK_DEPENDENCY_OUTPUT = _envelope_schema(
+CLOSE_INBOX_OUTPUT = _write_envelope_schema("CloseInboxEnvelope", CloseInboxItemResult, Candidates)
+SET_PROPERTIES_OUTPUT = _write_envelope_schema(
+    "SetPropertiesEnvelope", SetPropertiesResult, Candidates
+)
+LINK_DEPENDENCY_OUTPUT = _write_envelope_schema(
     "LinkDependencyEnvelope", LinkDependencyResult, Candidates
 )
-BATCH_TRANSITION_OUTPUT = _envelope_schema("BatchTransitionEnvelope", BatchTransitionResult)
+BATCH_TRANSITION_OUTPUT = _write_envelope_schema("BatchTransitionEnvelope", BatchTransitionResult)
 
 # GTD Phase 3 writes — process ops
-INBOX_ZERO_OUTPUT = _envelope_schema("InboxZeroEnvelope", ProcessOpResult)
-CHASE_SWEEP_OUTPUT = _envelope_schema("ChaseSweepEnvelope", ProcessOpResult)
-CONSOLIDATE_OUTPUT = _envelope_schema("ConsolidateEnvelope", ProcessOpResult)
+INBOX_ZERO_OUTPUT = _write_envelope_schema("InboxZeroEnvelope", ProcessOpResult)
+CHASE_SWEEP_OUTPUT = _write_envelope_schema("ChaseSweepEnvelope", ProcessOpResult)
+CONSOLIDATE_OUTPUT = _write_envelope_schema("ConsolidateEnvelope", ProcessOpResult)
 
 # GTD Phase 4a writes — note family, note-edit
-ATTACH_OUTPUT_OUTPUT = _envelope_schema("AttachOutputEnvelope", AttachOutputResult, Candidates)
-ATTACH_CONTRIB_OUTPUT = _envelope_schema(
+ATTACH_OUTPUT_OUTPUT = _write_envelope_schema(
+    "AttachOutputEnvelope", AttachOutputResult, Candidates
+)
+ATTACH_CONTRIB_OUTPUT = _write_envelope_schema(
     "AttachContribEnvelope", AttachContributionResult, Candidates
 )
-ANNOTATE_OUTPUT = _envelope_schema("AnnotateEnvelope", AnnotateClarificationResult, Candidates)
-EDIT_NOTE_OUTPUT = _envelope_schema("GtdEditNoteEnvelope", EditNoteResult, Candidates)
+ANNOTATE_OUTPUT = _write_envelope_schema(
+    "AnnotateEnvelope", AnnotateClarificationResult, Candidates
+)
+EDIT_NOTE_OUTPUT = _write_envelope_schema("GtdEditNoteEnvelope", EditNoteResult, Candidates)
 
 # GTD Phase 4b writes — AI surface
-SURFACE_CREATE_OUTPUT = _envelope_schema("SurfaceCreateEnvelope", SurfaceCreateResult)
-SURFACE_RESOLVE_OUTPUT = _envelope_schema(
+SURFACE_CREATE_OUTPUT = _write_envelope_schema("SurfaceCreateEnvelope", SurfaceCreateResult)
+SURFACE_RESOLVE_OUTPUT = _write_envelope_schema(
     "SurfaceResolveEnvelope", SurfaceResolveResult, Candidates
 )
 
@@ -1677,7 +1728,7 @@ FOCUS_INDEX_OUTPUT = _envelope_schema("FocusIndexEnvelope", FocusIndexResult)
 
 # GTD Wave 1b — shape classification + the contribution state machine (v2.10.0)
 ITEM_CLASSIFY_OUTPUT = _envelope_schema("ItemClassifyEnvelope", ItemClassifyResult)
-CONTRIB_TRANSITION_OUTPUT = _envelope_schema(
+CONTRIB_TRANSITION_OUTPUT = _write_envelope_schema(
     "ContribTransitionEnvelope", ContribTransitionResult, Candidates
 )
 

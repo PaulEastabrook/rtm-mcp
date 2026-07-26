@@ -27,6 +27,13 @@ class FakeContext:
     pass
 
 
+#: The receipt a governed write attaches on a clean full success (v4.0.0): nothing failed to
+#: land, nothing to guide, and at least one optional parameter arrived. Spread into the handful
+#: of assertions that compare `data` by exact equality — those are the tests that would
+#: otherwise have to be loosened to `in`, losing the very exactness that makes them useful.
+_CLEAN_RECEIPT = {"not_applied": [], "guidance": None, "advisory": None}
+
+
 def _ts(
     ts_id,
     task_id,
@@ -1934,7 +1941,11 @@ class TestGtdSetRedaction:
         assert add.kwargs["task_id"] == "c1"
         assert add.kwargs["taskseries_id"] == "ts1"  # triple resolved internally
         assert add.kwargs["list_id"] == LIST_ID
-        assert result["data"] == {"task_id": "c1", "redacted": True}
+        assert result["data"] == {
+            "task_id": "c1",
+            "redacted": True,
+            **_CLEAN_RECEIPT,
+        }
         assert result["metadata"]["transaction_id"] == "tx_addTags"
         client.record_transaction.assert_called()  # undoable via batch_undo
 
@@ -1950,7 +1961,11 @@ class TestGtdSetRedaction:
         assert "rtm.tasks.addTags" not in methods  # never gated, never added
         rem = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.removeTags")
         assert rem.kwargs["tags"] == "redacted"
-        assert result["data"] == {"task_id": "c1", "redacted": False}
+        assert result["data"] == {
+            "task_id": "c1",
+            "redacted": False,
+            **_CLEAN_RECEIPT,
+        }
 
     @pytest.mark.asyncio
     async def test_unknown_task_id_errors_without_writing(self, gtd_tools):
@@ -1987,13 +2002,13 @@ class TestGtdSetRedaction:
         client.call = AsyncMock(side_effect=_redaction_dispatch(focus_tree))
 
         add = await tools["gtd_item_set_redaction"](FakeContext(), task_id=AREA_ID, redacted=True)
-        assert add["data"] == {"task_id": AREA_ID, "redacted": True}
+        assert add["data"] == {"task_id": AREA_ID, "redacted": True, **_CLEAN_RECEIPT}
         addc = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.addTags")
         assert addc.kwargs["task_id"] == AREA_ID and addc.kwargs["tags"] == "redacted"
 
         client.call = AsyncMock(side_effect=_redaction_dispatch(focus_tree))
         rem = await tools["gtd_item_set_redaction"](FakeContext(), task_id=AREA_ID, redacted=False)
-        assert rem["data"] == {"task_id": AREA_ID, "redacted": False}
+        assert rem["data"] == {"task_id": AREA_ID, "redacted": False, **_CLEAN_RECEIPT}
         remc = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.removeTags")
         assert remc.kwargs["task_id"] == AREA_ID and remc.kwargs["tags"] == "redacted"
 
@@ -5017,7 +5032,17 @@ class TestGtdApplyEngageCommit:
         )
         assert res["data"]["errors"] == []
         assert self._steer_notes(client) == []  # identical steer already present → skipped
-        assert any("skipped, duplicate" in a["op"] for a in res["data"]["applied"])
+        # v4.0.0: the skip is reported in `not_applied[]`, NOT as an `applied[]` entry labelled
+        # "(skipped, duplicate)" — an entry that contradicted the list it sat in and inflated
+        # the "Applied N write(s)" count with a non-write.
+        assert not any("skipped" in a["op"] for a in res["data"]["applied"])
+        skipped = [e for e in res["data"]["not_applied"] if e["op"].endswith("steer-note")]
+        assert len(skipped) == 1
+        assert skipped[0]["reason"] == "no_change"
+        assert skipped[0]["id"] == "a1"
+        assert skipped[0]["requested"] == "chase Bob"
+        # …and the caller is told, in the response, that the outcome was narrower than asked.
+        assert "not_applied[]" in res["data"]["guidance"]
 
 
 # =========================================================================== #
