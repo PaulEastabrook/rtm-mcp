@@ -11,14 +11,26 @@ its absence is indistinguishable from a clean estate.
 """
 
 import logging
+import os
+import subprocess
 import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from rtm_mcp.list_targets import enforce_list_target
 from rtm_mcp.note_shape import enforce_note_shape
-from rtm_mcp.server import DEFAULT_LOG_LEVEL, configure_logging
+from rtm_mcp.server import (
+    DEFAULT_LOG_DIR,
+    DEFAULT_LOG_LEVEL,
+    LOG_BACKUP_COUNT,
+    LOG_FILE_NAME,
+    LOG_MAX_BYTES,
+    configure_logging,
+    resolve_log_dir,
+)
 from rtm_mcp.strict_tags import enforce_strict_tags
 
 
@@ -125,14 +137,20 @@ class TestTheConfigurationItself:
             tree.setLevel(logging.NOTSET)
 
     def test_calling_twice_does_not_stack_handlers(self, monkeypatch):
+        """Two handlers since v5.1.0 — stderr plus the file sink — and still exactly two after a
+        second call. A `FileHandler` holds an open descriptor, so stacking would leak one per
+        call as well as duplicating every record."""
         monkeypatch.delenv("RTM_LOG_LEVEL", raising=False)
         first = configure_logging()
         second = configure_logging()
         try:
-            assert len(second.handlers) == 1 and first is second
+            assert first is second
+            assert len(second.handlers) == 2
+            assert sum(isinstance(h, RotatingFileHandler) for h in second.handlers) == 1
         finally:
             for h in list(second.handlers):
                 second.removeHandler(h)
+                h.close()
             second.setLevel(logging.NOTSET)
 
     def test_default_level_shows_info(self, configured):
@@ -184,6 +202,182 @@ class TestTheGatesEmit:
         err = caplog.text
         assert result is not None
         assert "strict_tag_mode rejected" in err and "not_a_real_tag" in err
+
+
+#: Fires a REAL write gate in a child process, then reports on stdout whether it rejected.
+#: Deliberately a gate rather than a bare `logger.warning`: the property under test is that the
+#: server's own controls stay observable, and a gate is what the sink exists for.
+_GATE_PROBE = """
+from unittest.mock import MagicMock
+from rtm_mcp.server import configure_logging
+from rtm_mcp.note_shape import enforce_note_shape
+
+configure_logging()
+client = MagicMock(config=MagicMock(strict_notes="shape"))
+rejected = enforce_note_shape(client, "a malformed title", "", tool="add_note")
+print("REJECTED" if rejected is not None else "ALLOWED")
+"""
+
+
+def _run_probe(log_dir: str) -> subprocess.CompletedProcess:
+    """Run the gate probe with **fd 2 redirected to /dev/null** — the Desktop-spawned reality.
+
+    `stderr=DEVNULL` is the whole point: it reproduces the measured condition (`lsof` + `stat`
+    on a Desktop-spawned server) in which the stderr handler writes into nothing. A test that
+    captured stderr instead would pass against a server with no sink at all.
+    """
+    env = os.environ | {"RTM_LOG_DIR": log_dir}
+    env.pop("RTM_LOG_LEVEL", None)
+    return subprocess.run(
+        [sys.executable, "-c", _GATE_PROBE],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+class TestTheSinkThatSurvivesDevNull:
+    """The v5.1.0 sink, and the one property that justifies it.
+
+    On a Desktop-spawned server **fd 2 is `/dev/null`**, so every gate WARNING was destroyed. In
+    an interactive session that is redundant — the caller already gets a typed error — but in a
+    headless flow the error goes to an *agent*, which handles or retries it, and Paul never
+    learns it happened. These tests therefore run the gate in a child process with fd 2 actually
+    redirected, because an in-process test asserting "the record was emitted" passes today and
+    proves nothing about the case that motivated the change.
+    """
+
+    def test_a_gate_warning_reaches_the_file_when_stderr_is_devnull(self, tmp_path):
+        """THE test. Without the file sink this cannot pass — see the counterfactual below."""
+        log_dir = tmp_path / "logs"
+        probe = _run_probe(str(log_dir))
+
+        assert probe.returncode == 0, "the server must start with the sink configured"
+        assert "REJECTED" in probe.stdout, "the gate did not fire — the test proved nothing"
+
+        written = (log_dir / LOG_FILE_NAME).read_text(encoding="utf-8")
+        assert "strict_notes(shape)" in written
+        assert "REJECTED" in written
+        assert "a malformed title" in written, "the offending title must be in the record"
+
+    def test_without_the_sink_the_gate_fires_and_leaves_no_trace(self, tmp_path):
+        """The counterfactual, run mechanically rather than asserted in prose.
+
+        Point the sink at an unopenable path so no file handler is attached, and the child is
+        exactly the pre-v5.1.0 server: the gate still fires, still rejects, still logs — and the
+        record goes nowhere, because the only handler left writes to `/dev/null`. That is the
+        blindness this change removes, and it is why the test above is not decoration.
+        """
+        blocker = tmp_path / "not-a-directory"
+        blocker.write_text("", encoding="utf-8")
+        probe = _run_probe(str(blocker / "logs"))
+
+        assert probe.returncode == 0, "an unopenable sink must never stop the server"
+        assert "REJECTED" in probe.stdout, "the gate must still enforce with no sink"
+        assert not (blocker / "logs").exists()
+
+    def test_the_stderr_handler_is_still_attached(self, configured):
+        """Additive, never a replacement — a terminal-launched server must behave as before."""
+        streams = [getattr(h, "stream", None) for h in configured.handlers]
+        assert sys.stderr in streams or sys.__stderr__ in streams
+
+    def test_the_sink_honours_RTM_LOG_LEVEL(self, monkeypatch, tmp_path):
+        """The level lives on the tree and both handlers sit at NOTSET, so one env var governs
+        both channels. If the file handler carried its own level they could disagree, and the
+        surviving channel would be the one nobody configured."""
+        monkeypatch.setenv("RTM_LOG_DIR", str(tmp_path))
+        monkeypatch.setenv("RTM_LOG_LEVEL", "DEBUG")
+        tree = configure_logging()
+        try:
+            logging.getLogger("rtm_mcp.probe").debug("debug reaches the file too")
+            for h in tree.handlers:
+                h.flush()
+            assert "debug reaches the file too" in (tmp_path / LOG_FILE_NAME).read_text()
+        finally:
+            for h in list(tree.handlers):
+                tree.removeHandler(h)
+                h.close()
+            tree.setLevel(logging.NOTSET)
+
+    def test_rotation_is_bounded(self, monkeypatch, tmp_path):
+        """A sink an operator has to prune is one that eventually gets deleted. Driven with a
+        tiny cap so rollover actually happens — the shipped 1 MiB would need a huge test."""
+        monkeypatch.setenv("RTM_LOG_DIR", str(tmp_path))
+        monkeypatch.delenv("RTM_LOG_LEVEL", raising=False)
+        monkeypatch.setattr("rtm_mcp.server.LOG_MAX_BYTES", 512)
+        tree = configure_logging()
+        try:
+            for i in range(400):
+                logging.getLogger("rtm_mcp.probe").warning("filler record %03d", i)
+            for h in tree.handlers:
+                h.flush()
+        finally:
+            for h in list(tree.handlers):
+                tree.removeHandler(h)
+                h.close()
+            tree.setLevel(logging.NOTSET)
+
+        files = sorted(tmp_path.glob(f"{LOG_FILE_NAME}*"))
+        assert 1 < len(files) <= LOG_BACKUP_COUNT + 1, "rollover must happen AND stay bounded"
+
+    def test_the_bounds_are_the_shipped_ones(self, configured):
+        handler = next(h for h in configured.handlers if isinstance(h, RotatingFileHandler))
+        assert (handler.maxBytes, handler.backupCount) == (LOG_MAX_BYTES, LOG_BACKUP_COUNT)
+
+    def test_an_unopenable_sink_says_so_rather_than_failing_silently(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        """Applies § 7a's own level rule to the sink's failure: a silent fallback to stderr
+        recreates the exact blindness being fixed, so the degradation is announced at WARNING.
+
+        Observed via `caplog` rather than a handler attached to the tree — `configure_logging`
+        removes every existing handler before it runs, so a probe installed beforehand is gone
+        by the time the record fires. (Learned the hard way; left here so the next author does
+        not repeat it.)
+        """
+        blocker = tmp_path / "not-a-directory"
+        blocker.write_text("", encoding="utf-8")
+        monkeypatch.setenv("RTM_LOG_DIR", str(blocker / "logs"))
+        monkeypatch.delenv("RTM_LOG_LEVEL", raising=False)
+
+        tree = configure_logging()
+        try:
+            assert not any(isinstance(h, RotatingFileHandler) for h in tree.handlers)
+            assert len(tree.handlers) == 1, "stderr must survive the sink's failure"
+        finally:
+            for h in list(tree.handlers):
+                tree.removeHandler(h)
+                h.close()
+            tree.setLevel(logging.NOTSET)
+
+        assert any(
+            r.levelno == logging.WARNING and "log file sink unavailable" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_the_default_location_is_config_state_not_the_repo_clone(self, monkeypatch):
+        """The launch config runs `uv run --project <clone>`, so the process CAN write to the
+        working tree. Logs there would mean .gitignore maintenance, `git status` noise, and a
+        real chance of committing them — so the sink is a sibling of config.json instead."""
+        monkeypatch.delenv("RTM_LOG_DIR", raising=False)
+        assert resolve_log_dir() == DEFAULT_LOG_DIR
+        assert Path.home() / ".config" / "rtm-mcp" / "logs" == DEFAULT_LOG_DIR
+
+        repo_root = Path(__file__).resolve().parents[1]
+        assert repo_root not in DEFAULT_LOG_DIR.parents
+
+    def test_the_location_is_overridable(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("RTM_LOG_DIR", f"  {tmp_path}  ")
+        assert resolve_log_dir() == tmp_path
+
+    def test_a_blank_override_falls_back_rather_than_writing_to_cwd(self, monkeypatch):
+        """`Path("")` is `.` — an empty env var would silently put the sink in whatever
+        directory the server happened to start in."""
+        monkeypatch.setenv("RTM_LOG_DIR", "   ")
+        assert resolve_log_dir() == DEFAULT_LOG_DIR
 
 
 # The two deprecated-alias emission tests lived here until v3.1.0, which removed the aliases.

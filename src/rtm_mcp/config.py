@@ -98,22 +98,23 @@ class RTMConfig(BaseSettings):
 
     # Note-shape mode (mechanical title-grammar gate) — see note_shape.py
     strict_notes: str = Field(
-        default="off",
+        default="shape",
         description=(
             "Gate note-title writes against the mechanical grammar "
             "'YYYY-MM-DD [HH:MM] — TYPE — summary'. Env var RTM_STRICT_NOTES. "
-            "'off' (default) inert; 'warn' logs but allows; 'shape' rejects. "
-            "SHAPE only — the canonical TYPE vocabulary stays plugin-side."
+            "'shape' (default) rejects a malformed title; 'warn' logs but allows; "
+            "'off' inert. SHAPE only — the canonical TYPE vocabulary stays plugin-side, "
+            "so a well-formed title with an unknown TYPE passes."
         ),
     )
 
     # List-target mode (mechanical writability gate) — see list_targets.py
     strict_list_targets: bool = Field(
-        default=False,
+        default=True,
         description=(
             "Reject add_task/move_task whose caller-named destination list is smart "
-            "or locked. Env var RTM_STRICT_LIST_TARGETS. Off by default; set "
-            "RTM_STRICT_LIST_TARGETS=1 to enable. Mechanical writability only — "
+            "or locked. Env var RTM_STRICT_LIST_TARGETS. On by default; set "
+            "RTM_STRICT_LIST_TARGETS=0 to disable. Mechanical writability only — "
             "canonical list policy stays plugin-side."
         ),
     )

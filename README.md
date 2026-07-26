@@ -11,6 +11,8 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Smart Add Syntax**: Natural language task creation (`"Call mom ^tomorrow !1 #family"`)
 - **Default-List Aware**: `add_task` without a list routes to your configured RTM default list (not the built-in Inbox); `get_lists` surfaces the `smart`/`locked`/`archived` flags so callers can pick a writable target
 - **Strict-Tag Mode** (on by default): the server refuses to apply any tag that doesn't already exist in your account — stopping accidental tag creation at the source, with a guided error that tells the caller how to recover. Set `RTM_STRICT_TAGS=0` to disable.
+- **Write gates** (all three on by default since v5.1.0): alongside strict tags, the server refuses a note whose title doesn't parse as `YYYY-MM-DD [HH:MM] — TYPE — summary` (`RTM_STRICT_NOTES`) and an `add_task`/`move_task` aimed at a smart or locked list (`RTM_STRICT_LIST_TARGETS`). Each rejects before any API call, returns a typed error with recovery guidance, and is reversible with one env var.
+- **Logs that survive a headless run**: records go to stderr *and* to a bounded rotating file at `~/.config/rtm-mcp/logs/` — because a Desktop-spawned server's stderr is `/dev/null`, which silently destroyed every write-gate warning.
 - **Batched project read** (`gtd_project_plan`): a whole project plan — project, all descendant items, and every note — in one read-only call (vs `1+N`), as the `project-plan-seed` envelope the GTD canvas consumes. The first of the server's `gtd_`-prefixed domain compositions.
 - **Project-plan canvas tools** (`gtd_project_canvas` + `gtd_canvas_commit` + `gtd_project_create`): a read-only canvas seed with the deterministic plan-graph overlay applied (ordering, blocking, quick-wins), a single governed write surface that validates a whole canvas commit up-front and writes nothing if anything is rejected, and a create-sibling that builds a brand-new project (task + dependency-ordered children + notes/tags + finalise mark) from a canvas draft in one governed call.
 - **Portfolio index** (`gtd_project_index`): a read-only roll-up of every active `#project` — life, parent Area-of-Focus, and at-a-glance open/blocked counts + next tickle — in one call, backing the canvas navigator (the Phase C cockpit project picker).
@@ -626,8 +628,14 @@ RTM_MAX_RETRIES=2              # Retries on HTTP 503
 RTM_RETRY_DELAY_FIRST=2.0      # Seconds before first retry
 RTM_RETRY_DELAY_SUBSEQUENT=5.0 # Seconds before 2nd+ retry
 
-# Tag discipline (on by default)
-RTM_STRICT_TAGS=1              # default on; set 0/false to allow tags not already in the account (see Strict-Tag Mode)
+# Write gates (all three ON by default since v5.1.0 — values shown DISABLE them)
+RTM_STRICT_TAGS=0              # allow tags not already in the account (see Strict-Tag Mode)
+RTM_STRICT_NOTES=off           # 'shape' (default) rejects a malformed note title; 'warn' logs but allows
+RTM_STRICT_LIST_TARGETS=0      # allow add_task/move_task to name a smart or locked list
+
+# Logging — stderr AND a bounded rotating file (1 MiB x 3 backups)
+RTM_LOG_LEVEL=INFO             # default INFO
+RTM_LOG_DIR=~/.config/rtm-mcp/logs   # default; the sink that survives a /dev/null stderr
 
 # Companion metadata (optional) — read-only AI Memory vault for gtd_project_canvas file.meta
 RTM_VAULT_ROOT=~/Documents/AI Memory   # preferred; or set the shared AI_MEMORY_DIR. Unset → host

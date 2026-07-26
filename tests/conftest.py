@@ -5,6 +5,23 @@ import pytest
 from rtm_mcp.config import RTMConfig
 
 
+@pytest.fixture(scope="session")
+def _log_sink_dir(tmp_path_factory):
+    return tmp_path_factory.mktemp("rtm-mcp-logs")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_log_sink(_log_sink_dir, monkeypatch):
+    """Point the v5.1.0 file sink at a throwaway directory for the whole suite.
+
+    `configure_logging()` opens a real `RotatingFileHandler`, so without this every test that
+    touches it writes into the operator's live `~/.config/rtm-mcp/logs/` — mixing test noise
+    into the one channel a headless run depends on, and the one place someone will look to find
+    out what a scheduled worker did at 06:45.
+    """
+    monkeypatch.setenv("RTM_LOG_DIR", str(_log_sink_dir))
+
+
 @pytest.fixture
 def mock_config() -> RTMConfig:
     """Create a mock RTM config."""

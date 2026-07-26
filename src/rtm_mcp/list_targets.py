@@ -1,9 +1,11 @@
 """List-target mode — the *mechanical* writability gate for item-write targets.
 
 The third write-boundary gate, alongside ``strict_tags.py`` (tag existence) and
-``note_shape.py`` (note-title grammar). When ``config.strict_list_targets`` is enabled, the
-server refuses an ``add_task`` / ``move_task`` whose destination list is **mechanically
-known** to be an unwritable target:
+``note_shape.py`` (note-title grammar). **On by default since v5.1.0** — the rollout carried no
+risk worth a bake-in stage, because the gate refuses only targets that RTM itself rejects
+downstream; enabling it converts a confusing late failure into a precise immediate one. Set
+``RTM_STRICT_LIST_TARGETS=0`` to disable. The server refuses an ``add_task`` / ``move_task``
+whose destination list is **mechanically known** to be an unwritable target:
 
 - ``smart=true``  → a saved-search view. Items cannot live in it.
 - ``locked=true`` → an RTM system list (Inbox, Sent).
@@ -65,8 +67,8 @@ def guided_error(list_name: str, code: ErrorCode, reason: str) -> dict[str, Any]
             "re-issue against one of those. Which writable list is the CORRECT target is "
             "plugin-side policy — see the gtd list catalogue "
             "(plugins/gtd/skills/gtd/references/list-catalogue.md) and its "
-            "validate-list-target.py. To disable the gate entirely, unset "
-            "RTM_STRICT_LIST_TARGETS (default: off)."
+            "validate-list-target.py. The gate is ON by default: set "
+            "RTM_STRICT_LIST_TARGETS=0 to disable it."
         ),
         strict_list_targets_mode=True,
     )
@@ -78,9 +80,13 @@ def enforce_list_target(
     """Gate an item-write target. Returns a guided-error dict to reject, or None to allow.
 
     ``resolved`` is a successful ``resolve_list_id`` result — its ``list`` key carries the
-    full parsed list dict. No-op (returns None) when the gate is off (the default), so
-    behaviour is byte-identical to pre-gate unless deliberately switched on. Synchronous:
-    the resolver already fetched the list, so the gate makes no API call in any mode.
+    full parsed list dict. No-op (returns None) when the gate is switched off, reproducing
+    pre-gate behaviour byte-for-byte. Synchronous: the resolver already fetched the list, so the
+    gate makes no API call in any mode.
+
+    The ``False`` fallback on the ``getattr`` is for a config object that lacks the attribute
+    entirely (a test double, an older config): **absent is not the same as unset**, and a gate
+    that fires on a config it cannot read would be enforcing on a guess.
     """
     if not getattr(client.config, "strict_list_targets", False):
         return None

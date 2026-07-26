@@ -158,6 +158,86 @@ class TestGuidedError:
             "note-shape-catalogue" in guided_error("x", "y")["error"]["details"]["how_to_proceed"]
         )
 
+    def test_recovery_guidance_matches_the_shipped_default(self):
+        """The guidance is caller-facing recovery, so a stale default makes it actively wrong.
+        Before v5.1.0 it said "unset RTM_STRICT_NOTES (default: off)" — advice that, once the
+        gate ships on, tells a caller to do the exact thing that leaves it enabled."""
+        how = guided_error("garbage", "malformed")["error"]["details"]["how_to_proceed"]
+        assert "unset" not in how.lower()
+        assert "RTM_STRICT_NOTES=off" in how
+
 
 def test_mode_vocabulary_is_the_config_contract():
     assert VALID_STRICT_NOTES_MODES == ("off", "warn", "shape")
+
+
+class TestTheShippedDefaultIsLive:
+    """v5.1.0: the gate is ON by default, and that is a different claim from "the gate works".
+
+    Every other test in this file forces a mode onto a `MagicMock` config, so they all passed
+    for the two releases in which the gate shipped inert. These drive a REAL `RTMConfig`, which
+    is the only way to assert what an operator who sets nothing actually gets.
+    """
+
+    @staticmethod
+    def _real_client(monkeypatch) -> MagicMock:
+        from rtm_mcp.config import RTMConfig
+
+        monkeypatch.delenv("RTM_STRICT_NOTES", raising=False)
+        client = MagicMock()
+        client.config = RTMConfig()
+        return client
+
+    def test_a_malformed_title_is_rejected_with_no_env_set(self, monkeypatch):
+        err = enforce_note_shape(self._real_client(monkeypatch), "garbage", "", tool="add_note")
+        assert err is not None
+        assert err["error"]["code"] == ErrorCode.NOTE_SHAPE_REJECTED
+
+    def test_a_well_formed_title_still_passes(self, monkeypatch):
+        client = self._real_client(monkeypatch)
+        assert (
+            enforce_note_shape(client, "2026-07-26 — OUTPUT — brief drafted", "", tool="x") is None
+        )
+
+    def test_an_off_vocabulary_TYPE_passes__the_ownership_boundary(self, monkeypatch):
+        """The membrane, now that the gate is live: the server checks SHAPE, gtd owns the TYPE
+        vocabulary (`note-shape-catalogue.md` § 2). Switching the gate on must not quietly
+        promote it into a vocabulary gate — that is a separate, deliberately-sequenced change."""
+        client = self._real_client(monkeypatch)
+        assert (
+            enforce_note_shape(client, "2026-07-26 — WIDGET — invented type", "", tool="x") is None
+        )
+
+    def test_the_legacy_ACTIVITY_spellings_pass_but_the_underscore_does_not(self, monkeypatch):
+        """The measured live sample. `ACTIVITY`, `AR` and `ACTIVITY REPORT` are legacy spellings
+        that still parse — a space is legal in a TYPE token — so switching the gate on does not
+        invalidate history. `ACTIVITY_REPORT` is the v3.3.0 defect and is the one that fails:
+        the TYPE token admits no underscore. Verified absent from live data before the flip."""
+        client = self._real_client(monkeypatch)
+        for legacy in ("ACTIVITY", "AR", "ACTIVITY REPORT"):
+            assert (
+                enforce_note_shape(client, f"2026-07-05 — {legacy} — scan report", "", tool="x")
+                is None
+            )
+        assert (
+            enforce_note_shape(client, "2026-07-05 — ACTIVITY_REPORT — x", "", tool="x") is not None
+        )
+
+    def test_pauls_free_text_note_is_rejected_only_because_it_is_an_MCP_WRITE(self, monkeypatch):
+        """The free-text rule, pinned at the boundary where it actually holds.
+
+        A note with no date prefix is Paul's own, typed into the RTM app, and is never a
+        violation — but the app does not come through here. Through the MCP an undated title IS
+        malformed, and rejecting it is right. The rule binds the gtd-side notes-audit, which
+        scans EXISTING notes and would otherwise report Paul's prose as drift.
+        """
+        client = self._real_client(monkeypatch)
+        assert enforce_note_shape(client, "make this a general slack message to all", "", tool="x")
+
+    def test_off_restores_pre_gate_behaviour_byte_for_byte(self, monkeypatch):
+        from rtm_mcp.config import RTMConfig
+
+        monkeypatch.setenv("RTM_STRICT_NOTES", "off")
+        client = MagicMock()
+        client.config = RTMConfig()
+        assert enforce_note_shape(client, "garbage", "", tool="add_note") is None

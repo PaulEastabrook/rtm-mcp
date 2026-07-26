@@ -226,12 +226,30 @@ class TestSavePermissions:
 
 
 class TestWriteGateFlags:
-    """The two write-boundary gate flags (note-shape + list-target). Both default OFF —
-    the reversibility guarantee that makes the bake-in stage safe."""
+    """The two write-boundary gate flags (note-shape + list-target).
 
-    def test_both_gates_default_off(self, monkeypatch):
+    Both shipped OFF and were **switched on in v5.1.0**, once the log sink made an inert gate
+    distinguishable from a working one. `strict_notes` went straight to `shape`, skipping the
+    designed `warn` stage: `warn` is log-and-allow, and with stderr at `/dev/null` it neither
+    blocked nor recorded, so the middle step did not exist in production. The live sample
+    justified the skip — every agent-written title in it already parses.
+
+    Each stays reversible by one env var, which is what CONTRIBUTING § 6 requires of a gate;
+    the off-path assertions below are that guarantee, not incidental coverage.
+    """
+
+    def test_both_gates_default_on(self, monkeypatch):
         monkeypatch.delenv("RTM_STRICT_NOTES", raising=False)
         monkeypatch.delenv("RTM_STRICT_LIST_TARGETS", raising=False)
+        config = RTMConfig()
+        assert config.strict_notes == "shape"
+        assert config.strict_list_targets is True
+
+    def test_each_gate_is_switchable_off(self, monkeypatch):
+        """The escape hatch. An enabled-by-default gate with no way back is a one-way door,
+        and § 6's reversibility rule is what makes enabling it safe to try."""
+        monkeypatch.setenv("RTM_STRICT_NOTES", "off")
+        monkeypatch.setenv("RTM_STRICT_LIST_TARGETS", "0")
         config = RTMConfig()
         assert config.strict_notes == "off"
         assert config.strict_list_targets is False

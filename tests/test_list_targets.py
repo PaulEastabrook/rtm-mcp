@@ -92,3 +92,60 @@ class TestGuidedError:
         """Which writable list is CORRECT is plugin-owned — the guidance must say so."""
         detail = guided_error("Processed", ErrorCode.SMART_LIST_TARGET, "x")["error"]["details"]
         assert "list-catalogue" in detail["how_to_proceed"]
+
+    def test_recovery_guidance_matches_the_shipped_default(self):
+        """The guidance is caller-facing recovery, so a stale default makes it actively wrong.
+        Before v5.1.0 it said "unset RTM_STRICT_LIST_TARGETS (default: off)" — advice that, once
+        the gate ships on, tells a caller to do the exact thing that leaves it enabled."""
+        detail = guided_error("View", ErrorCode.SMART_LIST_TARGET, "x")["error"]["details"]
+        assert "unset" not in detail["how_to_proceed"].lower()
+        assert "RTM_STRICT_LIST_TARGETS=0" in detail["how_to_proceed"]
+
+
+class TestTheShippedDefaultIsLive:
+    """v5.1.0: the gate is ON by default — a different claim from "the gate works".
+
+    The tests above force the flag onto a `MagicMock`, so they all passed for the two releases
+    in which the gate shipped inert. These drive a REAL `RTMConfig`, the only way to assert
+    what an operator who sets nothing actually gets.
+    """
+
+    @staticmethod
+    def _real_client(monkeypatch) -> MagicMock:
+        from rtm_mcp.config import RTMConfig
+
+        monkeypatch.delenv("RTM_STRICT_LIST_TARGETS", raising=False)
+        client = MagicMock()
+        client.config = RTMConfig()
+        return client
+
+    def test_a_smart_target_is_rejected_with_no_env_set(self, monkeypatch):
+        err = enforce_list_target(
+            self._real_client(monkeypatch), _resolved(smart=True), "View", tool="add_task"
+        )
+        assert err is not None and err["error"]["code"] == ErrorCode.SMART_LIST_TARGET
+
+    def test_a_locked_target_is_rejected_with_no_env_set(self, monkeypatch):
+        err = enforce_list_target(
+            self._real_client(monkeypatch), _resolved(locked=True), "Inbox", tool="add_task"
+        )
+        assert err is not None and err["error"]["code"] == ErrorCode.LOCKED_SYSTEM_LIST
+
+    def test_a_writable_target_still_passes(self, monkeypatch):
+        client = self._real_client(monkeypatch)
+        assert enforce_list_target(client, _resolved(), "Personal", tool="add_task") is None
+
+    def test_an_archived_target_still_passes(self, monkeypatch):
+        """Deliberately NOT gated, and switching the gate on must not change that: RTM still
+        accepts items into an archived list, so refusing one would be policy the server does
+        not own. Now that the gate is live this is load-bearing rather than theoretical."""
+        client = self._real_client(monkeypatch)
+        assert enforce_list_target(client, _resolved(archived=True), "Old", tool="add_task") is None
+
+    def test_off_restores_pre_gate_behaviour_byte_for_byte(self, monkeypatch):
+        from rtm_mcp.config import RTMConfig
+
+        monkeypatch.setenv("RTM_STRICT_LIST_TARGETS", "0")
+        client = MagicMock()
+        client.config = RTMConfig()
+        assert enforce_list_target(client, _resolved(smart=True), "View", tool="add_task") is None

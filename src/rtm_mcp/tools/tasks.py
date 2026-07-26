@@ -315,8 +315,9 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             locked_system_list.
             A strict_tag_rejected carries rejected_tags / how_to_proceed
             under `error.details`. smart_list_target / locked_system_list are
-            raised only when the list-target gate is enabled
-            (RTM_STRICT_LIST_TARGETS) and only for an explicitly named list_name.
+            raised by the list-target gate (RTM_STRICT_LIST_TARGETS, ON by
+            default) and only for an explicitly named list_name — the
+            default-list fallback is never gated.
         """
         client: RTMClient = await get_client()
 
@@ -337,7 +338,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
                 # Erroring beats silently creating the task in the Inbox when
                 # the requested list doesn't resolve (same contract as move_task).
                 return build_response(data=resolved)
-            # List-target gate (off by default). Caller-named targets only — the
+            # List-target gate (ON by default since v5.1.0). Caller-named targets only — the
             # default-list fallback below is deliberately not gated.
             err = enforce_list_target(client, resolved, list_name, tool="add_task")
             if err:
@@ -1037,8 +1038,8 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         Errors: {"error": {"code": ..., "message": "<actionable prose>",
             "rtm_code": ...}} — branch on `code`, NEVER parse the message.
             Possible: list_not_found, missing_parameter, task_not_found,
-            smart_list_target, locked_system_list. The last two are raised only
-            when the list-target gate is enabled (RTM_STRICT_LIST_TARGETS).
+            smart_list_target, locked_system_list. The last two are raised by the
+            list-target gate (RTM_STRICT_LIST_TARGETS, ON by default).
         """
         client: RTMClient = await get_client()
 
@@ -1046,7 +1047,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
         resolved = await resolve_list_id(client, to_list_name)
         if "error" in resolved:
             return build_response(data=resolved)
-        # List-target gate (off by default): refuse a smart / locked destination.
+        # List-target gate (ON by default since v5.1.0): refuse a smart / locked destination.
         err = enforce_list_target(client, resolved, to_list_name, tool="move_task")
         if err:
             return build_response(data=err)
