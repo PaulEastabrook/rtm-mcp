@@ -4,6 +4,47 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v3.2.0 — unknown tool parameters are rejected
+
+A tool call carrying a parameter the tool does not define now returns an error and performs no
+write. Previously it was accepted silently: the extra argument was discarded and nothing said so.
+
+**Why this is a minor bump and not a major one.** No advertised contract changed — no signature,
+no envelope, no output schema; every tool fingerprint is byte-identical. A caller that conforms to
+the advertised schema is unaffected by construction. The only calls that break are ones that were
+already violating the schema and being tolerated, which is the defect. That said, the cost is real
+and worth naming: **strict rejection couples client and server versions.** A skill written against
+a newer server that passes a parameter an older server lacks now hard-fails rather than degrading.
+Accepted because both sides here move together and because the failure announces itself
+immediately — but if that stops being true, this is the decision to revisit.
+
+**Rejection, not a warning.** The alternative considered was a `warnings[]` entry in the response
+with the call proceeding. Rejected: a warning in a response body is exactly the class of signal
+that gets ignored, and this defect exists *because* a silent success let a wrong conclusion stand.
+
+**How it was found, which is the argument for fixing it.** `gtd_inbox_capture` was called with
+`type_tags: ["improvement_candidate"]` — a parameter it does not have, and deliberately so
+(capture stages raw; classifying is clarify-time work). The call returned a success whose
+`applied[]` carried `capture:tags` — the server correctly applying its own `#ai_conversation`
+pipeline tag — which was read as the tag write having landed. A false defect report against the
+server followed. The tool told the truth; the missing feedback let a wrong story survive. The
+dangerous version is quieter: a misspelt *optional* on `gtd_item_create` or
+`gtd_item_set_properties` writes the item without that property and reports success, with nothing
+in `applied[]` or `errors[]` marking the discarded intent.
+
+The asymmetry that made this worth closing: required parameters were already validated strictly —
+omitting `text` returns a missing-argument error naming the path. The strictness existed; it just
+did not run in this direction.
+
+**Implementation.** One `on_call_tool` middleware (`middleware.py`), registered once in
+`server.py`, covering all 99 tools — not per-tool `extra="forbid"`, which would be 99 things to
+keep in step as tools are added. The valid-name set is the tool's own advertised
+`parameters["properties"]`, so it cannot drift from what clients are told. The error message names
+both the unknown parameter(s) and the full accepted set, because naming the accepted parameters is
+what turns a rejection into the answer.
+
+Not changed: required-parameter validation, and `gtd_inbox_capture` still has no tag parameter.
+
 ## v3.1.0 — the deprecated aliases are removed (breaking)
 
 **26 deprecated surfaces → 0.** The 25 renamed aliases and the `gtd_query` dispatcher shipped at

@@ -9,7 +9,8 @@
 
 ```
 src/rtm_mcp/
-├── server.py           # FastMCP server, lifespan, tool registration
+├── server.py           # FastMCP server, lifespan, tool registration, middleware registration
+├── middleware.py       # Call-boundary gate — rejects a tool call carrying any parameter the tool does not define (one on_call_tool middleware over all 99 tools; the valid set IS the tool's advertised parameters["properties"])
 ├── client.py           # Async RTM API client with signing, retry, settings caching (timezone + default list)
 ├── config.py           # Pydantic settings (env + file + rate limits + connection retry)
 ├── parsers.py          # RTM response parsing, formatting, normalization, analysis
@@ -62,6 +63,7 @@ src/rtm_mcp/
 | `client.py` | HTTP transport: signing, connection pooling, rate limiting, retry, settings caching (timezone + default list) |
 | `parsers.py` | Translate RTM's quirky API responses into clean Python dicts |
 | `error_codes.py` | The **canonical typed-error registry** (v2.0.0) — `ErrorCode` (every machine-branchable failure, grouped transport/resolution/validation/state/governance/commit/write), `RTM_CODE_MAP` (RTM numeric → semantic code) and `code_for_rtm`. **ADDITIVE-ONLY**: a shipped code is never renamed or removed. A leaf module (imports nothing from the package), so the three commit-engine `rejected[].reason` vocabularies source their members from it without an import cycle — one vocabulary, three scoped views |
+| `middleware.py` | The **call-boundary gate**: `RejectUnknownParameters`, one `on_call_tool` middleware refusing any tool call that carries a parameter the tool does not define. Zero API calls, no envelope — it raises `ToolError` before the tool body runs, matching the protocol-level shape the existing missing-required-parameter rejection already uses (deliberately NOT an `ErrorCode`, which would churn every fingerprint for a failure that is not a tool's own). The valid-name set is read live from the tool's advertised `parameters["properties"]`, so it cannot drift from what clients are told |
 | `response_builder.py` | Wrap tool output in the standard MCP response envelope; build every structured error (`build_error` / `error_from_exception`); hold the three tool behaviour-annotation constants (`READ_ONLY_`/`ADDITIVE_WRITE_`/`DESTRUCTIVE_WRITE_ANNOTATIONS`) |
 | `models.py` | Schema-only Pydantic models generating each tool's MCP `outputSchema` (attached via `@mcp.tool(output_schema=...)`); **not used at runtime** — tools still return the `response_builder` dict, FastMCP advertises the schema without validating. `data` is always a `success \| ErrorData` union — since v2.0.0 `ErrorData.error` is the nested `ErrorBody` (`{code, message, rtm_code, details}`, `extra="forbid"`), not a prose string; the six-surface tool-documentation standard (CONTRIBUTING § 3) |
 | `lookup.py` | Resolve human-readable names (task name, list name) to RTM IDs |
@@ -215,6 +217,53 @@ Request classification uses `require_timeline` as a proxy: `True` = write, `Fals
 transaction log matching the timeline the writes executed under). A failed settings fetch is
 **not** cached — the next consumer retries, so one transient blip can't disable timezone
 localisation for the whole session (`get_account_tags` already re-fetches after its TTL).
+
+### Unknown-parameter rejection (the call-boundary gate, since v3.2.0)
+
+A tool call carrying a parameter the tool does not define is **rejected**, with no write. Before
+v3.2.0 it was accepted silently — the extra argument discarded, nothing said. The asymmetry that
+made this worth closing: **required** parameters were already validated strictly (omitting `text`
+returns a missing-argument error naming the path), so the strictness existed and simply did not run
+in this direction.
+
+**The cost is a confident success a caller reasons from, not a corrupted write.** The defect was
+found when `gtd_inbox_capture` was called with a non-existent `type_tags` parameter and returned a
+success whose `applied[]` carried `capture:tags` — the server correctly applying its own
+`#ai_conversation` pipeline tag — which was read as the tag write having landed, and a false defect
+report against the server followed. The tool told the truth; the missing feedback let a wrong story
+survive. The quieter and more dangerous case is a misspelt **optional** on a write tool
+(`gtd_item_create`, `gtd_item_set_properties`): the item is written without that property and
+reported as success, with nothing in `applied[]` or `errors[]` marking the discarded intent.
+
+**Reject, do not warn.** A `warnings[]` entry in the response body was considered and rejected —
+that is precisely the class of signal that gets ignored, and this defect exists *because* a silent
+success let a wrong conclusion stand. The accepted counter-cost, recorded so the decision can be
+revisited: strict rejection **couples client and server versions** — a skill written against a
+newer server passing a parameter an older one lacks now hard-fails rather than degrading. Tolerable
+here because both sides are the same author's and move together, and because the failure announces
+itself loudly and immediately.
+
+**One middleware, not per-tool.** A single `on_call_tool` hook (`middleware.py`, registered at the
+`FastMCP(...)` construction in `server.py`) covers every tool in every module and cannot drift as
+tools are added — the same reasoning as the `_tool` registration wrapper in `tools/gtd.py`. Per-tool
+`ConfigDict(extra="forbid")` would be 99 things to keep in step. The valid-name set is
+`(await server.get_tool(name)).parameters["properties"]` — the tool's own **advertised** schema, so
+the gate and the documentation cannot disagree. An unknown *tool* is passed through untouched (the
+dispatcher owns that message; pre-empting it would replace a precise "no such tool" with a
+confusing "no such parameter"). The message names the unknown parameter(s) **and the full accepted
+set** — naming the accepted parameters is what turns a rejection into the answer, which matters
+because the caller is by construction confused.
+
+**No protocol-key passlist, and that is measured rather than omitted.** MCP carries `_meta` as a
+**sibling** of `arguments` on `CallToolRequestParams` (a pydantic field aliased `_meta`), so it
+never reaches the arguments dict; and a client that inlines `_meta` *into* `arguments` is rejected
+downstream by FastMCP's own signature binding regardless ("Unexpected keyword argument", measured on
+fastmcp 3.4.4). Passing it through would change nothing except substituting a worse message for a
+better one. An `_`-prefix rule would have been worse still — `_type_tags` is a typo, not protocol.
+
+**Membrane / activation.** No new tag, no schema change (all 99 fingerprints byte-identical), no
+new `ErrorCode`, vault-free. To go live: restart the server on v3.2.0. Rollback is one line
+(removing the `add_middleware` call), so this is recoverable rather than a one-way door.
 
 ### Error Handling
 
@@ -1364,11 +1413,12 @@ call-surface assertion, strict-tag rejection setup) are canonical in
 
 This inventory is the canonical per-file test count (keep it in sync — CONTRIBUTING.md § 9).
 
-Test files (1601 tests total):
+Test files (1615 tests total):
 - `tests/test_tool_schemas.py` — the six-surface tool-documentation contract, introspecting the REAL server (`rtm_mcp.server.mcp` → `get_tools()` → `to_mcp_tool()`): every tool + param described; behaviour annotations correct per class (read-only / additive / destructive; openWorldHint everywhere); closed-vocabulary enums asserted EQUAL to the canonical constants (priority/direction/scope/role/mode/execute/verdict — drift-proof); complex params expose a clean single-typed schema; every `outputSchema.properties.data` is a `success|error` union; success-shape spot-checks; the committed `tool-fingerprints.json` freshness guard (recomputes per-tool sha256 from the live server, asserts equality with the file, and asserts qualified-`mcp__rtm__` sha256 shape — family standard § 5); **the advertised error contract** (`TestAdvertisedErrorContract`, v2.1.1) — every tool that can return an envelope error documents one, and every code it can actually produce (derived from its own source via `ast`: direct `ErrorCode` refs + what `resolve_task_ids`/`resolve_list_id`/`enforce_strict_tags`/`error_from_exception` surface on its behalf) is NAMED in the description, so a new failure path fails the suite until documented; plus a guard-the-guard that some tools stay classified non-failable (else the other two pass vacuously); the perspective/depth advisory enums asserted equal to VALID_PERSPECTIVES/VALID_DEPTHS; the eight Wave 1 reads registered read-only and `_bounded_int` registered as an error-surfacing helper so their invalid_input contract is genuinely enforced; the contribution-state enum asserted equal to TERMINAL_STATES with the open state absent, and the shape-verdict vocabulary sourced from the detector constants; **the v3.1.0 removal contract** (a test-OWNED list of the 26 removed surfaces whose length is asserted BEFORE any iteration — an imported list that had emptied would pass vacuously; every removed name unresolvable; the `DEPRECATED_ALIASES` constant itself gone; all 28 replacements resolving; the tool count pinned at 55; no fingerprint records a removed surface) and **the `gtd_query` split** (each tool takes only its own parameters, none carries `perspective` forward, the cross-perspective parameters are gone, all three read-only) (41 tests)
 - `tests/test_client.py` — client signing, API calls, settings + account-tag caching (incl. failure-not-cached + concurrent-timeline lock), transaction log, 503 retry, connection retry incl. connect-phase-timeout-on-write retry + mid-flight ReadError wrap + non-JSON response, POST/GET split (47 tests)
 - `tests/test_config.py` — config load/save, file fallback (corrupt/wrong-type/unreadable JSON), RTM_AUTH_TOKEN env + token/auth_token kwargs, safety-margin bounds, 0600 save permissions, strict-tag toggle, write-gate flags (both default off, strict_notes mode vocabulary + normalisation + loud failure on a typo, list-target env toggle) (31 tests)
 - `tests/test_error_codes.py` — the typed-error registry + v2.0.0 envelope: registry integrity (unique values, lower_snake_case spelling guard, str-mixin wire equality), RTM numeric mapping (key-set parity with `exceptions.ERROR_CODE_MAP`, known numerics, unmapped/None → `invalid_input`), `build_error` (minimal shape, `details` omitted-not-null, rtm_code preserved, prose carried verbatim, code serialised as a plain string), `error_from_exception` (RTM code mapped + numeric preserved; non-RTM fallback), the unified reject vocabularies (every reason is a registry member; shared reasons have one spelling; `destructive_unconfirmed` reconciliation; the three lockstep verdict reasons), and `ErrorBody` (`extra="forbid"`; canonical shape), write-boundary gate codes (note-shape has its own; list-target REUSES the pre-existing smart/locked codes; no synonym minted) (28 tests)
+- `tests/test_middleware.py` — the call-boundary gate. **Every test runs through the REAL server via an in-memory `Client`**, not against the middleware class in isolation: the defect was never a validator's logic, it was that no validator ran on that path, and an isolated test would pass just as happily on a server that never registered the middleware. Valid calls pass unchanged (offline `gtd_item_shape`; a parameterless tool against a REAL client, since a mock's attributes don't serialise through the output schema); an invented parameter raises with a message naming BOTH it and the full valid set, and every unknown is named rather than only the first; **the rejection performs no write** — `client.call` is the single chokepoint every tool goes through, so zero awaits is the complete proof, and this is the assertion that matters (the rest are ergonomics); required-parameter validation still rejects, proving the fix added a check rather than replacing one; the no-passlist decision pinned at both halves (`_meta` is a sibling field on `CallToolRequestParams`; inlining it is rejected here with the better message, and an `_`-prefix rule would have let `_type_tags` through); an unknown tool is not this middleware's error; a guard that the middleware is actually registered on the real server; and the historical regression — the exact `gtd_inbox_capture(text=…, type_tags=[…])` call, naming `type_tags` and listing the four real parameters; and that the rejection actually EMITS its WARNING record (the v3.0.1 lesson — a control whose only output is a log record is unobservable if it reaches no handler) (14 tests)
 - `tests/test_note_shape.py` — note-shape gate (write gate 2): the mechanical grammar (well-formed titles incl. hyphenated/spaced TYPE, T-separator, en-dash tolerated as the gtd validator tolerates it; malformed titles; impossible calendar date + wall-clock time rejected; **an unknown TYPE PASSES — the ownership boundary**), `effective_title` (explicit title wins, else the body's first line — RTM's `title\ntext` storage), the three modes (off inert, absent-config-attribute inert, warn logs-but-allows, shape rejects/allows, body-first-line judged), guided error (code + rejected_title + expected_shape + how_to_proceed pointing at the plugin catalogue) (33 tests)
 - `tests/test_list_targets.py` — list-target gate (write gate 3): `check_target` (writable passes; smart → SMART_LIST_TARGET; locked → LOCKED_SYSTEM_LIST; smart wins when both set — one input, one verdict; **archived NOT gated** — RTM still accepts items, so refusing is policy the server doesn't own; missing flags default allowed), `enforce_list_target` (off inert, absent-config-attribute inert, on accepts/rejects + logs), guided error (code + rejected_list + how_to_proceed naming get_lists and the plugin list-catalogue) (13 tests)
 - `tests/test_strict_tags.py` — strict-tag guard: normalize/split/SmartAdd-extract + enforce_strict_tags (off / reject / live-refetch / input normalization) (13 tests)

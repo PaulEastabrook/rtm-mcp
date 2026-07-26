@@ -12,6 +12,7 @@ from fastmcp import FastMCP
 from .client import RTMClient
 from .config import RTMConfig
 from .exceptions import RTMAuthError
+from .middleware import RejectUnknownParameters
 from .tools import (
     register_gtd_tools,
     register_list_tools,
@@ -460,6 +461,11 @@ Example: "Call mom ^tomorrow !1 #family"
 """,
     lifespan=lifespan,
 )
+
+# An unknown parameter is rejected at the call boundary rather than silently discarded.
+# One middleware covers every tool in every module and cannot drift as tools are added —
+# see `middleware.py` for why this rejects rather than warns.
+mcp.add_middleware(RejectUnknownParameters(mcp))
 
 
 # Register all tools
