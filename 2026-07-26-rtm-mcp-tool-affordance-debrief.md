@@ -96,38 +96,55 @@ description text is not belt-and-braces — it is the entire model-visible mecha
 `consumer` (including the `bff` split that naming cannot express) ride in the help payload, which is
 a tool *result* and therefore always visible.
 
-## Post-restart finding — tier 3 is largely UNREACHABLE from the Claude Code client
+## Post-restart finding — where an unknown argument actually dies, and why tier 3 rarely fires
 
-Measured against the live connector immediately after the v3.3.0 restart, and it qualifies the
-guarantee ladder this design rests on.
+Measured against the live connector after the v3.3.0 restart, then traced layer by layer. The
+first version of this section blamed the client; that was wrong in an instructive way, so the
+investigation and the correction are both recorded.
 
-**This client strips unknown arguments before they reach the server.** Two probes:
-`get_lists(include_smart=false, include_archives=false)` returned a normal success, and
+**The observation.** Two probes through the Claude Code client succeeded instead of rejecting:
+`get_lists(include_smart=false, include_archives=false)` returned lists, and
 `rtm_tool_help(tool_nme="get_lists")` returned the **whole index** — i.e. the server saw a
-*no-argument* call. Neither reached the middleware. The rejection itself is fine: it fires in-suite
-and over a real stdio subprocess. The client simply validates arguments against the fetched
-`inputSchema` and discards what does not match.
+*no-argument* call.
 
-**Why this matters more than it first looks.** The guarantee ladder ranks a server-forced rejection
-as tier 2 — "guaranteed on failure, the one moment the server *makes* the model read". For this
-client, on the unknown-parameter path, that guarantee does not hold: the failure is absorbed
-upstream. Tiers 1 (front-loaded description) and 4 (`rtm_tool_help`) are doing the real work here,
-which strengthens rather than weakens the front-loading investment — but the teaching rejection
-should be understood as insurance for *other* callers, not as this client's safety net.
+**It is NOT fastmcp.** A raw JSON-RPC probe (`tools/call` written straight to the server's stdin,
+no fastmcp `Client` in the path) shows the server receiving `tool_nme`, rejecting it with the full
+teaching message, and logging the WARNING. fastmcp 3.4.4 forwards unknown arguments faithfully in
+both directions — server-side to the middleware, and client-side when its own `Client` sends them.
 
-**And the client reproduces the original defect shape.** Asking for `get_lists`' contract via a
-misspelt `tool_nme` produced a confident, plausible, wrong answer — the index — with nothing saying
-a parameter had been discarded. That is precisely the "confident success a caller reasons from"
-failure v3.2.0 was built to close, relocated one layer up where the server cannot see it. It follows
-that the original `type_tags` incident arrived through a caller that *does* forward unknown
-arguments (a scheduled worker or a board artifact), not through this client. Worth confirming before
-relying on it either way.
+**The argument never reached the server.** The live connector's own log
+(`~/Library/Caches/claude-cli-nodejs/<cwd-slug>/mcp-logs-rtm/*.jsonl`) records both probes as
+`completed successfully` with **zero** rejection records, at the exact timestamps. So the drop is
+upstream of the wire, in the Claude Code harness.
 
-**Consequences to carry forward.** (1) Do not size the tier-3 work by expected hit-rate on this
-client — it will read as zero. (2) The sibling-repo briefs should state which client each caller
-population actually uses, because it decides whether tier 3 is live at all. (3) This is measurable
-evidence for the input brief's open Q3 ("what is the real-world failure rate this is fixing?"): the
-v3.2.0 WARNING log will under-count by construction wherever the caller is this client.
+**And the harness is right, because OUR OWN schema tells it to.** Every one of the 100 tools
+advertises **`additionalProperties: false`** — fastmcp emits it from the function signature, so it
+predates v3.3.0 and is not something this change introduced. A conforming client reading a closed
+schema is *supposed* to reject or filter an undeclared key locally. The harness is enforcing the
+contract we publish.
+
+**So this is layered defence working, not a hole.** The constraint exists twice, deliberately:
+structurally in the advertised schema (enforced at the earliest possible layer, client-side, free)
+and at runtime in the middleware (the backstop for any caller that does **not** enforce the
+advertised schema). Tier 3 firing rarely on this client is the outer layer doing its job. It follows
+that the original `type_tags` incident came from a caller that does not enforce
+`additionalProperties: false` — a board artifact's hand-rolled `callMcpTool`, a worker, or an older
+client — which is exactly the population the middleware exists for.
+
+**The one genuine defect left, and it is not ours to fix.** The earliest layer enforces **silently**.
+Asking for `get_lists`' contract with a misspelt `tool_nme` produced a confident, plausible, wrong
+answer — the index — with nothing telling the model a parameter had been discarded. That is the
+original v3.2.0 defect shape exactly, relocated one layer up where the server cannot see or fix it.
+The teaching therefore lives only at the layer that rarely runs, which is inverted from what you
+would want. Nothing in this repo can close it; it is a client-side observation worth carrying to
+whoever owns that harness.
+
+**Consequences to carry forward.** (1) Do not size tier-3 work by hit-rate on this client — it reads
+as zero by design. (2) The v3.2.0 WARNING log under-counts by construction wherever the caller
+enforces the schema, which is direct evidence for the input brief's open Q3 ("what is the real-world
+failure rate this is fixing?"): the log cannot answer it. (3) Sibling-repo briefs should note that
+`additionalProperties: false` is already doing most of this work for schema-conforming callers, so
+the tier-3 investment should be scoped to the non-conforming ones.
 
 ## Gotchas for the next author
 

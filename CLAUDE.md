@@ -316,16 +316,24 @@ enums, a nearest-name guess, the combination rules a schema cannot express, and 
 One shape via `guided_rejection.py`. It still writes nothing — `client.call` await count zero is
 the complete proof, and a test pins it.
 
-> **Measured caveat (2026-07-26, live, post-v3.3.0 restart): the Claude Code client STRIPS unknown
-> arguments before they reach the server, so this tier rarely fires there.** `rtm_tool_help(
-> tool_nme="get_lists")` returns the whole index — the server saw a no-argument call — and
-> `get_lists(include_archives=…)` succeeds. The rejection is correct (proven in-suite and over a
-> real stdio subprocess); the failure is absorbed upstream. So tier 3 is insurance for callers that
-> DO forward unknown arguments (a scheduled worker, a board artifact — which is where the original
-> `type_tags` incident must have come from), and tiers 1 / 4 carry this client. Do not read a quiet
-> v3.2.0 WARNING log as evidence the problem is rare: it under-counts by construction. Note also
-> that the client's silent drop reproduces the original defect shape one layer up, where the server
-> cannot see it.
+**Why tier 3 rarely fires, traced (2026-07-26, live).** An unknown argument sent from the Claude
+Code client never reaches the middleware: `rtm_tool_help(tool_nme=…)` returns the whole index (the
+server saw a no-argument call) and the connector's own log records `completed successfully` with no
+rejection. **It is not fastmcp** — a raw `tools/call` written straight to the server's stdin *is*
+rejected, with the WARNING logged, so fastmcp forwards unknown arguments faithfully both ways. The
+cause is that **all 100 tools advertise `additionalProperties: false`** (emitted by fastmcp from the
+signature; predates v3.3.0), and a conforming client enforces that closed schema locally.
+
+So the constraint is enforced **twice by design** — structurally in the advertised schema at the
+earliest layer, and at runtime in the middleware as the backstop for callers that do *not* enforce
+the advertised schema. That is layered defence, not a gap, and it locates the original `type_tags`
+incident with a non-enforcing caller (a board artifact's hand-rolled `callMcpTool`, a worker, or an
+older client) — precisely the population the middleware exists for.
+
+Two consequences. The **v3.2.0 WARNING log under-counts by construction**, so it cannot answer "how
+often does this happen?". And the outer layer enforces **silently** — the client drops the key
+without telling the model, which reproduces the original defect shape one layer up where this server
+cannot see or fix it. The teaching consequently lives only at the layer that rarely runs.
 
 **The 2 KB cap versus CONTRIBUTING § 7 — the divergence that matters.** § 7 *requires* a multi-case
 `Returns` and an `Args:` section in every tool docstring, and the `_FullDocstringMCP` shim
