@@ -503,3 +503,58 @@ class TestReceiptDocIsVersionIndependent:
             f"descriptions still carrying their source indentation (min indent per tool): "
             f"{offenders}. Compose from inspect.getdoc(fn), not fn.__doc__."
         )
+
+
+class TestOutOfScopeOfEmptyRejection:
+    """The four categories the v5.0.0 empty-payload rule must NOT touch.
+
+    Each is here for a different reason, and each is easy to break with a careless
+    generalisation of the rule — which is why they are asserted rather than assumed. The
+    behavioural half (the eight tools actually rejecting) lives in
+    `tests/test_tools/test_gtd_tools.py`, where the client fixtures are.
+    """
+
+    @pytest.mark.asyncio
+    async def test_rtm_tool_help_with_no_argument_still_returns_the_index(self):
+        """The one most likely to be broken: it superficially resembles the empty case.
+
+        `rtm_tool_help()` is a designed VIEW SELECTOR shipped in v3.3.0 — no argument returns
+        the whole-server index, a name returns one contract. Treating the no-arg call as an
+        empty payload would regress a shipped feature."""
+        tools = await _tools()
+        schema = tools["rtm_tool_help"].to_mcp_tool().inputSchema or {}
+        assert not (schema.get("required") or []), (
+            "rtm_tool_help must take NO required parameter — the no-arg call IS the index view"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_argument_tools_take_no_required_parameter(self):
+        # Nothing can be empty on these, so the rule can never apply.
+        tools = await _tools()
+        for name in ("get_tags", "check_auth", "test_connection"):
+            schema = tools[name].to_mcp_tool().inputSchema or {}
+            assert not (schema.get("required") or []), f"{name} grew a required parameter"
+
+    @pytest.mark.asyncio
+    async def test_genuine_optional_facets_stay_optional(self):
+        # Absence AND emptiness are legitimate — an action often has no due date. These are
+        # covered by the receipt, never by rejection.
+        tools = await _tools()
+        schema = tools["gtd_item_create"].to_mcp_tool().inputSchema or {}
+        required = set(schema.get("required") or [])
+        for param in ("due", "energy", "comms", "extra_tags", "context_note"):
+            assert param in (schema.get("properties") or {}), f"gtd_item_create.{param} vanished"
+            assert param not in required, f"gtd_item_create.{param} was wrongly made required"
+
+    @pytest.mark.asyncio
+    async def test_control_flags_are_untouched(self):
+        # A mode switch, not data — the same reasoning as receipt.is_facet.
+        tools = await _tools()
+        for tool, flag in (
+            ("gtd_engage_commit", "confirm_destructive"),
+            ("gtd_item_stamp_tokens", "dry_run"),
+            ("gtd_note_add", "timestamp"),
+        ):
+            schema = tools[tool].to_mcp_tool().inputSchema or {}
+            assert flag in (schema.get("properties") or {})
+            assert flag not in set(schema.get("required") or []), f"{tool}.{flag} became required"

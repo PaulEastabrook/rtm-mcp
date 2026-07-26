@@ -4,6 +4,61 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v5.0.0 — present-but-empty payloads are rejected, and the partial-write branch is observed
+
+**BREAKING** (§ 1). Implements `2026-07-26-rtm-mcp-empty-payload-rejection-brief.md`. The last two
+items before the sibling rollout.
+
+### 1. A payload that arrives present but EMPTY is rejected — BREAKING
+
+v4.0.0 tightened **absence**; `[]` / `{}` / `""` stayed legal and returned a graceful no-op, and
+v4.1.0's `guidance` narrowing then removed the only signal that made that no-op visible. Rather than
+restore the signal, the silent case is removed.
+
+**The rule: reject when a parameter *whose value is the work* is present but empty.** All eight
+reject with `missing_parameter`, name the parameter, and write nothing:
+
+`gtd_engage_commit.items` · `gtd_item_transition_batch.items` · `gtd_inbox_drain.dispositions` ·
+`gtd_waiting_for_sweep.verdicts` · `gtd_cluster_consolidate.moves` · `gtd_project_create.frame` ·
+`gtd_note_add.body` · `gtd_inbox_item_close.derived_refs`
+
+Implemented once, in `gtd_writes.check_payload`, generalising the rule `validate_transition` already
+applied to `add_tags`/`remove_tags` and **reusing its `MISSING_PARAMETER` reason** — a new registry
+member would have churned all 100 fingerprints for a failure the registry already spells. A
+whitespace-only string counts as empty (`body="   "` is contentless by the same argument).
+
+**Explicitly NOT affected, and asserted so** — this is the half that is easy to break by accident:
+
+| Untouched | Why |
+|---|---|
+| `rtm_tool_help()` with no argument | A designed **view selector** (v3.3.0): no argument returns the whole-server index. Breaking it would regress a shipped feature. |
+| No-argument tools (`get_tags`, `check_auth`, `test_connection`) | Nothing can be empty. |
+| Genuine optional facets (`due`, `energy`, `comms`, `extra_tags`, `context_note`) | Absence *and* emptiness are legitimate — covered by the receipt, never by rejection. |
+| Booleans (`confirm_destructive`, `dry_run`, `timestamp`) | A mode switch, not data — the same reasoning as `receipt.is_facet`. |
+
+Two behaviours improved in passing: `gtd_item_transition_batch` already refused an empty `items` but
+only **after** a read — it now returns before it (a gate that still spends an API call is not a
+gate); and `gtd_project_create` rejected an empty `frame` downstream via focus resolution, reporting
+the missing `frame.focus`, which reads as "one field is wrong" when the whole payload is absent.
+
+**No in-repo engine relied on the graceful no-op** — checked; this server has no internal callers of
+these tools, and no test asserted the old behaviour.
+
+Fingerprint churn is **2 tools** (`gtd_engage_commit`, `gtd_project_create`) — their advertised
+`rejected[].reason` enums gained `missing_parameter`.
+
+### 2. The partial-write `guidance` branch is now observed
+
+The v4.1.0 debrief reported honestly that this branch — the one held up as *justifying* the field —
+fired **zero times** across the suite: unit-tested, but no integration scenario exercised a mid-batch
+RTM failure. Added one: a `gtd_engage_commit` over two items where the **second write fails**,
+asserting `applied[]` non-empty, `errors[]` non-empty, `guidance` present naming **PARTIAL** and
+`batch_undo`, and that the transaction ids needed to reverse it are actually in the response —
+otherwise the advice is unfollowable.
+
+**Re-measured: `guidance` emissions 6 → 7 of 174 calls (4.0%), and the new one is the partial-write
+branch.** The advisory is unaffected at 16.7%.
+
 ## v4.1.0 — the two refinements the trial settled
 
 Implements `2026-07-26-rtm-mcp-receipt-refinements-brief.md`. Both land **before** the three sibling

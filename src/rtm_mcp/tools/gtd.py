@@ -169,6 +169,7 @@ from ..gtd_writes import (
     append_outputs_row,
     apply_edit_op,
     auto_close_at,
+    check_payload,
     collapse_write,
     collect_item_tags,
     collect_surface_tags,
@@ -1482,10 +1483,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         Returns (on ambiguity): {"candidates": [{id, name, list_id}, ...]} — re-call with frame.focus
             set to one id.
         Returns (on rejection — nothing written): {"created": [], "rejected": [...], "message": ...}.
+            An EMPTY `frame` is rejected here (missing_parameter) before any read — a project
+            with no frame was never a legitimate call.
 
         Errors: {"error": {"code": ..., "message": "<actionable prose>",
             "rtm_code": ...}} — branch on `code`, NEVER parse the message.
-            Possible: strict_tag_rejected.
+            Possible: missing_parameter, strict_tag_rejected.
             A strict_tag_rejected carries rejected_tags / how_to_proceed
             under `error.details`.
             Per-item rejections are the FLAT `rejected[]` entries
@@ -1499,6 +1502,20 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         frame_d: dict[str, Any] = coerce_json(frame) or {}
         items_l: list[dict[str, Any]] = coerce_json(items) or []
         notes_l: list[dict[str, Any]] = coerce_json(notes) or []
+
+        # v5.0.0: an empty `frame` already failed, but downstream and narrowly — focus resolution
+        # reported the missing `frame.focus`, which reads as "one field is wrong" when in fact the
+        # whole payload is absent. Checked here so the eight speak with one voice, and BEFORE the
+        # read, so an empty call costs no API call at all.
+        empty_frame = check_payload("frame", frame_d, carries="project frame")
+        if empty_frame:
+            return build_response(
+                data={
+                    "created": [],
+                    "rejected": empty_frame,
+                    "message": "Create rejected; nothing was written.",
+                }
+            )
 
         def _date_of(d: dict[str, Any]) -> str | None:
             return d.get("calendar_date") or d.get("chase") or d.get("due")
@@ -2549,10 +2566,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             "warnings": [{id, op, warning}, ...], "count", "message"} — the echo names each item by id
             + op ONLY, never its name/contents (so a redacted item leaks nothing).
         Returns (on rejection — nothing written): {"applied": [], "rejected": [...], "message": ...}.
+            An EMPTY `items` is rejected here (missing_parameter) — an empty commit was never a
+            legitimate call, and it used to return a silent no-op.
 
         Errors: {"error": {"code": ..., "message": "<actionable prose>",
             "rtm_code": ...}} — branch on `code`, NEVER parse the message.
-            Possible: bad_date, destructive_unconfirmed, strict_tag_rejected, task_not_found.
+            Possible: bad_date, destructive_unconfirmed, missing_parameter, strict_tag_rejected,
+            task_not_found.
             A strict_tag_rejected carries rejected_tags / how_to_proceed
             under `error.details`.
             Per-item rejections are the FLAT `rejected[]` entries
@@ -2560,9 +2580,17 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         """
         client: RTMClient = await get_client()
         items = coerce_json(items) or []
-        if not items:
+        # v5.0.0: an empty commit used to return a graceful no-op. v4.1.0's guidance narrowing
+        # removed the only signal that made it visible, so the silent case is rejected instead.
+        empty = check_payload("items", items, carries="verdict set")
+        if empty:
             return build_response(
-                data={"applied": [], "rejected": [], "count": 0, "message": "No items supplied."}
+                data={
+                    "applied": [],
+                    "rejected": empty,
+                    "count": 0,
+                    "message": "Commit rejected; nothing was written.",
+                }
             )
 
         result = await client.call(
@@ -3843,7 +3871,14 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             `error.code`, never the prose.
         """
         client: RTMClient = await get_client()
-        rejections = validate_add_note(note_type=note_type, summary=summary, body=body)
+        # `+`, not `or`: `validate_add_note` has no empty-body rule of its own, so the two
+        # checks are COMPLEMENTARY and a caller with both a bad note_type and an empty body
+        # should learn both in one round trip. Where a validator DOES already reject the
+        # empty set (inbox_drain / waiting_for_sweep / cluster_consolidate) the sites below
+        # use `or` instead, so the more specific message wins without duplicating it.
+        rejections = check_payload("body", body, carries="note content") + validate_add_note(
+            note_type=note_type, summary=summary, body=body
+        )
         if rejections:
             return build_response(
                 data={
@@ -4435,6 +4470,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         Returns (on miss): {"error": {"code": "task_not_found", "message": …}}.
         """
         client: RTMClient = await get_client()
+        empty = check_payload("derived_refs", coerce_json(derived_refs), carries="derived items")
+        if empty:
+            return build_response(
+                data={"rejected": empty, "message": "Close rejected; nothing was written."}
+            )
         refs = [str(r).strip() for r in (coerce_json(derived_refs) or []) if str(r).strip()]
         ref = await _resolve_ref(client, inbox_item_ref, "status:incomplete")
         if "task" not in ref:
@@ -4988,10 +5028,23 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         add = [t for t in (coerce_json(add_tags) or []) if str(t).strip()]
         remove = [t for t in (coerce_json(remove_tags) or []) if str(t).strip()]
 
-        rejections: list[dict[str, Any]] = []
-        if not ids:
-            rejections.append(
-                {"reason": ErrorCode.MISSING_PARAMETER.value, "detail": "provide at least one item"}
+        # This tool already refused an empty `items`; v5.0.0 routes it through the shared
+        # `check_payload` so the eight speak with one voice (and the message names the
+        # parameter), and returns BEFORE the read rather than after — a gate that still spends
+        # an API call is not a gate (CONTRIBUTING § 6). No other rejection is reachable with no
+        # ids, so nothing is lost by returning here.
+        rejections: list[dict[str, Any]] = check_payload("items", ids, carries="task ids")
+        if rejections:
+            return build_response(
+                data={
+                    "rejected": rejections,
+                    "results": [],
+                    "applied_count": 0,
+                    "requested_count": 0,
+                    "applied": [],
+                    "errors": [],
+                    "message": "Batch rejected; nothing was written (all-or-nothing).",
+                }
             )
         parsed = await _getlist(client, "status:incomplete")
         by_id = {str(t.get("id")): t for t in parsed}
@@ -5259,7 +5312,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         """
         client: RTMClient = await get_client()
         items = coerce_json(dispositions) or []
-        rejections = validate_inbox_zero(items)
+        rejections = check_payload(
+            "dispositions", dispositions, carries="disposition set"
+        ) or validate_inbox_zero(items)
         gate_tags: list[str] = [AI_CONVERSATION]
         for d in items:
             gate_tags += [str(t) for t in ((d.get("args") or {}).get("tags") or [])]
@@ -5357,7 +5412,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         """
         client: RTMClient = await get_client()
         items = coerce_json(verdicts) or []
-        rejections = validate_chase_sweep(items)
+        rejections = check_payload(
+            "verdicts", verdicts, carries="verdict set"
+        ) or validate_chase_sweep(items)
 
         # Resolve every date phrase up front — a hallucinated one must never reach a write.
         tz = await client.get_timezone()
@@ -5485,7 +5542,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         """
         client: RTMClient = await get_client()
         items = coerce_json(moves) or []
-        rejections = validate_consolidate(items)
+        rejections = check_payload("moves", moves, carries="move set") or validate_consolidate(
+            items
+        )
 
         async def _apply(item, refs, _write, by_id, projects, events, tz):
             mt = item.get("move_type")

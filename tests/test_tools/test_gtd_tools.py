@@ -1,7 +1,7 @@
 """Tests for GTD domain tools (gtd_project_plan) via mocked RTM client."""
 
 import re
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
@@ -5591,3 +5591,138 @@ class TestWave1bContributionTransition:
 # =========================================================================== #
 # v3.0.0 — alias delegation proven by CALLING, not by schema comparison
 # =========================================================================== #
+
+
+# ── v5.0.0: present-but-empty payloads are rejected ────────────────────────────────────
+
+
+class TestEmptyPayloadRejection:
+    """A payload parameter that arrives present but EMPTY is rejected, writing nothing.
+
+    v4.0.0 closed *absence*; `[]` / `{}` / `""` stayed legal and produced a silent no-op, and
+    v4.1.0's `guidance` narrowing removed the one signal that made it visible. Rather than
+    restore the signal, the silent case is removed. The four out-of-scope categories are
+    asserted in `tests/test_receipt.py::TestOutOfScopeOfEmptyRejection`.
+    """
+
+    EMPTY_CALLS: ClassVar[list[tuple[str, str, dict[str, Any]]]] = [
+        ("gtd_engage_commit", "items", {"items": []}),
+        ("gtd_item_transition_batch", "items", {"items": [], "add_tags": ["action"]}),
+        ("gtd_inbox_drain", "dispositions", {"dispositions": []}),
+        ("gtd_waiting_for_sweep", "verdicts", {"verdicts": []}),
+        ("gtd_cluster_consolidate", "moves", {"moves": []}),
+        ("gtd_project_create", "frame", {"frame": {}}),
+        (
+            "gtd_note_add",
+            "body",
+            {"task_ref": "t", "note_type": "STATE", "summary": "s", "body": ""},
+        ),
+        ("gtd_inbox_item_close", "derived_refs", {"inbox_item_ref": "t", "derived_refs": []}),
+    ]
+
+    def test_the_list_is_the_briefed_eight(self):
+        assert len(self.EMPTY_CALLS) == 8
+
+    @pytest.mark.parametrize("tool,param,kwargs", EMPTY_CALLS)
+    @pytest.mark.asyncio
+    async def test_rejects_naming_the_parameter_and_writes_nothing(
+        self, tool, param, kwargs, gtd_tools
+    ):
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value={"stat": "ok"})
+
+        res = await tools[tool](FakeContext(), **kwargs)
+
+        rejected = res["data"].get("rejected") or []
+        assert rejected, f"{tool} accepted an empty {param}"
+        assert any(r["reason"] == "missing_parameter" for r in rejected)
+        assert any(r.get("parameter") == param for r in rejected), (
+            f"{tool} rejected but did not name {param}: {rejected}"
+        )
+        # Validate-then-apply: a rejection writes NOTHING. `require_timeline=True` is the single
+        # marker every write carries, so zero of them is the complete proof.
+        writes = [c for c in client.call.call_args_list if c.kwargs.get("require_timeline")]
+        assert not writes, f"{tool} wrote {len(writes)} time(s) while rejecting"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_body_counts_as_empty(self, gtd_tools):
+        # A note body of "   " is contentless by exactly the same argument; accepting it would
+        # leave the hole half-closed.
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value={"stat": "ok"})
+        res = await tools["gtd_note_add"](
+            FakeContext(), task_ref="t", note_type="STATE", summary="s", body="   "
+        )
+        assert any(r.get("parameter") == "body" for r in res["data"]["rejected"])
+
+    @pytest.mark.asyncio
+    async def test_a_legitimate_non_empty_call_still_applies(self, gtd_tools):
+        # Guard-the-guard: if the rejection fired on everything, every assertion above would
+        # pass while the tools were completely broken.
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_note_add"](
+            FakeContext(), task_ref="1001", note_type="STATE", summary="s", body="real content"
+        )
+        assert not (res["data"].get("rejected") or [])
+        assert res["data"]["applied"]
+
+    @pytest.mark.asyncio
+    async def test_empty_rejection_carries_no_receipt_confusion(self, gtd_tools):
+        # A rejection is still a SUCCESS envelope (not `data.error`), so it carries the receipt.
+        # `not_applied[]` must stay empty: nothing was requested-but-unwritten — the whole call
+        # was refused, which `rejected[]` states.
+        tools, client = gtd_tools
+        client.call = AsyncMock(return_value={"stat": "ok"})
+        res = await tools["gtd_waiting_for_sweep"](FakeContext(), verdicts=[])
+        assert res["data"]["not_applied"] == []
+        assert res["data"]["guidance"] is None  # v4.1.0: rejection branch is silent
+
+
+class TestPartialWriteGuidance:
+    """The `guidance` branch that fires when a batch PARTIALLY applies.
+
+    The v4.1.0 debrief reported this branch firing ZERO times across the suite — unit-tested,
+    but no integration scenario exercised a mid-batch RTM failure. This is that scenario: three
+    ops where the SECOND fails. It matters because the response otherwise reads as a success
+    with a stray `errors[]`, and a caller that retries blindly re-applies what already landed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mid_batch_failure_produces_partial_guidance(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _engage_tree()
+        calls = {"n": 0}
+
+        async def _dispatch(method, **kwargs):
+            if method == "rtm.tasks.getList":
+                return tree
+            if method == "rtm.time.parse":
+                return {"time": {"$t": "2026-07-16T00:00:00Z"}}
+            calls["n"] += 1
+            if calls["n"] == 2:  # the second write fails; the first is already durable
+                raise RuntimeError("RTM 500 mid-batch")
+            return {"transaction": {"id": f"tx{calls['n']}", "undoable": "1"}}
+
+        client.call = AsyncMock(side_effect=_dispatch)
+
+        res = await tools["gtd_engage_commit"](
+            FakeContext(),
+            # Both ids exist and both verdicts are legal for their kind — engage is HARD-FAIL,
+            # so an unknown id or an illegal verdict would reject the whole batch and there
+            # would be no partial state to observe.
+            items=[
+                {"id": "a1", "verdict": "next_actions"},
+                {"id": "201", "verdict": "next_actions"},
+            ],
+        )
+        data = res["data"]
+
+        assert data["applied"], "expected at least one durable write"
+        assert data["errors"], "expected at least one failed op"
+        guidance = data["guidance"]
+        assert guidance, "the partial-write branch did not emit guidance"
+        assert "PARTIAL" in guidance, f"partial write not named as partial: {guidance}"
+        assert "batch_undo" in guidance, "guidance must name the reversal path"
+        # …and the ids needed to reverse it are actually present, or the advice is unfollowable.
+        assert any(a.get("transaction_id") for a in data["applied"])
