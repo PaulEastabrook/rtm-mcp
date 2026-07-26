@@ -96,6 +96,39 @@ description text is not belt-and-braces — it is the entire model-visible mecha
 `consumer` (including the `bff` split that naming cannot express) ride in the help payload, which is
 a tool *result* and therefore always visible.
 
+## Post-restart finding — tier 3 is largely UNREACHABLE from the Claude Code client
+
+Measured against the live connector immediately after the v3.3.0 restart, and it qualifies the
+guarantee ladder this design rests on.
+
+**This client strips unknown arguments before they reach the server.** Two probes:
+`get_lists(include_smart=false, include_archives=false)` returned a normal success, and
+`rtm_tool_help(tool_nme="get_lists")` returned the **whole index** — i.e. the server saw a
+*no-argument* call. Neither reached the middleware. The rejection itself is fine: it fires in-suite
+and over a real stdio subprocess. The client simply validates arguments against the fetched
+`inputSchema` and discards what does not match.
+
+**Why this matters more than it first looks.** The guarantee ladder ranks a server-forced rejection
+as tier 2 — "guaranteed on failure, the one moment the server *makes* the model read". For this
+client, on the unknown-parameter path, that guarantee does not hold: the failure is absorbed
+upstream. Tiers 1 (front-loaded description) and 4 (`rtm_tool_help`) are doing the real work here,
+which strengthens rather than weakens the front-loading investment — but the teaching rejection
+should be understood as insurance for *other* callers, not as this client's safety net.
+
+**And the client reproduces the original defect shape.** Asking for `get_lists`' contract via a
+misspelt `tool_nme` produced a confident, plausible, wrong answer — the index — with nothing saying
+a parameter had been discarded. That is precisely the "confident success a caller reasons from"
+failure v3.2.0 was built to close, relocated one layer up where the server cannot see it. It follows
+that the original `type_tags` incident arrived through a caller that *does* forward unknown
+arguments (a scheduled worker or a board artifact), not through this client. Worth confirming before
+relying on it either way.
+
+**Consequences to carry forward.** (1) Do not size the tier-3 work by expected hit-rate on this
+client — it will read as zero. (2) The sibling-repo briefs should state which client each caller
+population actually uses, because it decides whether tier 3 is live at all. (3) This is measurable
+evidence for the input brief's open Q3 ("what is the real-world failure rate this is fixing?"): the
+v3.2.0 WARNING log will under-count by construction wherever the caller is this client.
+
 ## Gotchas for the next author
 
 - **`rtm_tool_help`'s own description shipped 2,841 bytes over budget on the first pass.** The tool

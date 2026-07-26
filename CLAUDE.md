@@ -316,6 +316,17 @@ enums, a nearest-name guess, the combination rules a schema cannot express, and 
 One shape via `guided_rejection.py`. It still writes nothing — `client.call` await count zero is
 the complete proof, and a test pins it.
 
+> **Measured caveat (2026-07-26, live, post-v3.3.0 restart): the Claude Code client STRIPS unknown
+> arguments before they reach the server, so this tier rarely fires there.** `rtm_tool_help(
+> tool_nme="get_lists")` returns the whole index — the server saw a no-argument call — and
+> `get_lists(include_archives=…)` succeeds. The rejection is correct (proven in-suite and over a
+> real stdio subprocess); the failure is absorbed upstream. So tier 3 is insurance for callers that
+> DO forward unknown arguments (a scheduled worker, a board artifact — which is where the original
+> `type_tags` incident must have come from), and tiers 1 / 4 carry this client. Do not read a quiet
+> v3.2.0 WARNING log as evidence the problem is rare: it under-counts by construction. Note also
+> that the client's silent drop reproduces the original defect shape one layer up, where the server
+> cannot see it.
+
 **The 2 KB cap versus CONTRIBUTING § 7 — the divergence that matters.** § 7 *requires* a multi-case
 `Returns` and an `Args:` section in every tool docstring, and the `_FullDocstringMCP` shim
 advertises the whole docstring as the description. For a genuinely complex governed write, "fit
