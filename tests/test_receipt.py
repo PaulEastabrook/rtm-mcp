@@ -174,31 +174,45 @@ class TestAdvisory:
 
 
 class TestGuidance:
-    """One next step, ordered by severity — only the most serious statement is worth making."""
+    """Narrowed in v4.1.0 to the two branches that say something the other fields do not.
+
+    The trial measured 56 of 62 emissions as the full-rejection branch — a restatement of the
+    `rejected[]` array in the same payload. A field that usually repeats its neighbour trains a
+    caller to skip it, which costs the two branches below that are actually worth reading."""
 
     def test_none_on_a_clean_full_success(self):
         assert build_guidance({"applied": [{"op": "a"}], "errors": [], "not_applied": []}) is None
 
-    def test_rejection_outranks_everything(self):
-        g = build_guidance({"applied": [], "rejected": [{"reason": "x"}], "errors": [{"op": "y"}]})
-        assert g and "Nothing was written" in g
+    def test_silent_on_a_full_rejection(self):
+        # DROPPED in v4.1.0. rejected[] already lists every reason; guidance added only a count.
+        g = build_guidance({"applied": [], "rejected": [{"reason": "x"}], "not_applied": []})
+        assert g is None
 
     def test_partial_write_is_named_as_partial(self):
-        # The dangerous case: some writes are durable. Saying only "an error occurred" would
-        # invite a blind retry that double-applies the ops that succeeded.
+        # The branch that justifies the field: some writes are durable. Saying only "an error
+        # occurred" would invite a blind retry that double-applies the ops that succeeded.
         g = build_guidance({"applied": [{"op": "a"}], "errors": [{"op": "b"}], "not_applied": []})
         assert g and "PARTIAL" in g and "batch_undo" in g
+
+    def test_partial_write_outranks_not_applied(self):
+        # Severity ordering is unchanged where both conditions hold.
+        g = build_guidance(
+            {"applied": [{"op": "a"}], "errors": [{"op": "b"}], "not_applied": [{"op": "c"}]}
+        )
+        assert g and "PARTIAL" in g
 
     def test_not_applied_produces_guidance(self):
         g = build_guidance({"applied": [{"op": "a"}], "errors": [], "not_applied": [{"op": "b"}]})
         assert g and "not_applied[]" in g
 
-    def test_zero_applied_is_reported(self):
-        g = build_guidance({"applied": [], "errors": [], "not_applied": []})
-        assert g and "Nothing was written" in g
+    def test_silent_on_a_bare_zero_applied_response(self):
+        # Also dropped in v4.1.0, as a consequence of "only where it says something new":
+        # `applied: []` IS the statement. CONSEQUENCE, flagged in the debrief — an
+        # explicitly-empty payload (items=[]) now carries no interpretive signal at all.
+        assert build_guidance({"applied": [], "errors": [], "not_applied": []}) is None
 
     def test_silent_for_a_payload_with_no_applied_key(self):
-        # gtd_item_set_redaction returns {task_id, redacted} — no batch, so no "nothing written".
+        # gtd_item_set_redaction returns {task_id, redacted} — no batch, nothing to say.
         assert build_guidance({"task_id": "c1", "redacted": True, "not_applied": []}) is None
 
 

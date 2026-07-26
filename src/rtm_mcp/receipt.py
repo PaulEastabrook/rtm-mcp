@@ -164,24 +164,29 @@ def _count(data: dict[str, Any], key: str) -> int:
 
 
 def build_guidance(data: dict[str, Any]) -> str | None:
-    """The next step for a response that is not a clean full success, or None when it is.
+    """The next step, but ONLY where it says something the other fields do not (v4.1.0).
 
-    Ordered by severity, because only the most serious statement is worth making: a validation
-    rejection wrote nothing at all; a per-op error means the batch **partially** applied and
-    needs reconciling; a `not_applied[]` entry means the write was clean but narrower than
-    asked for.
+    **Narrowed after the v4.0.0 trial measured it.** It originally fired on any response that
+    was not a clean full success, and **56 of 62 emissions were the full-rejection branch** —
+    a restatement of the `rejected[]` array sitting immediately above it in the same payload.
+    Duplication is not free: a field that usually repeats its neighbour trains a caller to skip
+    it, which costs exactly the two branches below that are worth reading.
+
+    Two branches survive, and severity ordering between them is unchanged:
+
+    - **Partial write** — some ops are durable and some failed. This is the branch that
+      justifies the field: the response otherwise reads as a success with a stray `errors[]`,
+      and a blind retry re-applies everything that already succeeded.
+    - **`not_applied[]` non-empty** — the write was clean but narrower than asked for.
+
+    **Dropped: the full-rejection branch.** `rejected[]` already carries every reason; guidance
+    added only a count. Also dropped, as a consequence of "only where it says something new":
+    the bare zero-applied case, where `applied: []` is the statement.
     """
-    rejected = _count(data, "rejected")
     errors = _count(data, "errors")
     not_applied = _count(data, "not_applied")
     applied = _count(data, "applied")
 
-    if rejected:
-        return (
-            f"Nothing was written — {rejected} item(s) failed validation. Read rejected[] for "
-            "the reason on each, correct them, and re-send the whole payload; this tool "
-            "validates before it applies, so there is no partial state to clean up."
-        )
     if errors:
         return (
             f"PARTIAL WRITE — {applied} operation(s) landed and {errors} failed. The successful "
@@ -194,11 +199,6 @@ def build_guidance(data: dict[str, Any]) -> str | None:
             f"{applied} operation(s) landed; {not_applied} produced no write. Read not_applied[] "
             "— each entry names what was requested and why nothing was written. This is not an "
             "error, but if you expected a change there, it did not happen."
-        )
-    if applied == 0 and "applied" in data:
-        return (
-            "Nothing was written. The call was accepted but carried no operation to perform — "
-            "check that the payload you intended actually reached this tool."
         )
     return None
 

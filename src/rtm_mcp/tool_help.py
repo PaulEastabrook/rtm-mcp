@@ -591,9 +591,12 @@ RECEIPT_CONTRACT: dict[str, Any] = {
         "ALWAYS PRESENT, empty when everything landed — so branch on it unconditionally."
     ),
     "guidance": (
-        "One plain next step when the outcome was not a clean full success — a validation "
-        "rejection (nothing written), a partial batch (some writes durable, some failed), or "
-        "a narrower-than-asked result. `null` on a clean success."
+        "One plain next step, emitted ONLY where it says something the other fields do not: a "
+        "PARTIAL batch (some writes durable, some failed — do not blindly retry, you would "
+        "re-apply what succeeded) or a narrower-than-asked result (`not_applied[]` non-empty). "
+        "`null` otherwise, including on a full rejection — `rejected[]` already carries every "
+        "reason there. Narrowed in v4.1.0 after measurement: when it restated its neighbours it "
+        "trained callers to skip it."
     ),
     "advisory": (
         "Set when the call arrived carrying NONE of this tool's optional parameters, naming "

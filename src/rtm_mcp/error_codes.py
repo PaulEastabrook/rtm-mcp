@@ -1,13 +1,30 @@
-"""Canonical rtm-mcp error-code registry — the single source of truth for every
-machine-branchable failure this server can report.
+"""Canonical rtm-mcp code registry — the single source of truth for every
+machine-branchable **outcome** this server can report: failures and non-failure results alike.
 
-ADDITIVE-ONLY. Once a code ships it is never renamed or removed; a new failure gets a
+**The name says "error" for history, not for scope** (v4.1.0). Through v3.x every member was a
+failure, and the module said so. v4.0.0 added the teaching receipt, whose `not_applied[].reason`
+vocabulary describes operations that produced no write on an otherwise-**successful** call — a
+`no_change` is not a failure. The label was corrected rather than the contents: one registry,
+whose stated purpose is now outcomes.
+
+**The discriminator is the FIELD, not the registry** — which is exactly why a second registry
+would be redundant:
+
+    a code in `not_applied[].reason`  →  an OUTCOME (the call succeeded)
+    a code in `error.code`            →  a FAILURE (the call did not)
+
+Splitting would double the vocabulary to maintain for a distinction the envelope already makes
+structurally, and would force every consumer to know which registry it is reading.
+`tests/test_receipt.py` asserts the outcome members never appear as an `error.code`, which
+enforces that discriminator.
+
+ADDITIVE-ONLY. Once a code ships it is never renamed or removed; a new outcome gets a
 new member. (The v2.0.0 envelope *shape* change was a one-time restructure — it is not
 licence to mutate the registry. See CONTRIBUTING § 5.)
 
 **Why codes.** Before v2.0.0 `data.error` was free-text prose, so a wrapper, scheduled
 engine, or eval grader recovering from a failure had to pattern-match English. A prose
-edit silently broke recovery. Now every failure carries a stable `code`; the prose
+edit silently broke recovery. Now every outcome carries a stable `code`; the prose
 survives verbatim as `message`, for humans only.
 
 **Scope — two error shapes, one changed.** This registry governs the *envelope* error
@@ -47,7 +64,11 @@ from enum import Enum
 
 
 class ErrorCode(str, Enum):
-    """Every machine-branchable failure. Grouped by family; values are the wire strings.
+    """Every machine-branchable outcome — failures and non-failure results alike.
+
+    Grouped by family; values are the wire strings. All but the `outcome` group below are
+    failures; which kind a given code IS on a given response is carried by the field it appears
+    in (`error.code` vs `not_applied[].reason`), not by the registry.
 
     `str` mixin so a member serialises as its plain value in JSON and compares equal to
     it (`ErrorCode.TASK_NOT_FOUND == "task_not_found"`), keeping consumers that branch on
@@ -121,11 +142,11 @@ class ErrorCode(str, Enum):
     # ------------------------------------------------------------------- outcome
     # NOT failures — these are the `not_applied[].reason` vocabulary (the teaching receipt,
     # v4.0.0): why a requested operation produced no write on an otherwise-successful call.
-    # They live here because the designed change requires ONE reason vocabulary across the
-    # envelope error, the commit engines' `rejected[]`, and the receipt — a second registry
-    # would recreate exactly the drift v2.0.0 removed. That does widen this enum's meaning
-    # from "failure" to "machine-branchable outcome"; the widening is deliberate and recorded
-    # rather than silent. None of these is ever an `error.code`.
+    # They live here because the trial settled that ONE reason vocabulary spans the envelope
+    # error, the commit engines' `rejected[]`, and the receipt — a second registry would double
+    # what has to be maintained for a distinction the envelope already makes structurally (see
+    # the module docstring's discriminator). None of these is ever an `error.code`, and a test
+    # enforces it.
     NO_CHANGE = "no_change"  # already in the requested state — the write would be a no-op
     NO_DURABLE_WRITE = "no_durable_write"  # the op is a decision/marker with no RTM write
     NOT_ELIGIBLE = "not_eligible"  # the target does not qualify for this operation

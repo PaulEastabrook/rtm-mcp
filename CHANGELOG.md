@@ -4,6 +4,51 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v4.1.0 — the two refinements the trial settled
+
+Implements `2026-07-26-rtm-mcp-receipt-refinements-brief.md`. Both land **before** the three sibling
+servers implement the receipt, so they inherit the corrected form rather than the trial form.
+
+### 1. The registry's stated purpose, corrected (documentation only)
+
+`error_codes.py` described itself as "every machine-branchable **failure**" while also holding three
+outcome members. **The label was wrong, not the contents.** It now reads "every machine-branchable
+**outcome** — failures and non-failure results alike", and records the reason a second registry is
+unnecessary:
+
+> the discriminator is the **field**, not the registry — a code in `not_applied[].reason` is an
+> outcome; a code in `error.code` is a failure.
+
+Nothing renamed, nothing moved, no wire value changed, **zero fingerprint churn** (verified). The
+test asserting the outcome members never appear as an `error.code` now enforces that discriminator
+rather than papering over a mislabel.
+
+### 2. `guidance` narrowed to the branches that say something new
+
+Measured in the v4.0.0 trial: **56 of 62 emissions** were the full-rejection branch — a restatement
+of the `rejected[]` array in the same payload. Duplication trains a caller to skip the field, which
+costs the branches that are worth reading.
+
+`guidance` is now emitted **only** on:
+- **partial write** — some ops durable, some failed; names it PARTIAL and points at `batch_undo`
+  with the transaction ids, because a blind retry re-applies what already succeeded;
+- **`not_applied[]` non-empty** — the write was clean but narrower than asked for.
+
+Dropped: the full-rejection branch (`rejected[]` already lists every reason) and, as a consequence
+of the same principle, the bare zero-applied case (`applied: []` is the statement). Severity ordering
+between the survivors is unchanged.
+
+**Re-measured: emissions fell from 62 to 6 across the same 162 governed-write calls (38% → 3.7%),
+and every survivor is a genuine `not_applied` case.** Reported honestly: the partial-write branch —
+the one held up as justifying the field — **fired zero times** in the suite. It is covered by unit
+tests but no integration scenario exercises a mid-batch RTM failure.
+
+**Consequence, flagged:** an explicitly-empty payload (`items=[]`, still legal) now carries no
+interpretive signal — `applied: []` and `not_applied: []` are the whole story. v4.0.0's guidance
+covered that case; this does not.
+
+No schema change (`guidance` was already `str | None`), so no fingerprint churn from this either.
+
 ## v4.0.1 — the receipt docstring is now version-independent
 
 **Bug fix, found by CI on Python 3.11/3.12 after v4.0.0 was pushed; the local gate runs 3.14 and
