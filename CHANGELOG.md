@@ -79,6 +79,19 @@ To go live: restart the server on v3.3.0. Rollback is a revert.
 
 ## v3.2.0 — unknown tool parameters are rejected
 
+> **⚠ CORRECTED 2026-07-26.** This entry's premise — "previously it was accepted silently" — is
+> measured **false**. On the pinned stack (fastmcp 3.4.4 / pydantic 2.12.5) a server with **no**
+> middleware already rejects an undeclared argument at call-schema binding, before the tool body;
+> v3.1.0 was executed over raw JSON-RPC and refuses the exact historical argument shape. **v3.2.0
+> replaced a pydantic dump with a teaching rejection; it did not add a gate and closed no
+> silent-success hole.** The silence in the motivating incident was the *client's*: the Claude
+> Desktop host strips undeclared keys before the wire (a JSON-Schema→zod converter that reads only
+> `properties`/`required` and forwards the parsed, strip-mode object). The rejection is therefore
+> unreachable through that host — a sweep of 2,517 transcripts found no caller ever receiving it.
+> The change is still worth having (a far better message, and a backstop for unmeasured callers),
+> but it cannot be credited with preventing the incident that prompted it. See `CLAUDE.md`
+> § "Unknown-parameter rejection" and `middleware.py` for the measurements.
+
 A tool call carrying a parameter the tool does not define now returns an error and performs no
 write. Previously it was accepted silently: the extra argument was discarded and nothing said so.
 

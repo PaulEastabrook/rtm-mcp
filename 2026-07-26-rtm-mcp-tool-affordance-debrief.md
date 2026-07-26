@@ -117,34 +117,65 @@ both directions — server-side to the middleware, and client-side when its own 
 `completed successfully` with **zero** rejection records, at the exact timestamps. So the drop is
 upstream of the wire, in the Claude Code harness.
 
-**And the harness is right, because OUR OWN schema tells it to.** Every one of the 100 tools
-advertises **`additionalProperties: false`** — fastmcp emits it from the function signature, so it
-predates v3.3.0 and is not something this change introduced. A conforming client reading a closed
-schema is *supposed* to reject or filter an undeclared key locally. The harness is enforcing the
-contract we publish.
+**It is NOT our advertised `additionalProperties: false` either — that was my second wrong answer.**
+I first claimed the harness was "honouring the contract we publish". A ten-agent adversarial pass
+refuted it from shipped source. Claude Desktop owns the pipes and re-registers each upstream tool on
+an in-process TS-SDK server via `LocalMcpServerManager.createSdkServer` →
+`jsonSchemaToZodShape(tool.inputSchema)`. That converter iterates **only** `properties` and
+`required`; `additionalProperties` appears nowhere in it. The shape is wrapped in a plain `z.object`
+— no `.strict()` — and zod's default is **strip**, with the *parsed* output forwarded as
+`arguments`. The shipped function was extracted from `app.asar` (SHA256-matched) and measured: with
+`additionalProperties` `false`, `true`, or absent, an undeclared key is stripped in **all three**.
+Invariant to the keyword. A strict-honouring converter *is* bundled and is never called. So our
+closed schema is **discarded** upstream, not enforced — and no server-side change can affect it.
+(The keyword is also pydantic's, from `kw_arguments_schema`, not fastmcp's or ours.)
 
-**So this is layered defence working, not a hole.** The constraint exists twice, deliberately:
-structurally in the advertised schema (enforced at the earliest possible layer, client-side, free)
-and at runtime in the middleware (the backstop for any caller that does **not** enforce the
-advertised schema). Tier 3 firing rarely on this client is the outer layer doing its job. It follows
-that the original `type_tags` incident came from a caller that does not enforce
-`additionalProperties: false` — a board artifact's hand-rolled `callMcpTool`, a worker, or an older
-client — which is exactly the population the middleware exists for.
+**Which means "layered defence, working as designed" was wrong too.** The outer layer *mutates* the
+call to fit the schema (a declared sibling key is honoured while the unknown one vanishes) rather
+than rejecting it, which is not what `additionalProperties: false` enforcement means. And the
+middleware was never the second layer.
 
-**The one genuine defect left, and it is not ours to fix.** The earliest layer enforces **silently**.
-Asking for `get_lists`' contract with a misspelt `tool_nme` produced a confident, plausible, wrong
-answer — the index — with nothing telling the model a parameter had been discarded. That is the
-original v3.2.0 defect shape exactly, relocated one layer up where the server cannot see or fix it.
-The teaching therefore lives only at the layer that rarely runs, which is inverted from what you
-would want. Nothing in this repo can close it; it is a client-side observation worth carrying to
-whoever owns that harness.
+**The larger casualty: v3.2.0's own premise is false.** A bare fastmcp 3.4.4 server with NO
+middleware rejects an undeclared argument at pydantic's call-schema binding, before the tool body —
+verified directly, and again against v3.1.0 (no `middleware.py`) over raw JSON-RPC. **v3.2.0 replaced
+a pydantic dump with a teaching rejection; it did not add a gate.** The repo asserted the opposite in
+four places (`CLAUDE.md`, `CHANGELOG.md`, the `middleware.py` docstring, `tests/test_middleware.py`),
+all now corrected.
 
-**Consequences to carry forward.** (1) Do not size tier-3 work by hit-rate on this client — it reads
-as zero by design. (2) The v3.2.0 WARNING log under-counts by construction wherever the caller
-enforces the schema, which is direct evidence for the input brief's open Q3 ("what is the real-world
-failure rate this is fixing?"): the log cannot answer it. (3) Sibling-repo briefs should note that
-`additionalProperties: false` is already doing most of this work for schema-conforming callers, so
-the tier-3 investment should be scoped to the non-conforming ones.
+**And the incident is identified, contradicting my caller attribution.** It is on record in a Desktop
+local-agent transcript from Claude Code CLI 2.1.219: at 21:22:33 `gtd_inbox_capture` with
+`{name, type_tags, source, body}` and no `text` drew a *zod*-shaped `-32602` that never reached the
+server; the 21:22:48 retry added `text`, kept the three undeclared keys, and succeeded — returning
+`task_id 1218862014` and `transaction_id 24443437944`, byte-identical to the hand-off brief. So the
+caller **stripped**, and the middleware could never have prevented the incident that motivated it.
+
+**Tier 3 has no live consumer.** A sweep of 2,517 transcripts — every session on this machine,
+including the whole `local-agent-mode-sessions` scheduled-worker population — found **zero** cases
+of any caller receiving the rejection through the MCP boundary (every textual hit was my own `Bash`
+or `Read` output). Retain the middleware as a backstop for unmeasured populations and for its better
+message; do not justify it by observed prevention.
+
+**The genuine residual defect is outside this repo.** The strip is silent: a misspelt optional on a
+write tool is deleted by the host, the item is written without that property, and success is reported
+with nothing marking the discarded intent. That is the original defect shape one hop beyond the
+server's reach. Worth raising with whoever owns the host.
+
+**Operational finding, unrelated but important.** The Desktop-spawned server's **fd 2 is
+`/dev/null`** (`lsof` + `stat` confirm), so every write-boundary gate WARNING is destroyed. That is
+the v3.0.1 unobservable-control lesson recurring at the process level, and it means the gates
+currently have no observable output in production.
+
+**Consequences to carry forward.** (1) Do not size tier-3 work by hit-rate — measured zero. (2) The
+v3.2.0 WARNING log cannot answer the input brief's Q3: it under-counts by construction *and* its
+stderr is discarded. (3) Sibling-repo briefs must not repeat the `additionalProperties` story; the
+host strips regardless, so the tier-3 investment only pays for callers proven to forward. (4) Nested
+keys behave oppositely — the converter emits `.passthrough()` for nested objects, so an unknown key
+*inside* a declared object parameter survives to the server.
+
+**Still unmeasured.** Nobody captured the literal wire frame (the conclusion rests on elimination
+plus an exact offline reproduction of the converter). Whether a rendered board artifact, MCP
+Inspector, or claude.ai web strips or forwards is untested. All findings are version-scoped to
+Claude Desktop 1.24012.9 / bundled Claude Code 2.1.219.
 
 ## Gotchas for the next author
 

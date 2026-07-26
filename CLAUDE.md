@@ -225,20 +225,49 @@ localisation for the whole session (`get_account_tags` already re-fetches after 
 
 ### Unknown-parameter rejection (the call-boundary gate, since v3.2.0)
 
-A tool call carrying a parameter the tool does not define is **rejected**, with no write. Before
-v3.2.0 it was accepted silently — the extra argument discarded, nothing said. The asymmetry that
-made this worth closing: **required** parameters were already validated strictly (omitting `text`
-returns a missing-argument error naming the path), so the strictness existed and simply did not run
-in this direction.
+A tool call carrying a parameter the tool does not define is **rejected**, with no write.
 
-**The cost is a confident success a caller reasons from, not a corrupted write.** The defect was
-found when `gtd_inbox_capture` was called with a non-existent `type_tags` parameter and returned a
-success whose `applied[]` carried `capture:tags` — the server correctly applying its own
-`#ai_conversation` pipeline tag — which was read as the tag write having landed, and a false defect
-report against the server followed. The tool told the truth; the missing feedback let a wrong story
-survive. The quieter and more dangerous case is a misspelt **optional** on a write tool
-(`gtd_item_create`, `gtd_item_set_properties`): the item is written without that property and
-reported as success, with nothing in `applied[]` or `errors[]` marking the discarded intent.
+> ### ⚠ CORRECTED 2026-07-26 — this section's original premise was false
+>
+> It read: *"Before v3.2.0 it was accepted silently — the extra argument discarded, nothing
+> said."* **Measured false on the pinned stack.** A bare fastmcp 3.4.4 server with NO middleware
+> rejects an undeclared argument at pydantic's call-schema binding, before the tool body
+> (`unexpected_keyword_argument`); v3.1.0, which has no `middleware.py` at all, does the same over
+> raw JSON-RPC. So **v3.2.0 did not add a gate — it replaced a pydantic dump with a teaching
+> rejection.** A genuine improvement to the message, and nothing more.
+>
+> **Where the silence actually came from.** The motivating `gtd_inbox_capture(text=…,
+> type_tags=[…])` incident is on record in a Desktop local-agent transcript (Claude Code CLI
+> 2.1.219). Its undeclared keys never reached this server: the Claude Desktop host re-registers
+> each upstream tool through a JSON-Schema→zod converter (`jsonSchemaToZodShape`) that reads
+> **only** `properties` and `required`, wraps the shape in a plain strip-mode `z.object`, and
+> forwards the PARSED object — so undeclared top-level keys are silently deleted client-side. The
+> shipped converter was measured **invariant** to `additionalProperties` being `false`, `true` or
+> absent, so the closed schema we advertise (which comes from pydantic's `kw_arguments_schema`,
+> not from us) is discarded upstream rather than enforced.
+>
+> **So this gate is unreachable through that host.** A sweep of 2,517 transcripts — every session
+> on the machine, including the whole scheduled-worker population — found **zero** cases of any
+> caller receiving its rejection through the MCP boundary. It is retained as a backstop for
+> unmeasured caller populations (a rendered board artifact, MCP Inspector, a non-Desktop client)
+> and because a better message is free — but it must not be credited with preventing the incident
+> that prompted it. It could not have.
+>
+> The defect class is real and now sits one hop **outside** this server's reach: a misspelt
+> optional on a write tool is stripped by the host, the item is written without that property, and
+> success is reported with nothing marking the discarded intent. No server-side change can detect
+> that. Also measured: the Desktop-spawned server's **fd 2 is `/dev/null`**, so every
+> write-boundary gate WARNING is destroyed — the v3.0.1 unobservable-control lesson, recurring at
+> the process level.
+
+**The cost is a confident success a caller reasons from, not a corrupted write.** `gtd_inbox_capture`
+called with a non-existent `type_tags` parameter returned a success whose `applied[]` carried
+`capture:tags` — the server correctly applying its own `#ai_conversation` pipeline tag — which was
+read as the tag write having landed, and a false defect report against the server followed. The tool
+told the truth; the missing feedback let a wrong story survive. The quieter and more dangerous case
+is a misspelt **optional** on a write tool (`gtd_item_create`, `gtd_item_set_properties`): the item
+is written without that property and reported as success, with nothing in `applied[]` or `errors[]`
+marking the discarded intent.
 
 **Reject, do not warn.** A `warnings[]` entry in the response body was considered and rejected —
 that is precisely the class of signal that gets ignored, and this defect exists *because* a silent
@@ -316,24 +345,33 @@ enums, a nearest-name guess, the combination rules a schema cannot express, and 
 One shape via `guided_rejection.py`. It still writes nothing — `client.call` await count zero is
 the complete proof, and a test pins it.
 
-**Why tier 3 rarely fires, traced (2026-07-26, live).** An unknown argument sent from the Claude
-Code client never reaches the middleware: `rtm_tool_help(tool_nme=…)` returns the whole index (the
-server saw a no-argument call) and the connector's own log records `completed successfully` with no
-rejection. **It is not fastmcp** — a raw `tools/call` written straight to the server's stdin *is*
-rejected, with the WARNING logged, so fastmcp forwards unknown arguments faithfully both ways. The
-cause is that **all 100 tools advertise `additionalProperties: false`** (emitted by fastmcp from the
-signature; predates v3.3.0), and a conforming client enforces that closed schema locally.
+**Why tier 3 never fires here, traced to source (2026-07-26).** An unknown argument sent through
+the Claude Desktop host never reaches the middleware: `rtm_tool_help(tool_nme=…)` returns the whole
+no-argument index. **It is not fastmcp** — a raw `tools/call` written straight to the server's stdin
+*is* rejected, and a bare fastmcp server with no middleware rejects it too, so the stack is
+structurally incapable of silently accepting an undeclared kwarg.
 
-So the constraint is enforced **twice by design** — structurally in the advertised schema at the
-earliest layer, and at runtime in the middleware as the backstop for callers that do *not* enforce
-the advertised schema. That is layered defence, not a gap, and it locates the original `type_tags`
-incident with a non-enforcing caller (a board artifact's hand-rolled `callMcpTool`, a worker, or an
-older client) — precisely the population the middleware exists for.
+The cause is client-side and identified from shipped source, not inferred: Desktop's
+`LocalMcpServerManager.createSdkServer` re-registers each upstream tool via
+`jsonSchemaToZodShape(tool.inputSchema)`, a converter that iterates **only** `properties` and
+`required`, wraps the result in a plain `z.object` (no `.strict()`), and forwards the **parsed**
+output as `arguments`. zod's default is *strip*, so undeclared top-level keys are silently deleted.
+The shipped function was extracted and measured **invariant** to `additionalProperties` being
+`false`, `true` or absent — a strict-honouring converter is bundled but never called.
 
-Two consequences. The **v3.2.0 WARNING log under-counts by construction**, so it cannot answer "how
-often does this happen?". And the outer layer enforces **silently** — the client drops the key
-without telling the model, which reproduces the original defect shape one layer up where this server
-cannot see or fix it. The teaching consequently lives only at the layer that rarely runs.
+**This is NOT the layered defence an earlier draft of this section claimed.** Our published closed
+schema is discarded upstream rather than enforced; the outer layer *mutates* the call to fit
+(a declared sibling key is honoured while the unknown one vanishes) rather than rejecting it, which
+is not what `additionalProperties: false` enforcement means. And the middleware was never the second
+layer — pydantic already rejected, before the tool body.
+
+Consequences. A sweep of 2,517 transcripts found **no caller has ever received the rejection**
+through the MCP boundary, so tier 3 has no live consumer and tiers 1 / 4 carry this client entirely.
+The v3.2.0 WARNING log cannot answer "how often does this happen?" — it under-counts by construction,
+and on the Desktop-spawned instance its stderr is `/dev/null` anyway. Nested keys behave oppositely
+(the converter emits `.passthrough()` for nested objects, so an unknown key *inside* a declared
+object parameter survives) — behaviour tracks zod defaults per level, not our keyword. **Unmeasured:**
+whether a rendered board artifact, MCP Inspector, or claude.ai web strips or forwards.
 
 **The 2 KB cap versus CONTRIBUTING § 7 — the divergence that matters.** § 7 *requires* a multi-case
 `Returns` and an `Args:` section in every tool docstring, and the `_FullDocstringMCP` shim

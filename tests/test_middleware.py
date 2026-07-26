@@ -1,13 +1,22 @@
 """Tests for the unknown-parameter rejection middleware.
 
 **These run through the REAL server via an in-memory client**, not against the middleware
-class in isolation, because the defect was never in a validator's logic — it was that no
-validator ran on that path at all. A test that constructed `RejectUnknownParameters` and
-called its hook directly would pass just as happily on a server that never registered it,
-which is the same shape of vacuous pass the defect itself had.
+class in isolation. A test that constructed `RejectUnknownParameters` and called its hook
+directly would pass just as happily on a server that never registered it — a vacuous pass.
 
 The assertion that matters is `test_rejection_performs_no_write`. The rest are about
 ergonomics; that one is about integrity.
+
+**CORRECTED 2026-07-26 — what these tests do and do not prove.** They pin the MESSAGE, not
+the existence of a gate. Measured on the pinned stack, a bare fastmcp 3.4.4 server with no
+middleware already rejects an undeclared argument at pydantic's call-schema binding, before
+the tool body; v3.1.0 (no `middleware.py`) does too. So the original framing — "no validator
+ran on that path at all" — was wrong: one did, with a worse message. And the rejection is
+**unreachable through the Claude Desktop host**, which strips undeclared keys client-side
+before they reach the wire (see `middleware.py`). A sweep of 2,517 transcripts found no
+caller ever receiving it through the MCP boundary. These tests exercise the in-memory and
+stdio transports, which do forward — so they are honest about the server's behaviour and
+say nothing about live reachability.
 """
 
 import logging
@@ -200,9 +209,14 @@ class TestUnknownTool:
 
 class TestHistoricalRegression:
     async def test_the_exact_call_that_raised_the_defect(self, mcp_client, rtm_client):
-        """RTM 1218862042. This call returned a confident success, discarded `type_tags`
-        silently, and its `capture:tags` entry (the server's own `#ai_conversation` write)
-        was misread as the tag write having landed."""
+        """RTM 1218862042. This call returned a confident success whose `capture:tags` entry
+        (the server's own `#ai_conversation` write) was misread as the tag write landing.
+
+        CORRECTED 2026-07-26: the silence was the CLIENT's, not this server's. The incident is
+        on record in a Desktop local-agent transcript, and its undeclared keys were stripped by
+        the host before the wire — the pre-gate server (v3.1.0) was executed against that exact
+        argument shape and refuses it. So this test pins the rejection this server gives when a
+        caller actually forwards the argument; it does not reproduce the incident."""
         with pytest.raises(ToolError) as exc:
             await mcp_client.call_tool(
                 "gtd_inbox_capture",

@@ -1,20 +1,47 @@
 """Call-boundary middleware — reject unknown tool parameters.
 
-The defect this closes (raised 2026-07-25). A tool call carrying a parameter the tool
-does not define was accepted silently, with a success response: the extra argument was
-discarded and nothing said so. Required parameters were already validated strictly —
-omitting `text` returns a `missing_argument` validation error naming `text` (measured on
-this stack; the raising layer is FastMCP's signature binding) — so the strictness existed,
-it just did not run in this direction.
+What this actually does — CORRECTED 2026-07-26, and the correction matters more than the
+original claim. This module shipped at v3.2.0 saying it closed a hole where "a tool call
+carrying a parameter the tool does not define was accepted silently, with a success
+response". **That premise is measured false on the pinned stack.** A bare fastmcp 3.4.4
+server with NO middleware at all rejects an undeclared argument at pydantic's call-schema
+binding, before the tool body runs:
 
-The cost is not a corrupted write; it is a **confident success a caller reasons from**.
-A `gtd_inbox_capture(text=…, type_tags=[…])` call returned an `applied[]` entry reading
-`capture:tags` — the server correctly applying its own `#ai_conversation` pipeline tag —
-which was misread as the (non-existent) tag write having landed, and a false defect
-report followed. The dangerous case is worse and quieter: a misspelt *optional* on a
-write tool (`gtd_item_create`, `gtd_item_set_properties`) writes the item without that
-property and reports success, with nothing in `applied[]` or `errors[]` marking the
-discarded intent.
+    1 validation error for call[echo]
+    unknown_kwarg
+      Unexpected keyword argument [type=unexpected_keyword_argument, input='SENTINEL']
+
+Verified twice: directly on a bare `FastMCP` instance, and against v3.1.0 (`git archive`,
+no `middleware.py` at all) driven over raw JSON-RPC. So **this middleware did not add a
+gate — it replaced a pydantic dump with a teaching rejection.** That is a real improvement
+in the message, and nothing more. `additionalProperties: false` on every advertised
+inputSchema comes from pydantic's `kw_arguments_schema` (the no-`**kwargs` branch), not
+from anything here.
+
+Where the observed silence really came from. The motivating incident — a
+`gtd_inbox_capture(text=…, type_tags=[…])` call that returned a success whose `applied[]`
+read `capture:tags`, misread as the (non-existent) tag write landing — is on record in a
+Desktop local-agent transcript. Its three undeclared keys never reached this server: the
+Claude Desktop host re-registers each upstream tool through a JSON-Schema→zod converter
+(`jsonSchemaToZodShape`) that reads **only** `properties` and `required`, wraps the result
+in a plain strip-mode `z.object`, and forwards the PARSED object. Undeclared top-level
+keys are silently deleted client-side. The shipped converter was measured invariant to
+`additionalProperties` being `false`, `true`, or absent — so our closed schema is
+discarded upstream, not enforced.
+
+**Consequence, stated plainly: this middleware is unreachable through that host.** A sweep
+of 2,517 transcripts — every session on the machine, including the whole scheduled-worker
+population — found **zero** cases of any caller receiving its rejection through the MCP
+boundary. It is retained as a backstop for caller populations that have not been measured
+(a rendered board artifact, MCP Inspector, a non-Desktop client), and because a better
+message costs nothing, but it must not be described as preventing the incident that
+prompted it. It could not have.
+
+The defect class itself is real and now lives one hop outside this server's reach: a
+misspelt *optional* on a write tool (`gtd_item_create`, `gtd_item_set_properties`) is
+stripped by the host, the item is written without that property, and success is reported
+with nothing in `applied[]` or `errors[]` marking the discarded intent. Nothing
+server-side can detect that.
 
 **REJECT, do not warn.** A warning in a response body is exactly the class of signal
 that gets ignored — and this defect exists precisely because a silent success let a
