@@ -96,9 +96,14 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             optional_string("Return only the direct subtasks of this parent task ID."),
         ] = None,
     ) -> dict[str, Any]:
-        """Search and retrieve tasks from Remember The Milk. Use this tool to find tasks
+        """RTM — search and retrieve tasks from Remember The Milk. Use this tool to find tasks
         by due date, priority, tag, list, or any combination of RTM's advanced search
         operators. Returns each task's full metadata including IDs needed by other tools.
+
+        Read-only: no timeline, no write — safe to call speculatively to explore a filter.
+        `filter` is RTM's own search syntax, NOT a substring match; a bare word searches
+        names. On a smart list, include an explicit `status:incomplete` — omitting it also
+        returns completed history, which on a large account is tens of thousands of rows.
 
         Args:
             filter: RTM advanced search string. Combine operators with AND, OR, NOT,
@@ -262,7 +267,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             optional_string("Attach an external reference ID (e.g. 'JIRA-1234') to the task."),
         ] = None,
     ) -> dict[str, Any]:
-        """Create a new task in Remember The Milk. Supports Smart Add syntax to set
+        """RTM — create a new task in Remember The Milk. Supports Smart Add syntax to set
         due date, priority, tags, location, estimate, and recurrence inline with the
         task name. Can also create subtasks under an existing parent task.
 
@@ -398,7 +403,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Mark a task as complete. For recurring tasks, this completes the current
+        """RTM — mark a task as complete. For recurring tasks, this completes the current
         occurrence and generates the next one. Use undo with the returned
         transaction_id to reverse.
 
@@ -491,7 +496,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Reopen a previously completed task, setting it back to incomplete. Use this
+        """RTM — reopen a previously completed task, setting it back to incomplete. Use this
         instead of undo when the original completion is no longer the most recent action.
 
         Searches completed tasks when using task_name. Identify the task by either
@@ -588,7 +593,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Permanently delete a task. If you only want to mark it done, use complete_task
+        """RTM — permanently delete a task. If you only want to mark it done, use complete_task
         instead. The deletion can be reversed with undo using the returned transaction_id.
 
         Identify the task by either task_name or all three IDs (task_id +
@@ -677,7 +682,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Rename a task. The new name replaces the existing name entirely.
+        """RTM — rename a task. The new name replaces the existing name entirely.
 
         Identify the task by either task_name (current name, fuzzy match) or all
         three IDs (task_id + taskseries_id + list_id from list_tasks).
@@ -744,7 +749,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Set or change a task's due date. Accepts natural language dates like
+        """RTM — set or change a task's due date. Accepts natural language dates like
         "tomorrow", "next friday", "dec 25", or ISO format "2026-12-25". Pass an
         empty string to clear the due date. The due date must be on or after any
         existing start date (error 4080).
@@ -815,7 +820,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Set a task's priority level. Values: 1 (high), 2 (medium), 3 (low),
+        """RTM — set a task's priority level. Values: 1 (high), 2 (medium), 3 (low),
         or 0/none to clear priority. Use move_task_priority to shift one level
         up or down instead of setting an absolute value.
 
@@ -885,7 +890,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Shift a task's priority by one level. "up" means higher priority (e.g.,
+        """RTM — shift a task's priority by one level. "up" means higher priority (e.g.,
         low → medium → high). "down" means lower (high → medium → low → none).
         Use set_task_priority to set an absolute level instead.
 
@@ -954,7 +959,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Postpone a task by one day. Moves the due date forward and increments
+        """RTM — postpone a task by one day. Moves the due date forward and increments
         the postpone counter. If the task has no due date, one is assigned. Use
         set_task_due_date for arbitrary date changes.
 
@@ -1016,7 +1021,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Move a task to a different list. Use get_lists to find available list names.
+        """RTM — move a task to a different list. Use get_lists to find available list names.
         Cannot move tasks to Smart Lists (read-only). The task's current list is
         determined automatically from its IDs.
 
@@ -1096,7 +1101,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Add one or more tags to a task without removing existing tags. To replace
+        """RTM — add one or more tags to a task without removing existing tags. To replace
         all tags at once, use set_task_tags. To remove specific tags, use remove_task_tags.
 
         Caution: task_name uses fuzzy matching across all tasks. For common names,
@@ -1173,7 +1178,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Remove one or more tags from a task. Tags not present on the task are
+        """RTM — remove one or more tags from a task. Tags not present on the task are
         silently ignored. To replace all tags at once, use set_task_tags.
 
         Caution: task_name uses fuzzy matching across all tasks. For common names,
@@ -1243,7 +1248,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Replace all tags on a task with a new set. Any existing tags not in the
+        """RTM — replace all tags on a task with a new set. Any existing tags not in the
         new list are removed. Pass an empty string to clear all tags. For incremental
         changes, use add_task_tags or remove_task_tags instead.
 
@@ -1324,7 +1329,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Set or clear a task's recurrence pattern. Two recurrence types:
+        """RTM — set or clear a task's recurrence pattern. Two recurrence types:
         - "every ..." repeats on a fixed schedule (shares one task series)
         - "after ..." repeats relative to the completion date (new series each time)
         Pass an empty string to clear recurrence.
@@ -1396,7 +1401,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Set or clear a task's start date. The start date must be on or before any
+        """RTM — set or clear a task's start date. The start date must be on or before any
         existing due date (error 4080). Accepts natural language ("tomorrow", "next
         monday") or ISO format. Pass an empty string to clear.
 
@@ -1464,7 +1469,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Set or clear a task's time estimate. Accepts natural language durations
+        """RTM — set or clear a task's time estimate. Accepts natural language durations
         like "30 minutes", "1 hour", "2 hrs 30 min". Pass an empty string to clear.
         Use list_tasks with filter "hasTimeEstimate:true" to find tasks with estimates.
 
@@ -1528,7 +1533,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Attach a URL to a task or clear an existing one. Pass an empty string to
+        """RTM — attach a URL to a task or clear an existing one. Pass an empty string to
         remove the URL. Each task can have one URL.
 
         Identify the task by either task_name or all three IDs.
@@ -1591,7 +1596,7 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             optional_string("New parent task's ID; omit/None promotes the task to top-level."),
         ] = None,
     ) -> dict[str, Any]:
-        """Move a task under a parent (making it a subtask) or promote it to top-level.
+        """RTM — move a task under a parent (making it a subtask) or promote it to top-level.
         Requires RTM Pro. Max 3 levels of nesting.
 
         Constraints:

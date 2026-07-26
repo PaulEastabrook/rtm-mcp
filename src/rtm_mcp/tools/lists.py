@@ -42,7 +42,7 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = True,
     ) -> dict[str, Any]:
-        """Retrieve all RTM lists. Returns both regular and smart lists by default,
+        """RTM — retrieve all RTM lists. Returns both regular and smart lists by default,
         sorted by position. Use this to find list names needed by move_task, add_task,
         and other list-based operations. Archived lists are hidden by default.
 
@@ -94,7 +94,7 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Create a new list. Optionally provide a filter string to create a smart list
+        """RTM — create a new list. Optionally provide a filter string to create a smart list
         (a saved search). Smart lists are read-only — tasks cannot be added directly.
 
         Args:
@@ -137,7 +137,7 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
         ],
         new_name: Annotated[str, Field(description="New name for the list.")],
     ) -> dict[str, Any]:
-        """Rename a list. Locked system lists (e.g., Inbox, Sent) cannot be renamed.
+        """RTM — rename a list. Locked system lists (e.g., Inbox, Sent) cannot be renamed.
         Use get_lists to see available list names.
 
         Returns:
@@ -182,7 +182,7 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             ),
         ],
     ) -> dict[str, Any]:
-        """Delete a list. Locked system lists (e.g., Inbox, Sent) cannot be deleted.
+        """RTM — delete a list. Locked system lists (e.g., Inbox, Sent) cannot be deleted.
         Tasks in the list should be moved or deleted first. Use get_lists to see
         available list names.
 
@@ -230,7 +230,7 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             ),
         ],
     ) -> dict[str, Any]:
-        """Archive a list. Archived lists are hidden from default views but their
+        """RTM — archive a list. Archived lists are hidden from default views but their
         tasks remain accessible via filters. Use unarchive_list to restore.
 
         Returns:
@@ -274,7 +274,7 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             ),
         ],
     ) -> dict[str, Any]:
-        """Restore an archived list back to active. Use get_lists(include_archived=True)
+        """RTM — restore an archived list back to active. Use get_lists(include_archived=True)
         to find archived list names.
 
         Returns:
@@ -318,7 +318,7 @@ def register_list_tools(mcp: Any, get_client: Any) -> None:
             ),
         ],
     ) -> dict[str, Any]:
-        """Set the default list for new tasks. When add_task is called without a
+        """RTM — set the default list for new tasks. When add_task is called without a
         list_name, tasks go to this list. Use get_lists to find available list names.
 
         Returns:

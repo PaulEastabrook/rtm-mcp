@@ -67,7 +67,7 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Add a text note to a task. Tasks can have multiple notes. Use get_task_notes
+        """RTM — add a text note to a task. Tasks can have multiple notes. Use get_task_notes
         to see existing notes on a task.
 
         Caution: task_name uses fuzzy matching across all tasks. For common names,
@@ -171,7 +171,7 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Edit an existing note's content and/or title. Get the note_id from
+        """RTM — edit an existing note's content and/or title. Get the note_id from
         get_task_notes. Requires all three task IDs or a task_name.
 
         Caution: task_name uses fuzzy matching across all tasks. For common names,
@@ -266,7 +266,7 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Delete a note from a task. Get the note_id from get_task_notes. The
+        """RTM — delete a note from a task. Get the note_id from get_task_notes. The
         deletion can be reversed with undo using the returned transaction_id.
 
         Caution: task_name uses fuzzy matching across all tasks. For common names,
@@ -330,7 +330,7 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Retrieve all notes attached to a task. Use this to find note IDs needed
+        """RTM — retrieve all notes attached to a task. Use this to find note IDs needed
         by edit_note and delete_note. Use list_tasks with filter "hasNotes:true" to
         find tasks that have notes.
 

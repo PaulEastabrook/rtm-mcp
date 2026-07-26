@@ -230,6 +230,36 @@ alone. This is the family-wide **MCP tool-documentation standard**
 they never change tool behaviour, returns, capability, or write safety. Enforced by
 `tests/test_tool_schemas.py` (§ 8).
 
+**Since v3.3.0 the six surfaces sit inside the three-tier Tool Affordance Model** (family standard
+§§ 4.1a / 9 / 10 — *description budget & front-loading*, *server-level surfaces*, *the affordance
+model*). The six surfaces say what the documentation CONTAINS; the affordance model adds *which
+surface a fact belongs on*, ranked by what guarantees the model reads it:
+
+| Tier | Surface | Carries | Budget |
+|---|---|---|---|
+| **1 — select** | `name`, the description's **front block**, `instructions`' front | `<Domain> — purpose`; when-NOT / "use X instead"; **write-safety posture**; a one-line combination hint | ~2 KB is all the client keeps |
+| **2 — detail** | the description's tail, the fetched schemas, `rtm_tool_help` | full multi-case `Returns`; combination rules; worked examples; operator tables | ≤ 25 KB result |
+| **3 — teach** | the one guided-rejection shape | purpose, typed params, nearest-name guess, violated rule, help pointer | the rejection body |
+
+Three rules follow, and they are enforced by `TestSelectionSurfaceBudgets`:
+
+- **Front-load.** Order every description (and `instructions`) by *need-to-select-and-call-safely*
+  first, *need-to-get-the-details-right* second. Legal disclaimers and exhaustive `Returns` go last.
+- **Safety in the front block.** A destructive / irreversible / governed fact must appear inside the
+  first ~2 KB — **never only in `annotations`**, which this client does not render to the model.
+  Where a description must exceed the budget (see below), this is the guarantee that replaces it.
+- **The budget yields to § 7, on the record.** § 7 requires a multi-case `Returns` and an `Args:`
+  section, and the `_FullDocstringMCP` shim advertises the whole docstring — so a complex governed
+  write cannot both fit 2 KB and obey § 7. § 7 wins; add the tool to `OVER_BUDGET_EXEMPTIONS` in
+  `tests/test_tool_schemas.py` **with its reason**, and the posture-in-front assertion still applies.
+  Do not delete § 7-mandated content to hit the number.
+
+**Never author a fact twice across tiers.** `rtm_tool_help` is a *projection* of the live advertised
+schema (`tool_help.py`), and `tests/test_tool_help.py` asserts the projections agree. If you add a
+tool, you add no help record — the index and contract derive themselves, provided the description
+opens `<Domain> — <purpose>`. Only genuinely new material is authored: a combination rule, a worked
+example, a chain edge, or BFF membership.
+
 1. **Enriched docstring** (§ 7) — the primary contract.
 2. **Per-parameter description** — every param except `ctx` is
    `Annotated[T, Field(description="…")]`. FastMCP does not lift the docstring `Args:` into the JSON
@@ -573,6 +603,15 @@ re-run `make format` if a ruff bump changes formatting).
    `Field(description=…)` on every non-`ctx` param; the right `annotations=` constant; a canonical-
    constant-sourced `json_schema_extra` enum for any closed-vocabulary param; an `output_schema=`
    model in `models.py` whose `data` is the `success | ErrorData` union; the actionable-error shape.
+3a. **Meet the affordance obligations** (§ 3, the three-tier model). Open the docstring
+   `<Domain> — <purpose>` (`RTM — ` for a primitive, `GTD — ` for a domain composition) — the tier-1
+   shape is asserted, and it is what makes the tool appear correctly in `rtm_tool_help()`'s index
+   with no help record to write. Put the write-safety posture in the **front ~2 KB**, not only in
+   `annotations`. If the description must exceed the budget, add a reasoned
+   `OVER_BUDGET_EXEMPTIONS` entry rather than cutting § 7-mandated content. Author a
+   `tool_help.COMBINATION_RULES` entry for any rule the JSON schema cannot express, and an
+   `EXAMPLES` entry if a parameter is nested or JSON-coerced. A new `ErrorCode` also needs a
+   `tool_help.RECOVERY` hint (asserted).
 4. `require_timeline=True` for writes; `record_and_build_response()` for write tools.
 5. Resolve ids via `resolve_task_ids()` / `resolve_list_id()` (§ 3).
 6. Return **actionable** error messages (§ 5).

@@ -44,22 +44,46 @@ from typing import Any
 from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
 
+from . import tool_help
+from .guided_rejection import build_rejection, render_prose
+
 logger = logging.getLogger(__name__)
 
 
-def unknown_parameter_message(tool_name: str, unknown: list[str], valid: list[str]) -> str:
-    """The rejection prose.
+def unknown_parameter_message(
+    tool_name: str,
+    unknown: list[str],
+    valid: list[str],
+    *,
+    description: str = "",
+    input_schema: dict[str, Any] | None = None,
+) -> str:
+    """The rejection prose — a teaching rejection, not just a refusal.
 
-    Naming the accepted parameters is the part that matters: it turns a rejection into
-    the answer, which is the whole point — the caller is, by construction, confused.
+    Naming the accepted parameters is the part that matters: it turns a rejection into the
+    answer, which is the whole point — the caller is, by construction, confused. Since
+    v3.3.0 it names them with their types, required/optional, enums and one-line purpose,
+    plus the tool's own purpose (the caller may have picked the wrong *tool* — that was the
+    original `type_tags` case, where capture was simply the wrong tool for tagging), a
+    nearest-name guess for a probable typo, and a pointer to the full contract.
+
+    Every fact is projected from the tool's own advertised schema via `tool_help`, so the
+    rejection cannot promise a parameter the schema does not carry. Built through the shared
+    `guided_rejection` generator so this path, the combination gates and the vocabulary
+    rejections speak with one voice.
     """
-    return (
-        f"unknown parameter(s) {unknown} for tool '{tool_name}'. "
-        f"This tool accepts: {valid}. No write was performed. "
-        "If the parameter you wanted exists on a different tool, check the tool "
-        "description; if you believe it should exist here, raise an improvement "
-        "candidate rather than working around it."
+    params = tool_help.parameters(input_schema) if input_schema else []
+    rejection = build_rejection(
+        tool_name,
+        problem=f"unknown parameter(s) {unknown} for tool '{tool_name}'.",
+        purpose=tool_help.purpose_line(description),
+        parameters=params,
+        unknown=unknown,
+        rules=tool_help.combination_rules(tool_name, input_schema),
     )
+    # `valid` stays in the prose even when the table renders, so a caller (or a test)
+    # scanning for the accepted set finds it in one place regardless of tool arity.
+    return render_prose(rejection) + f"\n\nThis tool accepts: {valid}."
 
 
 class RejectUnknownParameters(Middleware):
@@ -93,7 +117,8 @@ class RejectUnknownParameters(Middleware):
             # "no such tool" with a confusing "no such parameter".
             return await call_next(context)
 
-        valid = set((tool.parameters or {}).get("properties") or {})
+        schema = tool.parameters or {}
+        valid = set(schema.get("properties") or {})
         unknown = sorted(provided - valid)
         if unknown:
             logger.warning(
@@ -102,6 +127,14 @@ class RejectUnknownParameters(Middleware):
                 unknown,
                 sorted(valid),
             )
-            raise ToolError(unknown_parameter_message(message.name, unknown, sorted(valid)))
+            raise ToolError(
+                unknown_parameter_message(
+                    message.name,
+                    unknown,
+                    sorted(valid),
+                    description=getattr(tool, "description", "") or "",
+                    input_schema=schema,
+                )
+            )
 
         return await call_next(context)

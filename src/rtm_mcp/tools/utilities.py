@@ -42,7 +42,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
     @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TEST_CONNECTION_OUTPUT)
     async def test_connection(ctx: Context) -> dict[str, Any]:
-        """Test connectivity to the RTM API. Use this to diagnose connection issues
+        """RTM — test connectivity to the RTM API. Use this to diagnose connection issues
         before attempting other operations. Returns response time in milliseconds.
 
         Returns:
@@ -84,7 +84,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
     @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CHECK_AUTH_OUTPUT)
     async def check_auth(ctx: Context) -> dict[str, Any]:
-        """Verify that the stored auth token is valid and check permission level.
+        """RTM — verify that the stored auth token is valid and check permission level.
         Use this to confirm authentication before performing write operations.
 
         Returns:
@@ -123,7 +123,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
     @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GET_TAGS_OUTPUT)
     async def get_tags(ctx: Context) -> dict[str, Any]:
-        """Retrieve all tags used across your tasks, sorted alphabetically. Use this to
+        """RTM — retrieve all tags used across your tasks, sorted alphabetically. Use this to
         discover existing tags before adding them to tasks, or to check tag names for
         use in list_tasks filters (e.g., filter="tag:work").
 
@@ -145,7 +145,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
     @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GET_LOCATIONS_OUTPUT)
     async def get_locations(ctx: Context) -> dict[str, Any]:
-        """Retrieve all saved locations. Locations can be assigned to tasks using
+        """RTM — retrieve all saved locations. Locations can be assigned to tasks using
         the @location syntax in add_task, or filtered with list_tasks(filter="location:name").
 
         Returns:
@@ -179,7 +179,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
     @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GET_SETTINGS_OUTPUT)
     async def get_settings(ctx: Context) -> dict[str, Any]:
-        """Retrieve user account settings including timezone, date/time format
+        """RTM — retrieve user account settings including timezone, date/time format
         preferences, default list, and language. Useful for understanding how dates
         and times will be interpreted.
 
@@ -227,7 +227,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             ),
         ] = None,
     ) -> dict[str, Any]:
-        """Parse a natural language time/date string into an ISO 8601 timestamp using
+        """RTM — parse a natural language time/date string into an ISO 8601 timestamp using
         RTM's parser. Useful for previewing how RTM will interpret date expressions
         before using them in set_task_due_date or set_task_start_date.
 
@@ -268,7 +268,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             ),
         ],
     ) -> dict[str, Any]:
-        """Undo a previous write operation using its transaction_id. Most write tools
+        """RTM — undo a previous write operation using its transaction_id. Most write tools
         return a transaction_id in their metadata. Not all operations are undoable —
         check the "transaction_undoable" field in the original response. Must be called
         within the same session (timelines expire).
@@ -359,7 +359,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             ),
         ],
     ) -> dict[str, Any]:
-        """Undo multiple write operations in one call. Operations are undone in
+        """RTM — undo multiple write operations in one call. Operations are undone in
         reverse chronological order (most recent first) to maintain data consistency.
         All transaction_ids must belong to the current session's timeline.
 
@@ -437,7 +437,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
     @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TIMELINE_INFO_OUTPUT)
     async def get_timeline_info(ctx: Context) -> dict[str, Any]:
-        """View the current session's timeline and full transaction history. Use this
+        """RTM — view the current session's timeline and full transaction history. Use this
         to review what write operations have been performed, which can be undone, and
         to get transaction_ids for undo or batch_undo.
 
@@ -480,7 +480,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
     @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=CONTACTS_OUTPUT)
     async def get_contacts(ctx: Context) -> dict[str, Any]:
-        """Retrieve RTM contacts for task sharing. Contacts are users you can share
+        """RTM — retrieve RTM contacts for task sharing. Contacts are users you can share
         tasks with via the RTM sharing feature. Use list_tasks with filter
         "isShared:true" to find shared tasks.
 
@@ -512,7 +512,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
     @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=GROUPS_OUTPUT)
     async def get_groups(ctx: Context) -> dict[str, Any]:
-        """Retrieve contact groups with member counts. Groups organize contacts for
+        """RTM — retrieve contact groups with member counts. Groups organize contacts for
         batch task sharing.
 
         Returns:
@@ -545,7 +545,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
 
     @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=RATE_LIMIT_OUTPUT)
     async def get_rate_limit_status(ctx: Context) -> dict[str, Any]:
-        """View current rate limiter state and request statistics. No API call
+        """RTM — view current rate limiter state and request statistics. No API call
         is made — reads in-memory state only. Use this to diagnose unexpected
         slowness, check remaining burst capacity before a batch operation, or
         detect whether HTTP 503 errors are occurring (suggesting the safety
@@ -610,7 +610,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             optional_string("List ID from list_tasks."),
         ] = None,
     ) -> dict[str, Any]:
-        """Get the Remember The Milk web UI URL for a task, including its full
+        """RTM — get the Remember The Milk web UI URL for a task, including its full
         hierarchy path. Use this to give the user a clickable link that opens
         the task directly in the RTM web app.
 
@@ -674,7 +674,7 @@ def register_utility_tools(mcp: Any, get_client: Any) -> None:
             optional_string("List ID (from get_lists)."),
         ] = None,
     ) -> dict[str, Any]:
-        """Get the Remember The Milk web UI URL for a list. Use this to give
+        """RTM — get the Remember The Milk web UI URL for a list. Use this to give
         the user a clickable link that opens the list in the RTM web app.
 
         Provide either list_name or list_id. Use get_lists to see available

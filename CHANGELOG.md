@@ -4,6 +4,79 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v3.3.0 — the Tool Affordance Standard: front-loaded selection, help on demand, teaching rejections
+
+Implements the family Tool Affordance Standard (git-ops `mcp-tool-documentation-standard.md`
+§§ 4.1a / 9 / 10). Additive: no tool changes behaviour, capability, write safety, or return shape,
+and no new tag or `ErrorCode` is introduced. **100 tools** (99 + `rtm_tool_help`).
+
+**The gap it closes.** The six-surface standard was excellent on *what* a tool's documentation
+contains and silent on *how much of it the client actually shows the model*. Measured here on
+2026-07-26 and reproduced exactly in this repo: **18 of 99 tool descriptions exceeded the ~2 KB the
+client keeps** (worst: `gtd_canvas_commit` at 4,893 bytes, losing 58% — its governance contract),
+and the server `instructions` block was **30,506 bytes, of which ~93% was discarded** — leaving the
+RTM legal disclaimer where the tool-family routing keywords should have been. A Google-style
+docstring puts `Returns` / operator tables / caveats *last*, so the discarded tail was precisely
+the correct-usage material, on the highest-stakes governed writes.
+
+**Three tiers, keyed to what guarantees the read.**
+
+| Tier | Surface | Carries |
+|---|---|---|
+| 1 — select | `name` + description front block + `instructions` front | purpose, when-NOT, write-safety posture, domain marker |
+| 2 — detail | `rtm_tool_help` | combination rules, worked examples, full Returns, error catalogue, chain edges |
+| 3 — teach | the guided rejection | purpose, typed params, nearest-name guess, violated rule, help pointer |
+
+**`instructions`: 30,506 → 2,046 bytes.** The ~400-line per-tool catalogue is gone; the front now
+carries what-the-server-is, the two-family split with routing keywords, and a pointer to
+`rtm_tool_help()`. The legal disclaimer moved to the end. The catalogue's genuinely non-obvious
+facts (default-list resolution, smart lists being read-only, strict-tag mode) live in the owning
+tools' descriptions, where a caller of *that tool* actually sees them.
+
+**New tool `rtm_tool_help(tool_name=None)`** — read-only and **offline** (zero RTM calls, like
+`gtd_item_shape`). No argument returns the whole-server index: one purpose line per tool, grouped
+by family. A name returns that tool's full contract. It is **generated as a projection** of the
+live advertised schema, never hand-written — parameters come from `inputSchema`, posture from
+`annotations`, `Returns` from the docstring, and the error catalogue from the codes the description
+names (which `TestAdvertisedErrorContract` already guarantees is complete). Only four small tables
+are authored: combination rules, worked examples, chain edges, and the BFF set.
+
+**Teaching rejections.** The v3.2.0 gate named the valid parameters and nothing else. It now names
+them *with* types, required/optional and enums, plus the tool's own purpose (the original defect was
+a wrong-*tool* case — capture was simply the wrong tool for tagging), a nearest-name guess for a
+probable typo, the combination rules a JSON schema cannot express, and a pointer to the help
+payload. Built through one shared generator (`guided_rejection.py`) that converges the two
+pre-existing shapes — `strict_tags.guided_error`'s `how_to_proceed` and `engage_commit.validate`'s
+closest-legal suggestion — so the paths speak with one voice. It still writes nothing.
+
+**Front-loading.** All 55 `gtd_*` tools already opened as `<Domain> — purpose`; all 44
+non-conforming descriptions were exactly the generic primitives, which now carry the `RTM — `
+marker. That marker is also the model-readable half of the taxonomy: `_meta` is **not** rendered to
+the model on this client, so ordinary description text is the only place a skill can actually
+select on. `list_tasks` gained the read-only invariant and the smart-list `status:incomplete`
+caveat in its front block.
+
+**Nineteen descriptions remain over budget, deliberately and on a reasoned, asserted exemption
+list.** The constraint is local and outranks the brief: CONTRIBUTING § 7 *requires* a multi-case
+`Returns` and an `Args:` section in every docstring, and the `_FullDocstringMCP` shim advertises the
+whole docstring. For a genuinely complex governed write, "fit 2 KB" and "obey § 7" cannot both
+hold. So the load-bearing guarantee is enforced instead: a test asserts that **every** exempt
+tool states its read/write posture *inside the front block that survives truncation* — a caller
+never learns what a tool does to their account only from a discarded tail.
+
+**Fingerprints: 1 added, 44 moved, 55 unchanged.** The churn is exactly the 44 primitives that
+gained the domain marker, plus the new tool — not a blanket re-hash.
+
+**Tests: 1,653 (+38).** `TestSelectionSurfaceBudgets` pins both budgets, the exemption list's
+freshness (a stale exemption fails), the posture-in-front guarantee, and the `<Domain> — purpose`
+shape. New `tests/test_tool_help.py` holds the projection-agreement contract: every tool resolves
+in the index, its purpose is a leading substring of its own description, its contract's parameters
+equal the advertised `inputSchema`, and its error catalogue claims only codes the `ast`-derived
+reachable set allows. That last guard caught a real error during the build — an authored chain edge
+naming `assign_location`, a tool on the *official* RTM connector rather than this server.
+
+To go live: restart the server on v3.3.0. Rollback is a revert.
+
 ## v3.2.0 — unknown tool parameters are rejected
 
 A tool call carrying a parameter the tool does not define now returns an error and performs no

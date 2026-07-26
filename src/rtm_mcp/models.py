@@ -1489,6 +1489,62 @@ class ContribTransitionResult(BaseModel):
 # --------------------------------------------------------------------------- #
 
 
+class ToolHelpTaxonomy(BaseModel):
+    domain: str
+    layer: str
+    consumer: str
+
+
+class ToolHelpParam(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str
+    type: str
+    required: bool
+    description: str
+
+
+class ToolHelpErrorEntry(BaseModel):
+    code: str
+    recovery: str
+
+
+class ToolHelpContract(BaseModel):
+    """`rtm_tool_help("<tool>")` — one tool's full contract (the tier-2 affordance surface)."""
+
+    model_config = ConfigDict(extra="allow")
+    tool: str
+    purpose: str
+    taxonomy: ToolHelpTaxonomy
+    posture: dict[str, Any]
+    parameters: list[ToolHelpParam] = []
+    combination_rules: list[str] = []
+    examples: list[str] = []
+    returns: str = ""
+    errors: list[ToolHelpErrorEntry] = []
+
+
+class ToolHelpIndexEntry(BaseModel):
+    tool: str
+    purpose: str
+    layer: str
+    consumer: str
+    read_only: bool
+
+
+class ToolHelpFamily(BaseModel):
+    label: str
+    tools: list[ToolHelpIndexEntry]
+
+
+class ToolHelpIndex(BaseModel):
+    """`rtm_tool_help()` — the whole-server purpose index (the cheap "which tool?" answer)."""
+
+    server: str
+    tool_count: int
+    families: dict[str, ToolHelpFamily]
+    next_step: str
+
+
 def _envelope_schema(name: str, *success: type[BaseModel]) -> dict[str, Any]:
     """The JSON schema for a tool's result: the standard envelope whose `data` is a union of the
     tool's success payload(s) and the shared ErrorData. `analysis` is an optional sibling (some
@@ -1624,3 +1680,7 @@ ITEM_CLASSIFY_OUTPUT = _envelope_schema("ItemClassifyEnvelope", ItemClassifyResu
 CONTRIB_TRANSITION_OUTPUT = _envelope_schema(
     "ContribTransitionEnvelope", ContribTransitionResult, Candidates
 )
+
+# The tool-affordance surface (v3.3.0) — one tool, two arities, so `data` is a union of the
+# index and the per-tool contract.
+TOOL_HELP_OUTPUT = _envelope_schema("ToolHelpEnvelope", ToolHelpIndex, ToolHelpContract)

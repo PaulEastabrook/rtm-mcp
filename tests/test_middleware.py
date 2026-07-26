@@ -216,3 +216,72 @@ class TestHistoricalRegression:
         assert "type_tags" in message
         assert "['pre_analysis', 'source_body', 'source_type', 'text']" in message
         assert rtm_client.call.await_count == 0
+
+
+class TestRejectionTeaches:
+    """v3.3.0 — the rejection stopped merely refusing and started teaching.
+
+    Before this, the gate returned the bare valid NAMES: no purpose, no types, no
+    required/optional, no enums, and a pointer to "the tool description" carrying no payload
+    for a caller that cannot see the listing. Every fact needed to retry correctly already
+    existed in the advertised schema and was simply discarded.
+
+    These assert on the message a real client receives, through the real server — the only
+    place the teaching either arrives or does not.
+    """
+
+    async def test_rejection_states_what_the_tool_is_for(self, mcp_client):
+        """The wrong-TOOL case, which is what the original defect actually was: capture was
+        the wrong tool for tagging, so naming its parameters alone could not have helped."""
+        with pytest.raises(ToolError) as exc:
+            await mcp_client.call_tool(
+                "gtd_inbox_capture", {"text": "x", "type_tags": ["improvement_candidate"]}
+            )
+        message = str(exc.value)
+        assert "What gtd_inbox_capture is for:" in message
+        assert "GTD" in message
+
+    async def test_rejection_types_each_parameter_and_marks_required(self, mcp_client):
+        with pytest.raises(ToolError) as exc:
+            await mcp_client.call_tool("gtd_inbox_capture", {"text": "x", "bogus": 1})
+        message = str(exc.value)
+        assert "text (string, required)" in message
+        assert "optional" in message
+
+    async def test_rejection_suggests_the_probable_typo(self, mcp_client):
+        with pytest.raises(ToolError) as exc:
+            await mcp_client.call_tool("gtd_inbox_capture", {"text": "x", "txt": "y"})
+        message = str(exc.value)
+        assert "Did you mean" in message and "text" in message
+
+    async def test_rejection_carries_the_combination_rules_a_schema_cannot_state(self, mcp_client):
+        """`gtd_inbox_capture` is text-only by design — a rule JSON Schema has no way to
+        express, and exactly the rule the original caller violated."""
+        with pytest.raises(ToolError) as exc:
+            await mcp_client.call_tool("gtd_inbox_capture", {"text": "x", "type_tags": ["a"]})
+        assert "TEXT ONLY" in str(exc.value)
+
+    async def test_rejection_points_at_the_help_payload(self, mcp_client):
+        with pytest.raises(ToolError) as exc:
+            await mcp_client.call_tool("gtd_inbox_capture", {"text": "x", "bogus": 1})
+        message = str(exc.value)
+        assert 'rtm_tool_help("gtd_inbox_capture")' in message
+        assert "rtm_tool_help()" in message  # the index, for a wrong-tool caller
+
+    async def test_the_richer_rejection_still_writes_nothing(self, mcp_client, rtm_client):
+        """The assertion that must never regress: `client.call` is the single chokepoint every
+        tool goes through, so zero awaits is the complete proof."""
+        with pytest.raises(ToolError):
+            await mcp_client.call_tool(
+                "gtd_item_create", {"name": "x", "kind": "action", "bogus": True}
+            )
+        assert rtm_client.call.await_count == 0
+
+    async def test_a_zero_parameter_tool_still_rejects_cleanly(self, mcp_client, rtm_client):
+        """No parameter table to render — the rejection must still be coherent rather than
+        rendering an empty list and losing its footing."""
+        with pytest.raises(ToolError) as exc:
+            await mcp_client.call_tool("get_lists", {"nonsense": 1})
+        message = str(exc.value)
+        assert "nonsense" in message and "rtm_tool_help" in message
+        assert rtm_client.call.await_count == 0

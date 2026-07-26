@@ -47,6 +47,9 @@ def _load_fingerprint_script():
 
 # Behaviour-class expectations (the source of truth for the annotation assertions).
 READ_ONLY_TOOLS = {
+    # The affordance help surface (v3.3.0) — read-only AND offline: pure introspection of
+    # the server's own advertised schema, so it reaches RTM not at all.
+    "rtm_tool_help",
     "list_tasks",
     "get_lists",
     "get_tags",
@@ -679,3 +682,166 @@ class TestGtdQuerySplit:
         for name in ("gtd_item_today", "gtd_next_actions", "gtd_focus_projects"):
             ann = await _annotations(name)
             assert ann.get("readOnlyHint") is True and ann.get("idempotentHint") is True, name
+
+
+# ======================================================================================= #
+# The Tool Affordance Standard — selection-surface budgets (v3.3.0)
+# ======================================================================================= #
+
+#: The client keeps roughly this much of a description and of `instructions`. A Claude Code /
+#: Cowork implementation detail measured 2026-07-26, not an MCP guarantee — but the
+#: front-loading discipline it forces is correct at any finite budget.
+BUDGET_BYTES = 2048
+
+#: Descriptions that deliberately exceed the budget, each with the reason it earns the cost.
+#: The list is the POINT: it makes an over-budget description a conscious, recorded choice
+#: rather than drift. Every one of these keeps its selection and write-safety payload inside
+#: the surviving front block (asserted below) — the tail that gets cut is reference material
+#: that `rtm_tool_help("<tool>")` serves in full.
+#:
+#: The governing constraint is local: CONTRIBUTING § 7 REQUIRES a multi-case `Returns` and an
+#: `Args:` section in every tool docstring, and the `_FullDocstringMCP` shim advertises the
+#: whole docstring as the description. So for a genuinely complex governed write, "get under
+#: 2 KB" and "obey § 7" cannot both hold, and § 7 wins (it is the host repo's own standard).
+OVER_BUDGET_EXEMPTIONS = {
+    "gtd_canvas_commit": "The single governed write surface for a canvas commit: seven op maps, "
+    "each with its own vocabulary, plus the destructive-confirm and strict-tag contracts.",
+    "gtd_engage_commit": "The engage ACL: the full verdict->RTM-write grammar (13 verdicts) plus "
+    "the two flag guards and the steer-note contract.",
+    "gtd_project_index": "Three collections in one payload (projects / foci / actions), each with "
+    "its own field set, plus the redaction-cascade rules.",
+    "list_tasks": "Carries RTM's advanced-search operator table, which is the tool's entire "
+    "usable surface — a caller cannot construct a filter without it.",
+    "gtd_surface_queue": "Documents the three inclusion paths for response detection and the "
+    "quarantine of unrecognised notes.",
+    "gtd_chat_post": "Two roles x two modes with different tag side-effects, plus the "
+    "clear_signal interim-note contract.",
+    "gtd_chat_thread": "Documents the turn-attachment derivation (FILING correlation, LINK "
+    "trailers) and the project-scope descendant scan.",
+    "gtd_project_create": "Creates a whole project tree: frame + items + deps + notes, each with "
+    "its own validation path.",
+    "gtd_project_canvas": "Returns the rendered board seed; documents the overlay, lean profile "
+    "and companion-metadata enrichment.",
+    "gtd_contribution_transition": "Six states with a judged/invalidated split that changes the "
+    "acceptance-rate denominator.",
+    "gtd_surface_create": "Thirteen parameters across several item types.",
+    "gtd_engine_report": "Reports telemetry whose predecessor was structurally zero; the "
+    "description names each withdrawn metric and why.",
+    "add_task": "Carries the Smart Add syntax table, which is the tool's primary interface.",
+    "gtd_item_create": "The hard-gated per-kind Definition of Ready, which differs per kind.",
+    "gtd_item_stamp_tokens": "Documents the token grammar and the idempotence/propagation model.",
+    "gtd_engage_seed": "Documents six server-derived flags and the curtain-not-vault invariant.",
+    "gtd_item_shape": "Documents the pattern vocabulary and the lockstep contract with the "
+    "detectors.",
+    "gtd_tag_report": "Documents the three-way classification and the people-tag caveat.",
+    "gtd_item_complete": "Marginally over (17 bytes) once em-dashes are counted as UTF-8; "
+    "trimming would cost a documented completion caveat.",
+}
+
+#: Cues that show a description's front block states the tool's posture. Presence of any one
+#: is enough — the point is that a caller learns the safety/read-write stance from the part of
+#: the description that always survives, never only from `annotations` (which this client does
+#: not render to the model) or from a tail that gets cut.
+_POSTURE_CUES = (
+    "DESTRUCTIVE",
+    "destructive",
+    "confirm_destructive",
+    "nothing written",
+    "NOTHING",
+    "soft-delete",
+    "irreversible",
+    "governed",
+    "read-only",
+    "Read-only",
+    "no timeline",
+    "transaction_id",
+)
+
+
+class TestSelectionSurfaceBudgets:
+    """The two selection surfaces are the only channels a client puts in front of the model
+    unprompted, and this client keeps ~2 KB of each. Before v3.3.0 nothing measured them:
+    18 of 99 descriptions were over (the worst losing 58% — its governance contract) and
+    `instructions` was 30,506 bytes, of which ~93% was discarded, leaving the legal
+    disclaimer where the tool-family routing should be."""
+
+    async def test_server_instructions_fit_the_budget(self):
+        instructions = (mcp.instructions or "").encode()
+        assert len(instructions) <= BUDGET_BYTES, (
+            f"server instructions are {len(instructions)} bytes; the client keeps ~{BUDGET_BYTES} "
+            "and discards the rest. Front-load: what-this-server-is, the tool-family split and "
+            "routing keywords first; the legal disclaimer last."
+        )
+
+    async def test_instructions_lead_with_routing_not_boilerplate(self):
+        """A disclaimer in the front block spends the whole budget saying nothing routable."""
+        front = (mcp.instructions or "")[:400]
+        assert "not endorsed" not in front, (
+            "the legal disclaimer is in the front block of `instructions`, where the "
+            "tool-family routing keywords should be. Move it to the end."
+        )
+
+    async def test_every_description_fits_the_budget_or_is_exempt(self):
+        tools = await _tools()
+        over = {
+            name: len((tool.to_mcp_tool().description or "").encode())
+            for name, tool in tools.items()
+            if len((tool.to_mcp_tool().description or "").encode()) > BUDGET_BYTES
+        }
+        unexplained = {n: b for n, b in over.items() if n not in OVER_BUDGET_EXEMPTIONS}
+        assert unexplained == {}, (
+            "these descriptions exceed the client's budget with no recorded reason — either "
+            "front-load them (move Returns / operator tables / caveats behind the selection "
+            "block, and the reference detail into rtm_tool_help) or add a reasoned entry to "
+            f"OVER_BUDGET_EXEMPTIONS: {unexplained}"
+        )
+
+    async def test_no_stale_exemptions(self):
+        """Guards the guard. An exemption for a description that now fits would quietly license
+        future growth back over the budget, and the list would stop meaning anything."""
+        tools = await _tools()
+        stale = [
+            name
+            for name in OVER_BUDGET_EXEMPTIONS
+            if name in tools
+            and len((tools[name].to_mcp_tool().description or "").encode()) <= BUDGET_BYTES
+        ]
+        assert stale == [], (
+            f"these tools now fit the budget — remove their exemptions: {sorted(stale)}"
+        )
+        unknown = sorted(set(OVER_BUDGET_EXEMPTIONS) - set(tools))
+        assert unknown == [], f"exemptions naming tools that no longer exist: {unknown}"
+
+    async def test_every_exempt_description_states_its_posture_in_the_front_block(self):
+        """The assertion that actually matters. A long description is tolerable ONLY if the
+        part that survives truncation still tells a caller what the tool does to their data —
+        so for every exempt tool, a posture cue must appear within the first BUDGET_BYTES."""
+        tools = await _tools()
+        silent = []
+        for name in sorted(OVER_BUDGET_EXEMPTIONS):
+            desc = (tools[name].to_mcp_tool().description or "").encode()
+            front = desc[:BUDGET_BYTES].decode(errors="ignore")
+            if not any(cue in front for cue in _POSTURE_CUES):
+                silent.append(name)
+        assert silent == [], (
+            "these over-budget tools never state their read/write posture inside the front "
+            "block a client actually keeps — a caller learns what they do to the account only "
+            f"from a tail that gets discarded: {silent}"
+        )
+
+    async def test_every_description_front_block_parses_as_domain_and_purpose(self):
+        """Tier 1 shape: `<Domain> — <purpose>`. The domain marker is also the model-readable
+        half of the taxonomy — `_meta` is not rendered to the model on this client, so the
+        marker in ordinary description text is what a skill can actually select on."""
+        import re
+
+        tools = await _tools()
+        bad = {}
+        for name, tool in tools.items():
+            first = (tool.to_mcp_tool().description or "").strip().split("\n")[0].strip()
+            if not re.match(r"^[A-Za-z][\w /&-]{1,24} — \S", first):
+                bad[name] = first[:80]
+        assert bad == {}, (
+            "these descriptions do not open as `<Domain> — <purpose>`, so a caller cannot tell "
+            f"which family the tool belongs to from the selection line: {bad}"
+        )
