@@ -450,8 +450,24 @@ one shape: a pure-policy module, a config flag, an early return before any RTM c
 | Gate | Module | Flag | Default | Codes |
 |---|---|---|---|---|
 | Tag existence | `strict_tags.py` | `RTM_STRICT_TAGS` | **on** | `strict_tag_rejected` |
-| Note-title grammar | `note_shape.py` | `RTM_STRICT_NOTES` | off | `note_shape_rejected` |
-| List-target writability | `list_targets.py` | `RTM_STRICT_LIST_TARGETS` | off | `smart_list_target`, `locked_system_list` |
+| Note-title grammar | `note_shape.py` | `RTM_STRICT_NOTES` | **`shape`** (since v5.1.0) | `note_shape_rejected` |
+| List-target writability | `list_targets.py` | `RTM_STRICT_LIST_TARGETS` | **on** (since v5.1.0) | `smart_list_target`, `locked_system_list` |
+
+**All three are now enabled.** The two that shipped off were switched on in v5.1.0, once the file
+sink (§ 7a) made an inert gate distinguishable from a working one that never fires — until then
+they were identical in every observable respect, which is a poor state to leave a control in.
+`strict_notes` went **straight to `shape`, skipping the designed `warn` stage**: `warn` is
+log-and-allow, so with stderr at `/dev/null` it neither blocked nor recorded and the middle step
+did not exist in production. The live sample justified the skip — every agent-written title in it
+already parses, including the legacy `ACTIVITY` / `AR` / `ACTIVITY REPORT` spellings (a space is
+legal in a TYPE token).
+
+**Enabling a gate does not change where it is wired, and that boundary is load-bearing.**
+`note_shape` governs the generic `add_note` / `edit_note` **only** — the escape hatch, which is
+where drift enters. Every `gtd_*` tool writes notes by calling `rtm.tasks.notes.add` directly, and
+several legitimately write a bare marker title (`DEPENDS-ON`, `INCEPTION`, `REDACTION`,
+`TMPL-STAMP`) that this grammar would reject. Do **not** "fix" that by widening the wiring: those
+titles are round-tripped by `project_plan._extract_deps_and_files`.
 
 **The governing rule — the server enforces mechanical SHAPE; the plugin owns VOCABULARY.**
 This is the § 4.4 ownership split, and it is the reason each gate stops where it does:
@@ -474,8 +490,13 @@ plugin-side — stop and flag it. Do not add a taxonomy or import one into the s
   `build_response(data=err)`. A gate that still writes is not a write boundary — assert the
   zero-call property in the test.
 - **Never** gate an operation that *reduces* entropy (tag removal is the standing example).
-- **Default off** for a new gate. Flags-off must reproduce prior behaviour byte-for-byte; that
-  reversibility is what makes the bake-in stage safe. Ship the enable decision separately.
+- **Default off** for a *new* gate, and ship the enable decision separately (v5.1.0 is what that
+  second step looks like). Flags-off must reproduce prior behaviour byte-for-byte **for the life
+  of the gate**, not just during the bake-in: that revert is the whole rollback plan for an
+  enabled gate, so it is asserted per gate rather than assumed.
+- **A gate's recovery guidance names its own default.** When you flip one, the `how_to_proceed`
+  text flips with it — both gates shipped v5.1.0 telling callers to *unset* the env var to
+  disable, which after the flip is advice to do the thing that leaves it on. Asserted by test.
 - **Reject deterministically and recoverably**: a stable `error.code` plus `how_to_proceed`
   under `error.details`, never prose alone. Point recovery at the plugin for vocabulary.
 - **Reuse an existing `ErrorCode`** where the concept already has one (the list-target gate
@@ -549,6 +570,26 @@ application's logging. Level `INFO`, overridable with **`RTM_LOG_LEVEL`**.
 JSON-RPC protocol stream, and a handler there corrupts it and breaks the server outright.
 `logging.StreamHandler()` defaults to stderr, so call it with no argument — the failure mode is
 only if someone passes `sys.stdout`. `tests/test_logging.py` asserts this.
+
+**…and stderr alone reaches nobody, so there is also a file sink (v5.1.0).** On a Desktop-spawned
+server **fd 2 is `/dev/null`** (measured with `lsof` + `stat`), so every record the stderr handler
+writes is destroyed. Interactively that is merely redundant — the caller already gets a typed
+error — but in a **headless flow** the error goes to an *agent*, which handles or retries it, and
+Paul never learns it happened. A gate firing repeatedly inside a 06:45 scheduled worker was
+invisible.
+
+So a bounded `RotatingFileHandler` (1 MiB × 3 backups) writes to **`~/.config/rtm-mcp/logs/`** —
+a sibling of the existing `config.json` state, overridable with **`RTM_LOG_DIR`**. Deliberately
+**not** the repo clone: the launch config is `uv run --project <clone>`, so the process *can*
+write there, but logs in a working tree mean `.gitignore` maintenance, `git status` noise, and a
+real chance of committing them. It is attached **alongside** stderr, never instead of it, and an
+unopenable sink degrades to a WARNING rather than stopping the server.
+
+**Test the sink under the condition that motivated it.** An in-process test asserting "the record
+was emitted" passes against a server with no sink at all — the same vacuity § 7a already warns
+about one paragraph down. `tests/test_logging.py` runs a real gate in a **child process with fd 2
+redirected to `/dev/null`** and asserts the file received it, plus the counterfactual: with the
+sink unopenable the gate still fires and leaves no trace anywhere.
 
 **Choose the level by asking what happens if the configuration is lost.** `INFO` and `DEBUG`
 require configuration to exist in order to emit; `WARNING` and above emit through logging's

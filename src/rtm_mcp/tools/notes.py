@@ -70,6 +70,12 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         """RTM — add a text note to a task. Tasks can have multiple notes. Use get_task_notes
         to see existing notes on a task.
 
+        The note title must parse as `YYYY-MM-DD [HH:MM] — TYPE — summary` (spaced em-dashes,
+        e.g. `2026-07-26 — OUTPUT — brief drafted`); a malformed title is rejected and nothing
+        is written. RTM has no title field — it stores the body as `title\\ntext` — so with no
+        note_title the FIRST LINE of note_text is judged. Only the shape is checked: a
+        well-formed title carrying an unknown TYPE passes. Set RTM_STRICT_NOTES=off to disable.
+
         Caution: task_name uses fuzzy matching across all tasks. For common names,
         prefer passing task_id + taskseries_id + list_id to avoid matching an
         unintended task.
@@ -92,9 +98,9 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         """
         client: RTMClient = await get_client()
 
-        # Note-shape gate (off by default). Runs BEFORE the task lookup so a rejection
-        # costs no API call. RTM stores the body as `title\ntext`, so with no explicit
-        # note_title the gate judges the first line of note_text.
+        # Note-shape gate (ON by default since v5.1.0). Runs BEFORE the task lookup so a
+        # rejection costs no API call. RTM stores the body as `title\ntext`, so with no
+        # explicit note_title the gate judges the first line of note_text.
         err = enforce_note_shape(client, note_title, note_text, tool="add_note")
         if err:
             return build_response(data=err)
@@ -174,6 +180,11 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         """RTM — edit an existing note's content and/or title. Get the note_id from
         get_task_notes. Requires all three task IDs or a task_name.
 
+        A note_title you supply must parse as `YYYY-MM-DD [HH:MM] — TYPE — summary` or the
+        edit is rejected with nothing written. A body-only edit (no note_title) is never
+        judged, so a legacy note whose title predates the grammar can always have its body
+        corrected. Set RTM_STRICT_NOTES=off to disable.
+
         Caution: task_name uses fuzzy matching across all tasks. For common names,
         prefer passing task_id + taskseries_id + list_id to avoid matching an
         unintended task.
@@ -197,7 +208,7 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         """
         client: RTMClient = await get_client()
 
-        # Note-shape gate (off by default) — TITLE-CHANGING path only. An edit that
+        # Note-shape gate (ON by default since v5.1.0) — TITLE-CHANGING path only. An edit that
         # supplies no note_title is a body-only edit: judging the first line of
         # note_text there would block a legacy note whose title predates the grammar
         # from ever having its body corrected, so it is deliberately not gated.

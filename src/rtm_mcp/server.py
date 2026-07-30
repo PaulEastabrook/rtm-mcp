@@ -2,10 +2,12 @@
 
 import inspect
 import logging
+import logging.handlers
 import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastmcp import FastMCP
 
@@ -166,6 +168,56 @@ register_help_tools(_registrar, get_client)
 #: Default level for the `rtm_mcp` logger tree. Overridable with RTM_LOG_LEVEL.
 DEFAULT_LOG_LEVEL = "INFO"
 
+#: The surviving sink's default home — a sibling of the server's existing state
+#: (`~/.config/rtm-mcp/config.json`), reusing the `Path.home()/".config"/"rtm-mcp"` idiom
+#: `config.py` already establishes. Deliberately NOT the repo clone: the launch config is
+#: `uv run --project "$HOME/Documents/Code/rtm-mcp"`, so the process *could* write there, but
+#: logs inside a git working tree mean `.gitignore` maintenance, `git status` noise, and a real
+#: chance of committing them.
+DEFAULT_LOG_DIR = Path.home() / ".config" / "rtm-mcp" / "logs"
+LOG_FILE_NAME = "rtm-mcp.log"
+#: Bounded rotation — 1 MiB per file plus 3 rollovers, a ~4 MiB ceiling that needs no
+#: housekeeping. A sink an operator has to prune is a sink that eventually gets deleted.
+LOG_MAX_BYTES = 1_048_576
+LOG_BACKUP_COUNT = 3
+
+
+def resolve_log_dir() -> Path:
+    """Where the file sink writes. `RTM_LOG_DIR` overrides `DEFAULT_LOG_DIR`.
+
+    Read from the environment directly rather than from `RTMConfig`, following the
+    `RTM_LOG_LEVEL` precedent: logging is configured in `main()` *before* the config loads, and
+    must stay working when that load fails — which is exactly when its records matter most.
+    """
+    override = (os.getenv("RTM_LOG_DIR") or "").strip()
+    return Path(override).expanduser() if override else DEFAULT_LOG_DIR
+
+
+def _build_file_handler(formatter: logging.Formatter) -> logging.Handler | None:
+    """The rotating file handler, or None if the sink cannot be opened.
+
+    Opened **eagerly** (not `delay=True`): a deferred open would move the failure to the first
+    emit, inside logging's own error handling, which is where records go to die quietly. Failing
+    here means the stderr handler — already attached — can report it.
+
+    A sink that cannot be opened must never stop the server: the file is an *additional* channel,
+    and refusing to start because a log directory is unwritable would turn an observability
+    improvement into an outage.
+    """
+    try:
+        log_dir = resolve_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            log_dir / LOG_FILE_NAME,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+    except OSError:
+        return None
+    handler.setFormatter(formatter)
+    return handler
+
 
 def configure_logging(level: str | None = None) -> logging.Logger:
     """Configure the `rtm_mcp` logger tree — the thing whose absence made v3.0.0's records vanish.
@@ -182,26 +234,57 @@ def configure_logging(level: str | None = None) -> logging.Logger:
     `logging.StreamHandler()` defaults to stderr, which is why it is called with no argument here
     — do not pass `sys.stdout`. `tests/test_logging.py` asserts no handler is on stdout.
 
+    **…and stderr is not enough, which is why there is also a file sink (v5.1.0).** On a
+    Desktop-spawned server **fd 2 is `/dev/null`** (measured with `lsof` + `stat`), so every record
+    the stderr handler writes is destroyed. That is not a nuisance: in a headless flow — a
+    scheduled worker draining a work-list at 06:45 — a write-gate rejection returns a typed error
+    to *an agent*, which handles or retries it, and Paul never learns it happened. The log was the
+    only human-facing channel for those runs, and it was pointed at nothing.
+
+    So a bounded `RotatingFileHandler` under `~/.config/rtm-mcp/logs/` is attached **alongside**
+    the stderr handler, never instead of it — a terminal-launched server behaves exactly as before.
+    The stderr handler is attached FIRST so that if the sink cannot be opened, the complaint has
+    somewhere to go. Both handlers sit at `NOTSET`, so the tree's level (and therefore
+    `RTM_LOG_LEVEL`) governs both.
+
     Scoped to the `rtm_mcp` tree rather than the root logger, so importing this package as a
     library never hijacks the host application's logging. Propagation is left ON so pytest's
     `caplog` still sees records; `lastResort` does not double-emit, because it fires only when no
     handler is found anywhere in the chain.
 
-    Idempotent: calling it twice replaces the handler rather than stacking duplicates.
+    Idempotent: calling it twice replaces the handlers rather than stacking duplicates, and
+    **closes** the ones it removes — a `FileHandler` holds an open descriptor, so replacing without
+    closing would leak one per call.
     """
     resolved = (level or os.getenv("RTM_LOG_LEVEL") or DEFAULT_LOG_LEVEL).strip().upper()
     numeric = getattr(logging, resolved, None)
     if not isinstance(numeric, int):
         numeric = logging.INFO
 
-    handler = logging.StreamHandler()  # stderr — NEVER stdout, see the docstring
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    stream_handler = logging.StreamHandler()  # stderr — NEVER stdout, see the docstring
+    stream_handler.setFormatter(formatter)
 
     tree = logging.getLogger("rtm_mcp")
     for existing in list(tree.handlers):
         tree.removeHandler(existing)
-    tree.addHandler(handler)
+        existing.close()
+    tree.addHandler(stream_handler)
     tree.setLevel(numeric)
+
+    file_handler = _build_file_handler(formatter)
+    if file_handler is not None:
+        tree.addHandler(file_handler)
+    else:
+        # Reported through the handler that IS attached. WARNING, so it survives with no
+        # configuration at all — the level rule in CONTRIBUTING § 7a, applied to the sink's
+        # own failure: a silent fallback here would recreate the exact blindness being fixed.
+        tree.warning(
+            "log file sink unavailable at %s — records survive only on stderr, which is "
+            "/dev/null under a Desktop-spawned server. Set RTM_LOG_DIR to a writable path.",
+            resolve_log_dir(),
+        )
     return tree
 
 

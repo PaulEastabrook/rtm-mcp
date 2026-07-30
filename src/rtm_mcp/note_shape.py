@@ -23,8 +23,24 @@ storage reality the CHAT / ORDER / TMPL-CHILD grammars rely on). So the *effecti
 ``note_title`` when supplied, else the first line of ``note_text`` — which is what a caller
 authoring the grammar inline actually writes.
 
-Modes (``config.strict_notes``): ``off`` (default — inert), ``warn`` (log only, never
-rejects), ``shape`` (reject). See CONTRIBUTING § 6.
+**Paul's free-text notes are never a violation (normative).** A note with **no date prefix** is
+one Paul typed into the RTM app himself, and is his addition — not drift. This gate is safe on
+that by *construction*, since it governs MCP writes only and never sees the app. It is stated
+here because the discriminator binds the gtd-side **notes-audit** too, which scans existing notes
+and would otherwise report them: *no date prefix → informational, never a finding; date-prefixed
+but off-vocabulary TYPE → agent-written, and that is the finding.* The data separates cleanly —
+agent-written notes always carry the ``YYYY-MM-DD — TYPE —`` prefix, Paul's are free prose.
+
+Modes (``config.strict_notes``): ``shape`` (**the default since v5.1.0** — reject), ``warn``
+(log only, never rejects), ``off`` (inert). See CONTRIBUTING § 6.
+
+**Scope, precisely — this gate governs the escape hatch, not the gtd write paths.** It is wired
+into the generic ``add_note`` and ``edit_note`` only. Every ``gtd_*`` note write calls
+``rtm.tasks.notes.add`` directly and is conformant by construction (or validated by its own
+grammar), which is why several of them legitimately write a bare marker title such as
+``DEPENDS-ON`` that this grammar would reject. Do **not** "fix" that by wiring the gate in
+there: those bare titles are load-bearing — ``project_plan._extract_deps_and_files`` round-trips
+on them.
 """
 
 import logging
@@ -118,7 +134,8 @@ def guided_error(title: str, reason: str) -> dict[str, Any]:
             "canonical TYPE vocabulary lives in the gtd note-shape catalogue "
             "(plugins/gtd/skills/gtd/references/note-shape-catalogue.md § 2), so a "
             "well-shaped title with an unknown TYPE passes here and is caught there. "
-            "To disable the gate entirely, unset RTM_STRICT_NOTES (default: off)."
+            "The gate is ON by default: set RTM_STRICT_NOTES=warn to log without "
+            "rejecting, or RTM_STRICT_NOTES=off to disable it entirely."
         ),
         strict_notes_mode=True,
     )
@@ -129,10 +146,14 @@ def enforce_note_shape(
 ) -> dict[str, Any] | None:
     """Gate a note-title write. Returns a guided-error dict to reject, or None to allow.
 
-    No-op (returns None) in ``off`` mode — the default, so behaviour is byte-identical to
-    pre-gate unless deliberately switched on. In ``warn`` mode a malformed title is logged
-    and **allowed** (the observe-before-enforce stage). Synchronous: unlike the strict-tag
-    gate this needs no account state, so it makes no API call in any mode.
+    ``shape`` (the default since v5.1.0) rejects; ``warn`` logs a malformed title and
+    **allows** it (the observe-before-enforce stage); ``off`` is a no-op, reproducing pre-gate
+    behaviour byte-for-byte. Synchronous: unlike the strict-tag gate this needs no account
+    state, so it makes no API call in any mode.
+
+    The ``"off"`` fallback on the ``getattr`` is for a config object that lacks the attribute
+    entirely (a test double, an older config): **absent is not the same as unset**, and a gate
+    that fires on a config it cannot read would be enforcing on a guess.
     """
     mode = getattr(client.config, "strict_notes", "off")
     if mode not in ("warn", "shape"):

@@ -1765,3 +1765,66 @@ class TestListTargetGate:
         )
         assert "error" not in result["data"]
         assert any(c.args[0] == "rtm.tasks.moveTo" for c in client.call.await_args_list)
+
+
+class TestTheShippedDefaultIsLiveEndToEnd:
+    """v5.1.0 — the gate reaches `add_task` / `move_task` with NOTHING configured.
+
+    `TestListTargetGate` forces the flag onto a `MagicMock`, so the whole class passed for the
+    two releases in which the gate shipped inert. What was never asserted is the chain an
+    operator actually gets: shipped default -> RTMConfig -> the tool. A future flip back to off
+    now fails here instead of silently disarming the write boundary.
+    """
+
+    @pytest.fixture
+    def live(self, task_tools, monkeypatch):
+        from rtm_mcp.config import RTMConfig
+
+        monkeypatch.delenv("RTM_STRICT_LIST_TARGETS", raising=False)
+        tools, client = task_tools
+        client.config = RTMConfig()  # the real shipped defaults, not a double
+        client.get_default_list_id = AsyncMock(return_value="1")
+
+        async def _side(method, **kw):
+            if method == "rtm.lists.getList":
+                return _lists_resp()
+            if method == "rtm.settings.getList":
+                return {"stat": "ok", "settings": {"timezone": "UTC"}}
+            if method == "rtm.tasks.add":
+                return _make_write_response(_ts(name="New"), list_id="5")
+            return _make_getlist_response([_ts(name="Task")])
+
+        client.call = AsyncMock(side_effect=_side)
+        return tools, client
+
+    @pytest.mark.asyncio
+    async def test_a_smart_target_is_refused_with_no_env_set(self, live):
+        tools, client = live
+        result = await tools["add_task"](FakeContext(), name="New", list_name="Overdue View")
+        assert result["data"]["error"]["code"] == "smart_list_target"
+        # A gate that still writes is not a write boundary (CONTRIBUTING § 6).
+        assert not any(c.args[0] == "rtm.tasks.add" for c in client.call.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_locked_target_is_refused_with_no_env_set(self, live):
+        tools, client = live
+        result = await tools["add_task"](FakeContext(), name="New", list_name="Inbox")
+        assert result["data"]["error"]["code"] == "locked_system_list"
+        assert not any(c.args[0] == "rtm.tasks.add" for c in client.call.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_the_default_list_fallback_survives_the_flip(self, live):
+        """The carve-out is load-bearing NOW rather than hypothetically: Paul's configured
+        default could be the locked built-in Inbox, in which case gating the fallback would
+        reject every bare capture the moment this release is activated."""
+        tools, client = live
+        result = await tools["add_task"](FakeContext(), name="New")  # no list_name
+        assert "error" not in result["data"]
+        assert any(c.args[0] == "rtm.tasks.add" for c in client.call.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_writable_target_still_writes(self, live):
+        tools, client = live
+        result = await tools["add_task"](FakeContext(), name="New", list_name="Work")
+        assert "error" not in result["data"]
+        assert any(c.args[0] == "rtm.tasks.add" for c in client.call.await_args_list)

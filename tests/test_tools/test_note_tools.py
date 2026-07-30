@@ -506,3 +506,89 @@ class TestNoteShapeGate:
         )
         assert "error" not in result["data"]
         assert client.call.await_count == 1
+
+
+class TestTheShippedDefaultIsLiveEndToEnd:
+    """v5.1.0 — the gate reaches `add_note` with NOTHING configured.
+
+    Every test in `TestNoteShapeGate` forces a mode onto a `MagicMock`, so the whole class
+    passed for the two releases in which the gate shipped inert. What was never asserted is the
+    chain that actually matters to an operator: shipped default -> RTMConfig -> the tool. These
+    use a REAL `RTMConfig`, so a future flip back to `off` fails here rather than silently
+    disarming the write boundary.
+    """
+
+    @staticmethod
+    def _real_config(client, monkeypatch):
+        from rtm_mcp.config import RTMConfig
+
+        monkeypatch.delenv("RTM_STRICT_NOTES", raising=False)
+        client.config = RTMConfig()
+
+    @pytest.mark.asyncio
+    async def test_add_note_rejects_a_malformed_title_with_no_env_set(
+        self, note_tools, monkeypatch
+    ):
+        tools, client = note_tools
+        self._real_config(client, monkeypatch)
+        client.call = AsyncMock()
+
+        result = await tools["add_note"](
+            FakeContext(),
+            note_text="body",
+            note_title="just a heading",
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
+        )
+        assert result["data"]["error"]["code"] == "note_shape_rejected"
+        # A gate that still writes is not a write boundary (CONTRIBUTING § 6).
+        client.call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_add_note_still_accepts_the_grammar(self, note_tools, monkeypatch):
+        tools, client = note_tools
+        self._real_config(client, monkeypatch)
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "transaction": {"id": "tx1", "undoable": "1"},
+                "note": {"id": "n1", "title": "t", "$t": "body", "created": "2026-01-01"},
+            }
+        )
+
+        result = await tools["add_note"](
+            FakeContext(),
+            note_text="body",
+            note_title="2026-07-26 — OUTPUT — brief drafted",
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
+        )
+        assert "error" not in result["data"]
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_body_only_edit_survives_the_flip(self, note_tools, monkeypatch):
+        """The legacy-safety invariant, re-asserted against the LIVE default rather than a
+        forced mode — switching the gate on is exactly when stranding pre-grammar notes would
+        start happening for real."""
+        tools, client = note_tools
+        self._real_config(client, monkeypatch)
+        client.call = AsyncMock(
+            return_value={
+                "stat": "ok",
+                "transaction": {"id": "tx1", "undoable": "1"},
+                "note": {"id": "n1", "title": "", "$t": "corrected", "modified": "2026-07-26"},
+            }
+        )
+
+        result = await tools["edit_note"](
+            FakeContext(),
+            note_id="n1",
+            note_text="Some ancient untitled note\ncorrected body text",
+            task_id="100",
+            taskseries_id="10",
+            list_id="1",
+        )
+        assert "error" not in result["data"]
+        assert client.call.await_count == 1

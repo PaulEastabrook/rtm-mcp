@@ -4,6 +4,85 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v5.1.0 — a log sink that survives, and both dormant write gates switched on
+
+Implements the approved designed change `2026-07-26-write-boundary-gate-observability.md`,
+Stages 1–3. **Behaviour-changing but not breaking by § 10's criterion** — no envelope, signature,
+parameter or return-shape change; the two changes are *configuration defaults*, each reversible
+with one env var. See § 4 for the bump reasoning and its counter-argument.
+
+### 1. A file log sink that survives `/dev/null` — the prerequisite for everything else
+
+Records now go to a bounded `RotatingFileHandler` (1 MiB × 3 backups) at
+**`~/.config/rtm-mcp/logs/rtm-mcp.log`**, **alongside** the existing stderr handler — a
+terminal-launched server behaves exactly as before. Location overridable with the new
+**`RTM_LOG_DIR`**; `RTM_LOG_LEVEL` still governs both channels.
+
+**Why.** On a Desktop-spawned server **fd 2 is `/dev/null`** (measured with `lsof` + `stat`), so
+every write-gate WARNING was destroyed. Interactively that is redundant — the caller already gets
+a typed error — but in a **headless flow** the error goes to *an agent*, which handles or retries
+it, and Paul never learns it happened. A gate firing repeatedly inside a 06:45 scheduled worker
+was invisible. Not the repo clone (the launch config could write there, but logs in a working tree
+mean `.gitignore` maintenance and a real chance of committing them); not stdout (JSON-RPC frames).
+
+An unopenable sink **warns and continues** — an observability fix must not become an outage.
+
+**The test is the deliverable.** An in-process "the record emitted" assertion passes against a
+server with no sink at all, so the load-bearing test runs a real gate in a **child process with
+fd 2 redirected to `/dev/null`**, plus a **counterfactual** that runs the same probe with the sink
+unopenable and asserts the gate still fires and leaves no trace anywhere. Verified by stubbing the
+sink out: the load-bearing test fails without it.
+
+### 2. `RTM_STRICT_LIST_TARGETS` now ON by default
+
+Refuses only `smart` / `locked` destination lists — both of which fail at RTM anyway — so this
+converts a confusing downstream failure into a precise immediate one. No `warn` stage needed.
+`add_task`'s **default-list fallback stays ungated**: a configured default of the locked built-in
+Inbox would otherwise reject every bare capture on activation.
+
+### 3. `RTM_STRICT_NOTES` now defaults to `shape`, skipping `warn`
+
+Paul's decision. The skip is safe *because* of § 1: `warn` is log-and-allow, so with stderr dead it
+neither blocked nor recorded — **the designed middle step did not exist in production**. The live
+sample makes it unnecessary anyway: every agent-written title parses (`ORDER`, `CONTEXT`,
+`AI-LINK`, `PROGRESS`, `INCEPTION`, `DEPENDS-ON`), as do the legacy `ACTIVITY` / `AR` /
+`ACTIVITY REPORT` spellings — the gate checks shape, not vocabulary, and a space is legal in a TYPE
+token. `ACTIVITY_REPORT` (underscore) fails correctly and was verified absent from live data.
+
+**Blast radius, measured.** The gate is wired into the generic `add_note` / `edit_note` **only**.
+All 37 `gtd_*` note writes call `rtm.tasks.notes.add` directly and never reach it — which is why
+four of them legitimately write a bare marker title (`DEPENDS-ON`, `INCEPTION`, `REDACTION`,
+`TMPL-STAMP`) this grammar would reject. **Those are correct**: `project_plan` round-trips on them.
+So this governs exactly the escape hatch, which is where drift enters.
+
+**The free-text rule (normative, now recorded in `note_shape.py`):** a note with **no date prefix**
+is Paul's own, typed into the RTM app, and is never a violation. The gate is safe on that by
+construction; the rule is written down because it binds the gtd-side notes-audit, which scans
+existing notes — *no date prefix → informational, never a finding; date-prefixed but
+off-vocabulary TYPE → agent-written, and that is the finding.*
+
+**Vocabulary gating is explicitly not here.** The gate stays mechanical-shape-only; promoting the
+full 27-type catalogue server-side is its own designed change, sequenced after this one.
+
+### 4. Versioning — minor, with the counter-argument recorded
+
+§ 10 reserves **major** for "breaking envelope/signature changes". There is none: the four changed
+fingerprints (`add_note`, `edit_note`, `add_task`, `move_task`) are **description-only**, from
+documenting the now-live gates, and no caller's code needs to change. The designed change specifies
+minor independently.
+
+**The counter-argument, stated plainly:** a consumer that today writes a free-form note title via
+`add_note`, or targets a smart list, gets a hard failure after upgrading with no change on its
+side — which under a strict reading of SemVer is breaking. It is shipped as minor because the
+change is *configuration* rather than contract (the gates and their error codes shipped in v2.2.0;
+only their defaults moved), and because the revert is one env var per gate, asserted by test:
+`RTM_STRICT_NOTES=off`, `RTM_STRICT_LIST_TARGETS=0`.
+
+### Membrane / activation
+
+Vault-free, **no new tag**, **no new `ErrorCode`**, no schema or signature change. To go live:
+restart the server on v5.1.0. Rollback is one env var per gate — no one-way door.
+
 ## v5.0.0 — present-but-empty payloads are rejected, and the partial-write branch is observed
 
 **BREAKING** (§ 1). Implements `2026-07-26-rtm-mcp-empty-payload-rejection-brief.md`. The last two
