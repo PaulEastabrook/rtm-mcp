@@ -1,5 +1,22 @@
 .PHONY: naming install dev lint format test test/coverage fingerprints run clean help
 
+# Every target resolves to ~/.venvs/rtm-mcp, NEVER an in-repo .venv.
+#
+# Two reasons, and the second is the serious one. (1) It matches production: the Claude
+# Desktop launch entry sets exactly this, so `make test` exercises the interpreter the server
+# actually runs on. (2) `~/Documents/Code` is **iCloud-synced**, and an in-repo `.venv` there
+# gets corrupted two distinct ways — conflict copies (`lib 2/`, `pyvenv 2.cfg`) and files
+# evicted to `dataless`; and, measured 2026-07-30, `fileproviderd` sets `UF_HIDDEN` on any
+# dot-prefixed directory under ~/Documents within ~2s, while **Python silently skips a hidden
+# `.pth`** — so the editable install is present, byte-correct, and ignored, and every import
+# fails with `ModuleNotFoundError`. `chflags nohidden` is a two-second reprieve, not a cure.
+# A bare `uv sync` creates precisely that venv, which is what `make dev` used to be: a bare
+# sync wearing a safe-looking name.
+#
+# `?=` so an explicit environment override still wins (CI calls `uv` directly and never sees
+# this, which is why the pin is safe here).
+export UV_PROJECT_ENVIRONMENT ?= $(HOME)/.venvs/rtm-mcp
+
 help:
 	@echo "RTM MCP Server - Development Commands"
 	@echo ""
