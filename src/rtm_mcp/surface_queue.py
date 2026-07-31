@@ -111,18 +111,28 @@ CATALOGUE_NOTE_TYPES = frozenset(
 )
 
 #: Engine-authored note types seen on the AI-surface lists that are NOT registered in the
-#: catalogue. `QUESTION`/`ALERT`/`NOTIFICATION`/`SURFACE`/`ACTIVITY_REPORT` are written TODAY by
+#: catalogue. `QUESTION`/`ALERT`/`NOTIFICATION`/`SURFACE`/`ACTIVITY-REPORT` are written TODAY by
 #: this server's own `gtd_surface_create` (the body-note title is `<date> — <ITEM_TYPE> — …`);
 #: the single-letter and `Q-*` forms are the pre-v2.8.0 composition path. All are live on the
 #: lists now (measured 2026-07-25). Registering these in `note-shape-catalogue.md` § 2 is a
 #: gtd-side follow-up — `validate-note.py` would reject the server's own writes today.
+#:
+#: **Both spellings of the activity-report type are here, and that is not redundancy.** Wave 1b
+#: fixed the EMITTED token to `ACTIVITY-REPORT` (hyphen) via `gtd_writes.SURFACE_BODY_NOTE_TYPE`,
+#: because `note_shape.check_title`'s TYPE grammar is `[A-Z][A-Z -]*` and rejects the underscore.
+#: This READ set was not updated with it, so for two releases the server wrote a type its own
+#: classifier scored `unrecognised` — measured live 2026-07-31, two notes on `AI_Activity` sitting
+#: in `unrecognised_notes[]`. The underscore form stays because pre-Wave-1b notes carry it and a
+#: read set must recognise what is THERE; the hyphen form is added because a read set must also
+#: recognise what this server WRITES. Removing either re-opens a silent mis-classification.
 SURFACE_NOTE_TYPES = frozenset(
     {
         "QUESTION",
         "ALERT",
         "NOTIFICATION",
         "SURFACE",
-        "ACTIVITY_REPORT",
+        "ACTIVITY-REPORT",  # emitted today (Wave 1b onwards)
+        "ACTIVITY_REPORT",  # legacy spelling, unwritable under the shape gate — read-only
         "Q",
         "A",
         "N",
@@ -186,6 +196,47 @@ def _scalar(value: str) -> str | None:
     """A frontmatter scalar; the literal `null` (as `surface_body` writes it) becomes None."""
     v = _unquote(value)
     return None if v in ("", "null", "~") else v
+
+
+def _option_list(value: str) -> list[str]:
+    """`expected_response_options` given INLINE, as the list the row schema declares.
+
+    `surface_body` writes this key block-style (``key:`` then ``  - "opt"`` lines), which the
+    `_flush` path already returns as a list. But live data also carries the **flow** form
+    ``expected_response_options: [approve, decline, defer]`` on items this server did not write
+    — and the inline branch used to hand that to `_scalar`, storing a *string* under a key the
+    row schema declares as an array. Measured 2026-07-31: one `AI_Questions` item in that shape
+    made `gtd_surface_queue` fail output validation outright, so `surface="questions"` and
+    `surface="both"` returned nothing at all. One odd item took out the whole read.
+
+    A bare scalar becomes a one-element list rather than an error: an item offering a single
+    response option is a coherent thing to have written, and guessing "malformed" would discard
+    real content. `null` / empty is an empty list.
+    """
+    v = _unquote(value)
+    if v in ("", "null", "~"):
+        return []
+    if v.startswith("[") and v.endswith("]"):
+        inner = v[1:-1].strip()
+        return [_unquote(part) for part in inner.split(",") if part.strip()] if inner else []
+    return [v]
+
+
+def _as_list(value: Any) -> list[str]:
+    """Whatever the frontmatter carried, rendered as the array the row schema declares.
+
+    The belt to `_option_list`'s braces, and the one that generalises: the parser is deliberately
+    a focused reader of the shapes `surface_body` writes, so an unanticipated shape reaching a
+    typed field will keep happening. What must NOT keep happening is that it fails the entire
+    response — a read tool that returns nothing is strictly worse than one that returns a row
+    with an odd value, because the caller loses every good row too. Same posture as
+    `unrecognised_notes[]`: quarantine and report, never refuse.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v) for v in value if v is not None]
+    return [str(value)]
 
 
 def find_frontmatter(body: str) -> tuple[list[str], str]:
@@ -277,7 +328,11 @@ def parse_frontmatter(body: str) -> tuple[dict[str, Any], str]:
         name, sub = m.group(1), []
         val = m.group(2).strip()
         if val and val != "|":
-            fields[name] = _scalar(val)
+            # `expected_response_options` is typed as an array on the row, so an inline value
+            # must be read as one — see `_option_list`. Every other key is a scalar.
+            fields[name] = (
+                _option_list(val) if name == "expected_response_options" else _scalar(val)
+            )
             key = None
         else:
             key = name
@@ -448,7 +503,7 @@ def build_row(
         "item_type": meta.get("item_type") or (_item_type(tags) or None),
         "entities": meta.get("entities") or [],
         "expected_response_shape": meta.get("expected_response_shape"),
-        "expected_response_options": meta.get("expected_response_options") or [],
+        "expected_response_options": _as_list(meta.get("expected_response_options")),
         "asked_by": meta.get("asked_by"),
         "asked_at": asked_at,
         "auto_close_at": auto_close,

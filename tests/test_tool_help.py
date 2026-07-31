@@ -185,6 +185,22 @@ class TestContractProjection:
             if contract["taxonomy"]["domain"] == "gtd":
                 assert "gtd" in contract.get("see_also", ""), v["name"]
 
+    async def test_collection_shaped_reads_are_classified_bff(self):
+        """`gtd_surface_queue` is the measured case for why this table cannot stay descriptive.
+
+        It returns an unbounded collection with a strict row schema — BFF behaviour — but was
+        authored as an agent tool, so it was absent from `BFF_TOOLS` until 2026-07-31, when in
+        chat it blew the tool-result ceiling on one surface and failed output validation outright
+        on another. Membership is remembered rather than derived, and nothing flagged it.
+
+        It is also `either`, not `artifact`: no board reads it. That is asserted because marking
+        an agent-consumed tool `artifact` would be a false statement in `rtm_tool_help`, and
+        because the awkwardness is the evidence that shape and audience are two axes.
+        """
+        tax = tool_help.taxonomy("gtd_surface_queue")
+        assert tax["layer"] == "bff"
+        assert tax["consumer"] == "either"
+
     async def test_no_stale_bff_or_dual_consumer_entry(self):
         """Guards the authored tables against naming a tool that no longer exists."""
         names = {v["name"] for v in await _views()}

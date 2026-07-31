@@ -4,6 +4,66 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v5.1.1 — the server recognises what the server writes, and one odd item stops killing a read
+
+Two defects found while measuring for the note-vocabulary promotion (hand-off brief
+`2026-07-30`), both in `surface_queue.py`, both **silent**: neither raised an error a caller could
+act on, which is why neither had been noticed. Patch by § 10 — no tool gained, lost or changed a
+parameter, description, annotation or output schema, and `tool-fingerprints.json` is byte-identical.
+
+### 1. `ACTIVITY-REPORT` — the emission set had drifted from the read set
+
+Wave 1b (v2.10.0) corrected the **emitted** token to `ACTIVITY-REPORT` (hyphen), because
+`note_shape.check_title`'s TYPE grammar is `[A-Z][A-Z -]*` and rejects the underscore. The
+**read** set `SURFACE_NOTE_TYPES` was not updated with it. So for two releases the server wrote a
+note type its own classifier scored `unrecognised` — measured live 2026-07-31, two notes sitting
+in `unrecognised_notes[]` on `AI_Activity`.
+
+Both spellings are now in the read set, and that is not redundancy: the hyphen form is what the
+server **writes**, the underscore form is what live data **carries** and can no longer be written.
+Removing either re-opens a silent mis-classification.
+
+**A mis-classification produces a wrong answer, not an error** — which is why the write-side
+assertion Wave 1b added was not enough on its own. The read and write sides are now pinned
+together in one test, so neither can move alone again.
+
+### 2. `gtd_surface_queue` — one item's metadata took out the whole `questions` surface
+
+`surface="questions"` and `surface="both"` returned **nothing at all**: `Output validation error:
+'[approve, decline, defer]' is not of type 'array'`.
+
+`surface_body` writes `expected_response_options` block-style, so the parser only ever produced a
+list. A live item carries the **flow** form `expected_response_options: [approve, decline, defer]`
+— written by something other than the current writer — which went down the inline branch to
+`_scalar` and landed a *string* under a key the row schema declares as an array. Strict output
+validation then rejected the entire response.
+
+Fixed in two layers, and the second is the general one:
+
+- `_option_list` reads the flow form properly (a bare scalar becomes a one-element list rather
+  than an error — a single offered option is a coherent thing to have written).
+- `_as_list` coerces at the row builder, so *whatever* the frontmatter carried, the field is the
+  array the schema declares.
+
+**The lesson is not "parse flow lists".** The parser is deliberately a focused reader of the
+shapes `surface_body` writes, so unanticipated shapes reaching a typed field will keep happening.
+What must not keep happening is that one of them fails the *whole* response — a read returning
+nothing is strictly worse than a read returning one odd row, because the caller loses every good
+row too. Same posture as `unrecognised_notes[]`: quarantine and report, never refuse.
+
+### 3. `gtd_surface_queue` classified as a BFF tool
+
+It returns an unbounded collection with a strict row schema, and in chat on 2026-07-31 it both
+exceeded the client's tool-result ceiling (65,127 characters on `surface="activity"`) and failed
+output validation on another surface — but it was absent from `BFF_TOOLS`, because that table is
+authored from the memory of which tools were built for a board rather than derived from how a tool
+behaves.
+
+It is also in `DUAL_CONSUMER`, and the awkwardness is recorded rather than smoothed over: no board
+reads this tool, so `consumer: artifact` would be false, and `either` is the least-wrong value the
+vocabulary offers. **Shape and audience are two axes and the taxonomy conflates them.** Deriving
+BFF-ness from a property, and splitting the axes, is a designed change — not a line in a set.
+
 ## v5.1.0 — a log sink that survives, and both dormant write gates switched on
 
 Implements the approved designed change `2026-07-26-write-boundary-gate-observability.md`,
