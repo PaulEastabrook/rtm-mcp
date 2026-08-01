@@ -411,13 +411,11 @@ def _with_receipt(fn: Any, annotations: Any) -> Any:
             for name, default in defaults.items()
             if _at_default(supplied.get(name, default), default)
         ]
+        # Detected here for the ADVISORY only — the middleware already logged it, for every tool,
+        # before this body ran. Logging again would emit two records per event and silently
+        # double-count any future "how often does this happen?" measurement, which is precisely
+        # the class of error this detector exists because of.
         leaked = detect_leaked_markup(supplied, all_params)
-        if leaked:
-            # Logged as well as reported, because the caller-visible half reaches an AGENT and
-            # the scheduled/headless runs — where three of the five measured corruptions came
-            # from — have no human reading the response. The v5.1.0 file sink survives a
-            # /dev/null fd 2, so this is the channel that reaches Paul.
-            logger.warning("Leaked tool-call markup in call to %s: %s", fn.__name__, leaked)
         attach_receipt(
             result["data"],
             tool_name=fn.__name__,

@@ -367,6 +367,24 @@ class TestLeakedMarkupIsLoggedNotBlocked:
         assert res.structured_content["data"]["shape"] == "draft"
         assert rtm_client.call.await_count == 0  # still offline, still no write
 
+    async def test_a_governed_write_logs_exactly_once(self, mcp_client, rtm_client, caplog):
+        """The receipt wrapper detects for the ADVISORY but does not log — the middleware
+        already did, before the tool body ran. Two records per event would silently double-count
+        any future "how often does this happen?" measurement, which is the precise class of
+        error this detector exists because of."""
+        caplog.set_level(logging.WARNING)
+        rtm_client.config = MagicMock(strict_tags=False, strict_notes="off")
+        rtm_client.timeline_id = "tl1"
+        rtm_client.record_transaction = MagicMock()
+        rtm_client.call.return_value = {"transaction": {"id": "tx1", "undoable": "1"}}
+        await mcp_client.call_tool(
+            "gtd_item_set_redaction",
+            {"task_id": "t1</task_id>\n<parameter name='redacted'>true", "redacted": True},
+        )
+        leaked = [r for r in caplog.records if "Leaked tool-call markup" in r.getMessage()]
+        assert len(leaked) == 1, f"expected exactly one record, got {len(leaked)}"
+        assert leaked[0].name == "rtm_mcp.middleware"
+
     async def test_a_clean_call_logs_nothing(self, mcp_client, rtm_client, caplog):
         """Guard-the-guard: without this, a detector that fired on every call would pass the
         test above and be worse than none."""

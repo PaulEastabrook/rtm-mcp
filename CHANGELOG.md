@@ -66,12 +66,14 @@ text described only one of the advisory's two triggers), not from 25 tools chang
 
 ### Tests
 
-+18 (1799 → 1817). The load-bearing ones are `TestTheDetectorRunsOnTheRealServer`, which drives the
++19 (1799 → 1818). The load-bearing ones are `TestTheDetectorRunsOnTheRealServer`, which drives the
 in-memory protocol end-to-end — every pure-function test would pass against a server that never
 calls the detector, which is the exact vacuity this whole investigation was about — and
 `TestLeakedMarkupIsLoggedNotBlocked`, which asserts the middleware half logs and does **not** raise.
 Both carry a guard-the-guard proving a clean call stays silent, without which a detector that fired
-on everything would pass.
+on everything would pass. A third pins **exactly one log record per event**: the receipt wrapper
+detects for the advisory but does not log, because the middleware already did — two records would
+silently double-count the very measurement this detector exists to enable.
 
 ### Also in this release — the advisory stops asserting a cause it has never once been right about
 
