@@ -180,12 +180,26 @@ EXAMPLES: dict[str, tuple[str, ...]] = {
         "directive; idempotent, writes nothing if none is set",
         'gtd_canvas_commit(project_id="123", completes=["456"], confirm_destructive=True)',
         'gtd_canvas_commit(project_id="123", order=["456", "789"], scope="plan")',
+        'gtd_canvas_commit(project_id="123", adds=[{"type": "action", '
+        '"text": "Draft the migration note", "classifiers": {"context": "using_device", '
+        '"priority": "must", "energy": "high_energy"}, "estimate": "30 minutes"}])   # the name '
+        "is `text`, and energy/estimate are the two DoR designations an action needs",
     ),
     "gtd_project_create": (
         'gtd_project_create(frame={"life": "work", "focus": "Engineering", '
         '"name": "Migrate CI", "outcome": "CI runs on the new runner"}, '
         'items=[{"id": "a", "text": "Audit the current pipeline", "type": "action"}, '
-        '{"id": "b", "text": "Cut over", "type": "action", "deps": ["a"]}])',
+        '{"id": "b", "text": "Cut over", "type": "action", "deps": ["a"]}])   # minimal — the '
+        "item name is `text`, NOT `name`",
+        'gtd_project_create(frame={"life": "work", "focus": "Engineering", '
+        '"name": "Migrate CI", "outcome": "CI runs on the new runner"}, '
+        'items=[{"id": "a", "text": "Audit the current pipeline", "type": "action", '
+        '"classifiers": {"context": "using_device", "priority": "must", '
+        '"energy": "high_energy"}, "estimate": "30 minutes"}, '
+        '{"id": "b", "text": "Waiting for infra to confirm the runner", "type": "waiting_for", '
+        '"classifiers": {"priority": "must"}, "chase": "next Friday", "deps": ["a"]}], '
+        'notes=[{"type": "INCEPTION", "text": "Runner EOL forces the move."}])   # fully '
+        "designated — this is the shape a real plan takes",
     ),
     "gtd_engage_commit": (
         'gtd_engage_commit(items=[{"id": "123", "verdict": "next_actions"}])   # clear a '
@@ -209,13 +223,17 @@ EXAMPLES: dict[str, tuple[str, ...]] = {
         '"Next executable": "draft the SLA benchmarks"})',
     ),
     "gtd_item_create": (
-        'gtd_item_create(name="Email Sam the figures", kind="action", '
-        'contexts=["computer"], life="work")',
-        'gtd_item_create(name="Sam to confirm the date", kind="waiting_for", waiting_on="Sam")',
+        'gtd_item_create(parent_ref="123", kind="action", name="Email Sam the figures", '
+        'life_context="work", priority="must", action_context="using_device", '
+        'comms="conversation_email", energy="low_energy", estimate="15 minutes")   # an action '
+        "needs every Definition-of-Ready axis, or the create is rejected",
+        'gtd_item_create(parent_ref="123", kind="waiting_for", '
+        'name="Waiting for Sam to confirm the date", life_context="work", priority="should", '
+        'due="next Friday")   # a waiting-for needs a chase date, not the execution axes',
     ),
     "gtd_chat_post": (
-        'gtd_chat_post(task_id="123", role="me", message="Draft the reply", mode="act")',
-        'gtd_chat_post(task_id="123", role="ai", message="Working on it — reading the '
+        'gtd_chat_post(task_id="123", role="me", text="Draft the reply", mode="act")',
+        'gtd_chat_post(task_id="123", role="ai", text="Working on it — reading the '
         'notes now", clear_signal=False)   # interim note; board keeps polling',
     ),
     "batch_undo": ('batch_undo(transaction_ids=["987", "986", "985"])',),

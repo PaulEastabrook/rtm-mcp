@@ -18,9 +18,11 @@ from fastmcp import Context
 from pydantic import BeforeValidator, Field, WithJsonSchema
 
 from ..canvas_commit import (
+    ADD_KEYS,
     AI_CONVERSATION,
     AI_DEFERRED,
     AI_PROGRESS,
+    CLASSIFIER_KEYS,
     COMMS_TAGS,
     CONTEXT_TAGS,
     EXECUTE_CLEAR_TAGS,
@@ -30,9 +32,11 @@ from ..canvas_commit import (
     classifiers_to_tags,
     collect_commit_tags,
     execute_progress_tags,
+    unknown_keys,
     validate_commit,
 )
 from ..canvas_create import (
+    ITEM_KEYS,
     collect_create_tags,
     item_id,
     project_tags,
@@ -482,6 +486,52 @@ _MOSCOW_ENUM: dict[str, Any] = {"enum": sorted(MOSCOW_BANDS)}
 _NOTE_TYPE_ENUM: dict[str, Any] = {"enum": sorted(JOURNAL_NOTE_TYPES)}
 _UPSTREAM_TYPE_ENUM: dict[str, Any] = {"enum": sorted(UPSTREAM_TYPES)}
 _BATCH_ITEM_SCHEMA: dict[str, Any] = {"type": "string", "description": "A task id."}
+
+
+def _unrecognised_key_entries(
+    item: dict[str, Any], *, index: int, item_keys: frozenset[str], op: str
+) -> list[dict[str, Any]]:
+    """`not_applied[]` entries for every key on a draft item this surface does not read (v6.2.0).
+
+    **The floor of the silent-property-loss fix, and the part that outlives it.** Accepting `energy`
+    and `estimate` closes the two facets that were measurably lost; this closes the *class*. A key
+    the closed mapping does not understand is now reported rather than evaporating, so the next
+    divergence between the three sibling item-creation surfaces announces itself in the receipt
+    instead of being found by a human reading the resulting list.
+
+    Reuses `ErrorCode.NO_DURABLE_WRITE` deliberately. A new `ErrorCode` re-fingerprints all 100
+    tools (the churn ladder recorded in the 2026-08-01 silent-parameter-loss debrief § 6); a member
+    already in `RECEIPT_REASONS` costs nothing, and "you asked for this and no RTM write happened"
+    is exactly what the outcome is. The specifics live in `detail`, which is where prose belongs.
+
+    Checked at BOTH levels — the item itself and its nested `classifiers{}` — because the two
+    measured losses sat one at each level (`estimate` is a sibling key, `energy` a classifier)."""
+    out: list[dict[str, Any]] = []
+    for level, mapping, known in (
+        ("", item, item_keys),
+        ("classifiers.", (item or {}).get("classifiers"), CLASSIFIER_KEYS),
+    ):
+        unknown = unknown_keys(mapping, known)
+        if not unknown:
+            continue
+        named = ", ".join(f"{level}{k}" for k in unknown)
+        legal = ", ".join(sorted(known))
+        out.append(
+            not_applied_entry(
+                op,
+                reason=ErrorCode.NO_DURABLE_WRITE,
+                detail=(
+                    f"item {index}: {named} — not read by this surface, so nothing was written "
+                    f"for it. Recognised here: {legal}. The sibling create surfaces spell some "
+                    "facets differently (`gtd_item_create` takes flat typed parameters and keys "
+                    "the name on `name`); check rtm_tool_help for this tool's shape."
+                ),
+                requested=unknown,
+            )
+        )
+    return out
+
+
 _INBOX_DISP_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -913,8 +963,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             BeforeValidator(coerce_json),
             WithJsonSchema(
                 coerced_obj_array_schema(
-                    "[{type: action|waiting_for|calendar, text, classifiers:{context?,comms?,priority?,quick?}, "
-                    "chase?/calendar_date?/due?}] — items created on Processed, parented to the project."
+                    "[{type: action|waiting_for|calendar, text, "
+                    "classifiers:{context?,comms?,priority?,quick?,energy?}, "
+                    "chase?/calendar_date?/due?, start?, estimate?}] — items created on Processed, "
+                    "parented to the project. The NAME is `text` (not `name`). An unrecognised key "
+                    "is reported in not_applied[], never silently dropped."
                 )
             ),
         ] = None,
@@ -1000,8 +1053,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 latest valid ORDER note. Append-only: superseded notes are retained.
             edits: {id: {priority?, context?, comms?, chase?/calendar_date?/due?, text?}}.
             adds: [{type: action|waiting_for|calendar, text, classifiers:{context?, comms?,
-                priority?, quick?}, chase?/calendar_date?/due?}] — created on `Processed`, parented
-                to the project.
+                priority?, quick?, energy?}, chase?/calendar_date?/due?, start?, estimate?}] —
+                created on `Processed`, parented to the project. The name is **`text`**, not
+                `name` (`gtd_item_create` uses `name`; these are sibling surfaces with different
+                shapes). `energy` and `estimate` carry the two Definition-of-Ready designations an
+                action requires. `calendar_entry` is accepted as a synonym of `calendar`. Any key
+                outside this set is reported in `not_applied[]` rather than dropped.
             completes / removes: lists of ids — DESTRUCTIVE, require confirm_destructive=True
                 (removes are RTM soft-deletes).
             execute: {id: "now"|"later"|"quick"|"off"} — durable progression signal. "now"/"quick"
@@ -1170,8 +1227,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         def _date_of(d: dict[str, Any]) -> str | None:
             return d.get("calendar_date") or d.get("chase") or d.get("due")
 
-        # adds: create on Processed → tags → priority → due → reparent (last, may move lists)
-        for add in ops["adds"]:
+        # adds: create on Processed → tags → priority → estimate → due → reparent (last, may move
+        # lists). `energy` needs no step of its own — it is a tag, so `classifiers_to_tags` carries
+        # it in the setTags call above alongside context and comms (v6.2.0).
+        for add_index, add in enumerate(ops["adds"]):
+            not_applied.extend(
+                _unrecognised_key_entries(add, index=add_index, item_keys=ADD_KEYS, op="add")
+            )
             text = add.get("text") or ""
             res = await _write(
                 "rtm.tasks.add", f"add:{text[:40]}", name=text, parse="0", list_id=processed_list_id
@@ -1200,6 +1262,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     new_id,
                     priority=priority_to_code(pr),
                     **nid,
+                )
+            if add.get("estimate"):
+                await _write(
+                    "rtm.tasks.setEstimate", "add:estimate", new_id, estimate=add["estimate"], **nid
                 )
             dt = _date_of(add)
             if dt:
@@ -1445,8 +1511,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             BeforeValidator(coerce_json),
             WithJsonSchema(
                 coerced_obj_array_schema(
-                    "[{id, type, text, classifiers, chase?/calendar_date?/due?, start?, estimate?, "
-                    "deps:[in-draft ids], done?, execute?, notes}] — the child items in dependency order."
+                    "[{id, type: action|waiting_for|calendar, text, "
+                    "classifiers:{context?,comms?,priority?,quick?,energy?}, "
+                    "chase?/calendar_date?/due?, start?, estimate?, deps:[in-draft ids], done?, "
+                    "execute?, notes}] — the child items in dependency order. The NAME is `text` "
+                    "(not `name`). An unrecognised key is reported in not_applied[], never "
+                    "silently dropped."
                 )
             ),
         ] = None,
@@ -1483,10 +1553,16 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 is the project title (required); `focus` selects the parent area; `outcome` is
                 recorded in the INCEPTION note.
             items: [{id, type: action|waiting_for|calendar, text, classifiers:{context?, comms?,
-                priority?, quick?}, chase?/calendar_date?/due?, start?, estimate?, deps:[in-draft
-                ids], done?, execute?: now|later|quick, notes:[{title?/type?, text}]}]. `id` is the
-                in-draft id deps reference (defaults to the array index); the dependency graph refines
-                the creation/display order.
+                priority?, quick?, energy?}, chase?/calendar_date?/due?, start?, estimate?,
+                deps:[in-draft ids], done?, execute?: now|later|quick, notes:[{title?/type?,
+                text}]}]. The name is **`text`**, not `name` (`gtd_item_create` uses `name`; these
+                are sibling surfaces with different shapes, and an item whose `text` is absent or
+                whitespace-only is rejected up-front rather than failing at RTM after the project
+                is durable). `id` is the in-draft id deps reference (defaults to the array index);
+                the dependency graph refines the creation/display order. `energy` and `estimate`
+                carry the two Definition-of-Ready designations an action requires.
+                `calendar_entry` is accepted as a synonym of `calendar`. Any key outside this set
+                is reported in `not_applied[]` rather than dropped.
             notes: project-level notes [{title?/type?, text/body}] (e.g. the authored INCEPTION).
 
         Tag writes pass the strict-tag existence gate and use the closed canonical classifier→tag
@@ -1589,6 +1665,13 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         # ── Phase 2: apply (durable-first), recording transactions ────────
         applied: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        # Unrecognised keys are reported per item, in payload order rather than creation order, so
+        # the receipt indexes match the `items[]` the caller sent rather than the dependency sort.
+        not_applied: list[dict[str, Any]] = []
+        for _idx, _it in enumerate(items_l):
+            not_applied.extend(
+                _unrecognised_key_entries(_it, index=_idx, item_keys=ITEM_KEYS, op="item")
+            )
 
         async def _write(
             method: str, label: str, _id: str | None = None, **kwargs: Any
@@ -1801,6 +1884,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "progressed": progressed,
                 "applied": applied,
                 "errors": errors,
+                "not_applied": not_applied,
                 "message": (
                     f"Created project '{frame_d.get('name') or ''}' with {len(created)} item(s); "
                     f"{len(errors)} error(s)."

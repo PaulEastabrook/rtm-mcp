@@ -18,7 +18,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from .canvas_commit import AI_CONVERSATION, COMMS_TAGS, CONTEXT_TAGS, OVERLAY_REFRESH
+from .canvas_commit import (
+    AI_CONVERSATION,
+    COMMS_TAGS,
+    CONTEXT_TAGS,
+    ENERGY_TAGS,
+    OVERLAY_REFRESH,
+)
 from .error_codes import ErrorCode
 
 # --------------------------------------------------------------------------- #
@@ -42,8 +48,10 @@ ITEM_KINDS = frozenset({"action", "waiting_for", "calendar_entry"})
 #: 3. Action context — exactly one per action/calendar entry (reused, not restated).
 ACTION_CONTEXTS = CONTEXT_TAGS
 
-#: 4. Energy — at most one of the pair; unset means *unrated*.
-ENERGY_LEVELS = frozenset({"high_energy", "low_energy"})
+#: 4. Energy — at most one of the pair; unset means *unrated*. Reused, not restated: the pair
+#: moved to `canvas_commit` in v6.2.0 beside its context/comms siblings, so the canvas classifier
+#: mapping and this module read one definition rather than two that could drift apart.
+ENERGY_LEVELS = ENERGY_TAGS
 
 #: 5. Mode of communication (reused, not restated).
 COMMS_MODES = COMMS_TAGS

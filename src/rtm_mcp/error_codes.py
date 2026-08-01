@@ -148,6 +148,9 @@ class ErrorCode(str, Enum):
     # the module docstring's discriminator). None of these is ever an `error.code`, and a test
     # enforces it.
     NO_CHANGE = "no_change"  # already in the requested state — the write would be a no-op
+    # Also (v6.2.0) the reported form of a payload key the surface does not read — an unrecognised
+    # classifier / item key produced no RTM write, which is exactly this outcome. Reused rather
+    # than minted: a new member re-fingerprints all 100 tools, and `detail` carries the specifics.
     NO_DURABLE_WRITE = "no_durable_write"  # the op is a decision/marker with no RTM write
     NOT_ELIGIBLE = "not_eligible"  # the target does not qualify for this operation
 

@@ -342,7 +342,13 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   Counts are vault-free — the enriched overlay stays gtd-side. The response is an object (was a bare
   list pre-1.10.0) but backward-compatible for the existing navigator, which reads `data.projects`.
 - `gtd_canvas_commit` - **Constrained write.** The single governed write surface for a
-  canvas commit (order / adds / edits / completes / removes / execute / notes). `execute` is a
+  canvas commit (order / adds / edits / completes / removes / execute / notes). An `adds[]` item
+  keys its name on **`text`** (not `name` — `gtd_item_create` is a sibling surface with a different
+  shape, and a blank `text` is rejected up-front rather than failing at RTM per item); its
+  `classifiers{}` are `context` / `comms` / `priority` / `quick` / `energy`, with `estimate` as a
+  sibling key; `calendar_entry` is accepted as a synonym of `calendar`; and **any key the surface
+  does not read is reported in the receipt's `not_applied[]` rather than silently dropped**
+  (v6.2.0). `execute` is a
   durable now/later split: `now`/`quick` write `#ai_progress_requested`; `later` writes
   `#ai_progress_deferred` (the two are mutually exclusive — switching state drops the stale
   sibling); `off` clears the directive (removes any of `#ai_progress_requested` /
@@ -380,7 +386,9 @@ you just created elsewhere is picked up without waiting for the cache to expire.
   Resolves the destination Area of Focus from `frame.focus` (a name — matched against the parents of
   existing `#project` tasks — or an area task id; ambiguous names return a candidate list, and an
   unknown focus is rejected rather than creating loose), then creates the project task under it and
-  each child item parented in dependency order, with tags / priorities / dates / estimates,
+  each child item parented in dependency order, with tags / priorities / dates / estimates /
+  energy designations (`classifiers.energy`; an item's name is **`text`**, and a blank one is
+  rejected before anything is written — v6.2.0),
   `DEPENDS-ON` notes (in-draft `deps` → the created RTM ids, so the canvas shows the dependency
   graph on first load), `execute` progression signals, create-then-complete for already-`done`
   items, an `INCEPTION` note, and the `#ai_project_needs_finalise` mark that triggers the gtd-side
