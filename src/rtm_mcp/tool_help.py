@@ -250,6 +250,19 @@ CHAIN: dict[str, dict[str, tuple[str, ...]]] = {
 #: primitives, but BFF-ness sits INSIDE that prefix. Carried here (and rendered in prose by
 #: `taxonomy`) rather than as a second prefix, because renaming twelve tools two releases
 #: after the rename wave is not proportionate.
+#:
+#: **This table is descriptive, not enforced, and it has already drifted once.** It was authored
+#: from the memory of which tools were written for the board, so a tool that *behaves* like a BFF
+#: but was not written for one does not appear. `gtd_surface_queue` was exactly that: it returns
+#: an unbounded collection with a strict row schema, and in chat on 2026-07-31 it both exceeded
+#: the client's tool-result ceiling (65,127 characters on `surface="activity"`) and — via one
+#: item's oddly shaped metadata — failed output validation outright, so `surface="questions"`
+#: returned nothing at all. Nothing flagged it, because membership is remembered rather than
+#: derived.
+#:
+#: The durable fix is to derive membership from a PROPERTY ("returns an unbounded collection" /
+#: "the output schema is a frontend contract") and to assert it, so a new tool cannot be omitted
+#: by forgetting. That is a designed change, not a line here.
 BFF_TOOLS: frozenset[str] = frozenset(
     {
         "gtd_project_canvas",
@@ -264,13 +277,22 @@ BFF_TOOLS: frozenset[str] = frozenset(
         "gtd_item_set_redaction",
         "gtd_project_plan",
         "gtd_item_stamp_tokens",
+        "gtd_surface_queue",
     }
 )
 
 #: Tools a board reads but an agent can equally use — so `consumer` genuinely needs an
 #: "either" value rather than a binary.
+#:
+#: `gtd_surface_queue` is here for a different reason from the other three, and the difference is
+#: the point. They are board tools an agent may also call. It is an AGENT tool (its consumer is
+#: `ai-surface-scan`, and no board reads it) that happens to be shaped like a BFF. Marking it
+#: `consumer: artifact` would be simply false, so `either` is the least-wrong value the current
+#: vocabulary offers — which is the tell that **shape and audience are two axes and this taxonomy
+#: conflates them**. A tool can be collection-shaped and agent-consumed at once; today that cannot
+#: be said. Splitting the axes is the designed change the comment on `BFF_TOOLS` points at.
 DUAL_CONSUMER: frozenset[str] = frozenset(
-    {"gtd_project_plan", "gtd_project_index", "gtd_project_canvas"}
+    {"gtd_project_plan", "gtd_project_index", "gtd_project_canvas", "gtd_surface_queue"}
 )
 
 #: How to recover from each typed error. The `message` on a live error is already actionable

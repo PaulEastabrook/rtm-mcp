@@ -338,3 +338,113 @@ class TestBundle:
 
     def test_valid_surfaces_vocabulary(self):
         assert {"questions", "activity", "both"} == VALID_SURFACES
+
+
+class TestInlineResponseOptionsNeverFailTheRead:
+    """The `questions` surface was unreadable, and one odd item was enough to do it.
+
+    `surface_body` writes `expected_response_options` block-style, so the parser only ever
+    produced a list — until an item written by something else carried the FLOW form
+    `[approve, decline, defer]`. That went through the inline branch to `_scalar`, landing a
+    string under a key the row schema declares as an array, and MCP output validation then
+    rejected the WHOLE response: `surface="questions"` and `surface="both"` returned nothing.
+    Measured live 2026-07-31.
+
+    The lesson these tests pin is not "parse flow lists" — it is that a read tool must degrade
+    to a worse row, never to no rows at all.
+    """
+
+    def _body_with(self, options_line):
+        return FRONTMATTER_BODY.replace(
+            'expected_response_options:\n  - "Bill"\n  - "Izabela"', options_line
+        )
+
+    def test_flow_style_inline_list_parses_as_a_list(self):
+        fields, err = parse_frontmatter(
+            self._body_with("expected_response_options: [approve, decline, defer]")
+        )
+        assert err == ""
+        assert fields["expected_response_options"] == ["approve", "decline", "defer"]
+
+    def test_flow_style_tolerates_quotes_and_spacing(self):
+        fields, _ = parse_frontmatter(
+            self._body_with("expected_response_options: [\"Bill\" ,  'Izabela']")
+        )
+        assert fields["expected_response_options"] == ["Bill", "Izabela"]
+
+    def test_block_style_still_parses_as_before(self):
+        fields, _ = parse_frontmatter(FRONTMATTER_BODY)
+        assert fields["expected_response_options"] == ["Bill", "Izabela"]
+
+    def test_bare_scalar_becomes_one_option_not_an_error(self):
+        # A single offered option is coherent; discarding it would lose real content.
+        fields, _ = parse_frontmatter(self._body_with("expected_response_options: approve"))
+        assert fields["expected_response_options"] == ["approve"]
+
+    def test_null_and_empty_flow_list_are_empty(self):
+        for line in ("expected_response_options: null", "expected_response_options: []"):
+            fields, _ = parse_frontmatter(self._body_with(line))
+            assert fields["expected_response_options"] == []
+
+    def test_row_field_is_always_a_list_whatever_the_frontmatter_carried(self):
+        # The belt-and-braces assertion: the ROW is what output validation judges.
+        for line in (
+            "expected_response_options: [approve, decline, defer]",
+            "expected_response_options: approve",
+            "expected_response_options: null",
+        ):
+            row = _row(_item(notes=[_note("1", self._body_with(line))]))
+            assert isinstance(row["expected_response_options"], list)
+            assert all(isinstance(o, str) for o in row["expected_response_options"])
+
+    def test_the_whole_read_survives_an_odd_item(self):
+        odd = _item(
+            id="1",
+            notes=[_note("1", self._body_with("expected_response_options: [approve, decline]"))],
+        )
+        good = _item(id="2")
+        out = build_surface_queue(
+            [odd, good], [], surface="questions", today="2026-07-25", timezone=None
+        )
+        assert out["count"] == 2  # the good row is NOT lost with the odd one
+        assert [r["expected_response_options"] for r in out["questions"]] == [
+            ["approve", "decline"],
+            ["Bill", "Izabela"],
+        ]
+
+
+class TestEmittedSurfaceTitlesAreRecognisedOnTheReadPath:
+    """The server must recognise the note types the server writes.
+
+    Wave 1b asserted every emitted surface body-note title passes `note_shape.check_title` — the
+    WRITE side. Nothing asserted the READ side, and the two drifted: Wave 1b changed the emitted
+    token to `ACTIVITY-REPORT` (hyphen, because the shape grammar forbids the underscore) while
+    `SURFACE_NOTE_TYPES` kept only `ACTIVITY_REPORT`, so for two releases the server scored its
+    own writes `unrecognised`. Two live instances on `AI_Activity`, measured 2026-07-31.
+
+    A mis-classification produces a WRONG ANSWER, not an error — which is why this is asserted
+    rather than left to the write-side test.
+    """
+
+    def test_every_emitted_body_note_type_classifies_as_system(self):
+        from rtm_mcp.gtd_writes import SURFACE_BODY_NOTE_TYPE
+
+        for item_type, token in SURFACE_BODY_NOTE_TYPE.items():
+            title = f"2026-07-31 — {token} — a summary"
+            assert classify_note(title) == "system", (
+                f"{item_type} emits {token!r}, which the read path does not recognise"
+            )
+
+    def test_every_emitted_title_also_passes_the_write_gate(self):
+        # Pins the pair together, so neither side can move alone again.
+        from rtm_mcp.gtd_writes import SURFACE_BODY_NOTE_TYPE
+        from rtm_mcp.note_shape import check_title
+
+        for token in SURFACE_BODY_NOTE_TYPE.values():
+            assert check_title(f"2026-07-31 — {token} — a summary") is None
+
+    def test_the_legacy_underscore_spelling_is_still_recognised(self):
+        # Live data carries it; it can no longer be WRITTEN (the shape gate rejects the
+        # underscore), which is exactly why the READ set must keep it.
+        assert classify_note("2026-07-05 — ACTIVITY_REPORT — legacy") == "system"
+        assert "ACTIVITY_REPORT" in SYSTEM_NOTE_TYPES

@@ -58,6 +58,12 @@ from .gtd_writes import (
     Q_PROCESSED,
     SURFACE_TYPE_TAG,
 )
+from .note_types import (
+    CATALOGUE_NOTE_TYPES,
+    RESPONSE_NOTE_TYPES,
+    SURFACE_NOTE_TYPES,
+    SYSTEM_NOTE_TYPES,
+)
 from .parsers import extract_note_body
 from .project_plan import _permalink
 
@@ -76,73 +82,16 @@ ACTIVITY_FILTER = (
     "AND NOT tag:test AND NOT tag:q_acknowledged AND NOT tag:auto_closed"
 )
 
-#: `note-shape-catalogue.md` § 2, codified. The server is standalone and cannot read the
-#: marketplace markdown at runtime, so the vocabulary is a constant here exactly as the engage
-#: verdict grammar is in `engage_commit.py` — codification before validation. The CATALOGUE
-#: remains the authority; a change there is a lockstep change here.
-CATALOGUE_NOTE_TYPES = frozenset(
-    {
-        "INCEPTION",
-        "CONTEXT",
-        "DECISION",
-        "PROGRESS",
-        "COMPLETION",
-        "CASCADE",
-        "STATE",
-        "SESSION",
-        "BLOCKER",
-        "SOURCE",
-        "SOURCE-DRAFT",
-        "AI ANALYSIS",
-        "CONTRIB",
-        "CONTRIB-UPDATE",
-        "CHAT",
-        "PREP",
-        "OUTCOME",
-        "OUTPUT",
-        "OUTPUTS",
-        "DEPENDS-ON",
-        "AI-LINK",
-        "COMMIT",
-        "ORDER",
-        "STEER",
-        "TMPL-CHILD",
-    }
-)
+#: The note-type vocabularies now live in the leaf module `note_types` — one home, four sets, each
+#: with a different job. They are re-exported here because this module was their first consumer and
+#: `__all__` / the test suite import them from here; the definitions moved because `note_shape`
+#: needs the write-authorised composition and cannot import this module without inverting the
+#: layering (a low-level write gate importing a high-level read builder).
+#:
+#: The move also closed a measured drift: the five AI-surface body types were registered in
+#: `note-shape-catalogue.md` § 2 on 2026-07-25 but sat in `SURFACE_NOTE_TYPES` here for a week under
+#: a comment asserting they were unregistered. They are catalogue members now.
 
-#: Engine-authored note types seen on the AI-surface lists that are NOT registered in the
-#: catalogue. `QUESTION`/`ALERT`/`NOTIFICATION`/`SURFACE`/`ACTIVITY_REPORT` are written TODAY by
-#: this server's own `gtd_surface_create` (the body-note title is `<date> — <ITEM_TYPE> — …`);
-#: the single-letter and `Q-*` forms are the pre-v2.8.0 composition path. All are live on the
-#: lists now (measured 2026-07-25). Registering these in `note-shape-catalogue.md` § 2 is a
-#: gtd-side follow-up — `validate-note.py` would reject the server's own writes today.
-SURFACE_NOTE_TYPES = frozenset(
-    {
-        "QUESTION",
-        "ALERT",
-        "NOTIFICATION",
-        "SURFACE",
-        "ACTIVITY_REPORT",
-        "Q",
-        "A",
-        "N",
-        "S",
-        "AR",
-        "Q-BODY",
-        "Q-UPDATE",
-        "UPDATE",
-        "META QUESTION",
-    }
-)
-
-SYSTEM_NOTE_TYPES = CATALOGUE_NOTE_TYPES | SURFACE_NOTE_TYPES
-
-#: A note carrying one of these types records Paul's answer. Observed live on every item that
-#: has ever reached `#q_answered` / `#q_processed`; `DECISION` is also a catalogue journalling
-#: type, and on a surface item a decision IS the response, so the response test runs first.
-RESPONSE_NOTE_TYPES = frozenset({"ANSWER", "RESPONSE", "REPLY", "DECISION"})
-
-#: `response_detected` evidence paths — a closed vocabulary so the agent can branch on it.
 RESPONSE_PATHS = frozenset({"q_answered_tag", "completed_unresolved", "response_note"})
 
 _FRONTMATTER_FENCE = "---"
@@ -186,6 +135,47 @@ def _scalar(value: str) -> str | None:
     """A frontmatter scalar; the literal `null` (as `surface_body` writes it) becomes None."""
     v = _unquote(value)
     return None if v in ("", "null", "~") else v
+
+
+def _option_list(value: str) -> list[str]:
+    """`expected_response_options` given INLINE, as the list the row schema declares.
+
+    `surface_body` writes this key block-style (``key:`` then ``  - "opt"`` lines), which the
+    `_flush` path already returns as a list. But live data also carries the **flow** form
+    ``expected_response_options: [approve, decline, defer]`` on items this server did not write
+    — and the inline branch used to hand that to `_scalar`, storing a *string* under a key the
+    row schema declares as an array. Measured 2026-07-31: one `AI_Questions` item in that shape
+    made `gtd_surface_queue` fail output validation outright, so `surface="questions"` and
+    `surface="both"` returned nothing at all. One odd item took out the whole read.
+
+    A bare scalar becomes a one-element list rather than an error: an item offering a single
+    response option is a coherent thing to have written, and guessing "malformed" would discard
+    real content. `null` / empty is an empty list.
+    """
+    v = _unquote(value)
+    if v in ("", "null", "~"):
+        return []
+    if v.startswith("[") and v.endswith("]"):
+        inner = v[1:-1].strip()
+        return [_unquote(part) for part in inner.split(",") if part.strip()] if inner else []
+    return [v]
+
+
+def _as_list(value: Any) -> list[str]:
+    """Whatever the frontmatter carried, rendered as the array the row schema declares.
+
+    The belt to `_option_list`'s braces, and the one that generalises: the parser is deliberately
+    a focused reader of the shapes `surface_body` writes, so an unanticipated shape reaching a
+    typed field will keep happening. What must NOT keep happening is that it fails the entire
+    response — a read tool that returns nothing is strictly worse than one that returns a row
+    with an odd value, because the caller loses every good row too. Same posture as
+    `unrecognised_notes[]`: quarantine and report, never refuse.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v) for v in value if v is not None]
+    return [str(value)]
 
 
 def find_frontmatter(body: str) -> tuple[list[str], str]:
@@ -277,7 +267,11 @@ def parse_frontmatter(body: str) -> tuple[dict[str, Any], str]:
         name, sub = m.group(1), []
         val = m.group(2).strip()
         if val and val != "|":
-            fields[name] = _scalar(val)
+            # `expected_response_options` is typed as an array on the row, so an inline value
+            # must be read as one — see `_option_list`. Every other key is a scalar.
+            fields[name] = (
+                _option_list(val) if name == "expected_response_options" else _scalar(val)
+            )
             key = None
         else:
             key = name
@@ -448,7 +442,7 @@ def build_row(
         "item_type": meta.get("item_type") or (_item_type(tags) or None),
         "entities": meta.get("entities") or [],
         "expected_response_shape": meta.get("expected_response_shape"),
-        "expected_response_options": meta.get("expected_response_options") or [],
+        "expected_response_options": _as_list(meta.get("expected_response_options")),
         "asked_by": meta.get("asked_by"),
         "asked_at": asked_at,
         "auto_close_at": auto_close,
