@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from rtm_mcp import contribution, note_shape, note_types, surface_queue
 from rtm_mcp import gtd_reads as g
 
 TODAY = "2026-07-23"
@@ -39,6 +40,62 @@ def test_parse_note_type_grammar():
     assert g.parse_note_type("2026-07-20 — STATE — snap") == ("2026-07-20", "STATE", "snap")
     assert g.parse_note_type("2026-07-20 14:30 — CHAT — me — hi")[1] == "CHAT"
     assert g.parse_note_type("freeform note") == ("", "", "freeform note")
+
+
+class TestHyphenatedTypesAreOneToken:
+    """A TYPE containing a hyphen must not be split at its own hyphen.
+
+    The defect this pins: `_NOTE_TITLE_RE` accepted a plain hyphen as the separator AND allowed
+    zero whitespace around it, so the non-greedy TYPE group terminated at the type's own hyphen —
+    `AI-LINK` parsed as type `AI`, summary `LINK — …`. It produced a **wrong answer rather than an
+    error**, which is why it went unnoticed while two sibling parsers had already defended against it.
+    """
+
+    #: Every write-authorised type carrying an internal hyphen. Derived, not hand-listed — a new
+    #: hyphenated type joins this test automatically.
+    HYPHENATED = sorted(t for t in note_types.WRITE_AUTHORISED_NOTE_TYPES if "-" in t)
+
+    def test_the_sample_set_is_not_empty(self):
+        """Guard-the-guard: if no write-authorised type contained a hyphen, every assertion below
+        would pass vacuously against the very regex that had the bug."""
+        assert len(self.HYPHENATED) >= 6
+        assert "AI-LINK" in self.HYPHENATED
+
+    def test_every_hyphenated_type_parses_whole(self):
+        for ntype in self.HYPHENATED:
+            date, parsed, summary = g.parse_note_type(f"2026-08-01 — {ntype} — a summary")
+            assert parsed == ntype, f"{ntype} split to {parsed!r}"
+            assert date == "2026-08-01"
+            assert summary == "a summary"
+
+    def test_the_exact_regression(self):
+        """The reported case, spelled out — RTM 1220420600."""
+        assert g.parse_note_type("2026-08-01 — AI-LINK — see also")[1] == "AI-LINK"
+
+    def test_all_three_read_parsers_agree(self):
+        """The invariant that would have caught this: three modules parse the same grammar, so a
+        divergence between them is the defect. Reaching for the private regexes is deliberate —
+        the agreement is the contract, and it has no public surface."""
+        for ntype in self.HYPHENATED:
+            title = f"2026-08-01 — {ntype} — a summary"
+            reads = g._NOTE_TITLE_RE.match(title)
+            contrib = contribution._TITLE_RE.match(title)
+            surface = surface_queue._TYPE_RE.match(title)
+            assert reads and contrib and surface, f"{ntype} unparsed by one of the three"
+            assert reads.group(2) == contrib.group(2) == surface.group(1) == ntype
+
+    def test_the_spaced_hyphen_separator_still_works(self):
+        """The loosening the guard protects is retained — a plain hyphen IS a legal separator on the
+        read path, so tightening must not have been achieved by simply banning it."""
+        assert g.parse_note_type("2026-08-01 - PROGRESS - moved on")[1] == "PROGRESS"
+        assert g.parse_note_type("2026-08-01 - AI-LINK - see also")[1] == "AI-LINK"
+
+    def test_the_write_gate_is_safe_for_a_different_reason(self):
+        """`note_shape` keeps `\\s*` and is correct: its separator class is em/en-dash only, so a
+        type's hyphen can never be read as one. Pinned so nobody 'harmonises' the four grammars onto
+        a single form and reintroduces the defect from the other direction."""
+        assert note_shape.check_title("2026-08-01 — AI-LINK — see also") is None
+        assert "-" not in note_shape._DASH  # the plain hyphen is NOT a write-gate separator
 
 
 def test_classify_gtd_type_precedence():

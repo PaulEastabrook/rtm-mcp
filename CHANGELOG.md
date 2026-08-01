@@ -4,6 +4,58 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v6.1.1 — every hyphenated note TYPE was mis-parsed on the context read
+
+Bug fix. No schema change, **no fingerprint churn**, no new `ErrorCode`. One regex.
+
+### The defect
+
+`gtd_reads._NOTE_TITLE_RE` accepted a plain hyphen as the title separator **and** allowed zero
+whitespace around it (`\s*`). Both loosenings are individually correct — live titles do carry a
+spaced hyphen — and **jointly fatal**, because the non-greedy TYPE group then terminates at the
+type's *own* hyphen. Measured against `note_types.WRITE_AUTHORISED_NOTE_TYPES`, **7 of 7**
+hyphenated types were mis-parsed, not one:
+
+| Written | Parsed as |
+|---|---|
+| `ACTIVITY-REPORT` | `ACTIVITY` |
+| `AI-LINK` | `AI` |
+| `CONTRIB-UPDATE` | `CONTRIB` |
+| `DEPENDS-ON` | `DEPENDS` |
+| `SOURCE-DRAFT` | `SOURCE` |
+| `TMPL-CHILD` / `TMPL-STAMP` | `TMPL` |
+
+with the remainder of the type bleeding into the summary. **A wrong answer rather than an error**,
+which is why it survived — the same shape as the `.ms` null-coalescing guards (v2.9.0) and the
+always-zero `completedAfter:` cohort.
+
+### Blast radius — narrower than the type list suggests
+
+`parse_note_type` has exactly one consumer: `_ordered_notes`, i.e. `gtd_item_context`'s
+note-reading-protocol bundle. **The plan graph is unaffected** —
+`project_plan._extract_deps_and_files` matches `DEPENDS-ON` with a substring test, never this
+grammar, so no dependency edge was ever wrong. But `gtd_item_context` is what an agent reads
+*before acting on an item*, so its view of item state was subtly wrong for 7 of the 36 writable
+types.
+
+### The fix, and the rule it encodes
+
+Aligned to `contribution._TITLE_RE` and the TYPE half of `surface_queue._TYPE_RE` — both of which
+already required `\s+`, and `contribution.py`'s comment already **named this module as the defect
+site**. Three read parsers, one wrong, and the two correct ones documented why.
+
+`note_shape._TITLE_RE` (the WRITE gate) keeps `\s*` and is correct for a *different* reason: its
+separator class is em/en-dash only, so a type's hyphen can never be read as one. The four grammars
+must **not** be harmonised onto a single form — the read paths must tolerate the hyphen separator,
+the write gate must not, and each needs the guard matching its own separator class. Pinned by test
+so the next reader cannot "tidy" it back.
+
+### Membrane / activation
+
+Vault-free, read-only path, no new tag, no strict-tag interaction. All 100 fingerprints
+byte-identical (`parse_note_type` is internal — it appears in no advertised schema). To go live:
+restart the server on v6.1.1. Rollback is a one-line revert.
+
 ## v6.1.0 — the server can see leaked tool-call markup, so now it says so
 
 Additive. **No gate, no rejection, no new `ErrorCode`, no signature change.** One new detection,

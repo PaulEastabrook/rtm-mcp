@@ -36,8 +36,21 @@ _ALL_CONTEXT_TAGS = (*_CONTEXT_TAGS, *_COMMS_CONTEXT_TAGS)
 _LIFE_TAGS = ("work", "personal", "leanworking")
 
 # Note-title grammar: `YYYY-MM-DD [HH:MM] — TYPE — summary` (em/en-dash or spaced hyphen).
+#
+# WHITESPACE AROUND THE SEPARATOR IS MANDATORY, and that is not cosmetic. This read path accepts a
+# plain hyphen as a separator (live titles carry one), and a TYPE token may itself contain a hyphen
+# (`AI-LINK`, `DEPENDS-ON`, `CONTRIB-UPDATE`, `SOURCE-DRAFT`, `ACTIVITY-REPORT`, `TMPL-CHILD`). Those
+# two loosenings are individually safe and jointly fatal: with `\s*` the non-greedy TYPE group ends at
+# the type's OWN hyphen, so `AI-LINK` parsed as type `AI` with summary `LINK — …` — a confidently
+# wrong answer rather than an error, which is why it survived. Requiring `\s+` disambiguates.
+#
+# `note_shape._TITLE_RE` (the WRITE gate) keeps `\s*` and is safe for a different reason: its
+# separator class is em/en-dash ONLY, so a type's hyphen can never be mistaken for one. Do not
+# "harmonise" the four grammars onto a single form — the read paths must tolerate the hyphen
+# separator, the write gate must not, and each needs the guard that matches its own separator class.
+# Identical, by construction, to `contribution._TITLE_RE` and the TYPE half of `surface_queue._TYPE_RE`.
 _NOTE_TITLE_RE = re.compile(
-    r"^\s*(\d{4}-\d{2}-\d{2})(?:\s+\d{2}:\d{2})?\s*[—–-]\s*([A-Z][A-Z /-]*?)\s*[—–-]\s*(.*)$"  # noqa: RUF001
+    r"^\s*(\d{4}-\d{2}-\d{2})(?:[ T]\d{2}:\d{2})?\s+[—–-]\s+([A-Z][A-Z _/-]*?)\s+[—–-]\s+(.*)$"  # noqa: RUF001
 )
 
 
