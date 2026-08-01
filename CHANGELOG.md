@@ -4,6 +4,108 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v6.2.0 — three sibling create surfaces, two silently-dropped designations, one lost draft
+
+Additive. **No signature change, no removed behaviour, no new `ErrorCode`.** Two schema
+descriptions widen, two validators gain a check, and one closed mapping learns to say what it did
+not understand.
+
+### The defect class, not the two bugs
+
+`gtd_item_create`, `gtd_canvas_commit` `adds[]` and `gtd_project_create` `items[]` all create GTD
+items and **none of them agreed** — not on the key carrying the name (`name` vs `text`), not on the
+type enum (`calendar_entry` vs `calendar`), not on which facets they accept. In DDD terms this
+server is gtd's Open Host Service and that table is the Published Language failing to be one
+language. Creating one ordinary project through it on 2026-07-31 failed four ways in a sitting and
+left six duplicate tasks in the live account.
+
+Two failures were concrete:
+
+| Failure | Cost |
+|---|---|
+| `type: "calendar_entry"` in `gtd_project_create` | the entire 17-item plan rejected |
+| a draft keyed on `name` instead of `text` | 17 items with empty names, each refused by RTM **after** the project task and its notes were durable |
+
+### `energy` and `estimate` were never read — and never reported
+
+`classifiers_to_tags` read exactly three keys (`context`, `comms`, `quick`); the adds loop wrote
+name → tags → priority → due → parent. **`energy` and `estimate` were not rejected, not reported
+in `not_applied[]`, not flagged by `advisory`. They evaporated.** 17 live items landed with neither
+— both **documented as required for an action** by the Definition of Ready — with zero signal. It
+took a 17-call repair pass, and it was noticed only because a human read the resulting list.
+
+The DoR is meant to be hard-gated at the governed create surface
+(`definition-of-ready-catalogue.md` § Posture). `gtd_item_create` honours that and rejects with
+`dor_not_met`. Both canvas surfaces bypassed it — not by rejecting, but by not looking.
+
+**Correcting the brief's own table:** it recorded `energy` as a working sibling key on
+`gtd_project_create`. It was not. `estimate` was applied there; `energy` was not advertised, not
+read and not reported. **Both** canvas surfaces lost it.
+
+### What shipped
+
+- **`energy` is a classifier** (`classifiers.energy`) on both canvas surfaces, mapping through
+  `classifiers_to_tags` exactly as `context` and `comms` do — because it *is* a tag. Routing it
+  there rather than adding a branch means the strict-tag existence gate picks it up for free.
+- **`estimate` is applied on `adds[]`**, as it already was on `items[]`.
+- **An unrecognised key is REPORTED, never dropped.** `CLASSIFIER_KEYS` / `ADD_KEYS` / `ITEM_KEYS`
+  name what each surface reads; anything outside lands in `not_applied[]` with
+  `no_durable_write`. Checked at **both** levels, because the two measured losses sat one at each.
+  This is the part that outlives the two facets: the next divergence announces itself.
+- **`calendar_entry` is an accepted synonym of `calendar`** on both canvas surfaces. Both map to
+  the same `calendar_entry` tag, so nothing downstream can tell them apart; `calendar` stays the
+  canonical spelling and is the only one the rejection prose offers.
+- **A blank / whitespace-only / non-string item `text` is rejected up-front** on both surfaces,
+  carrying its `index` and naming the `text`/`name` confusion explicitly — the caller who reaches
+  it has almost certainly used the sibling surface's key.
+
+### Why not the full unification
+
+Renaming `text`→`name` or `type`→`kind`, or flipping the calendar enum, breaks the artifact board
+— and **a *rendered* board is a frozen copy of its template, a live caller no repo grep can see**
+(CONTRIBUTING § 2.8, learned when the standing board held four stale tool names seven days after
+its template moved on). Measured against the board's actual payload: `recomputeStage` and
+`draftItems` send `{context, comms, priority, quick}` and never `energy` or `estimate`, so
+**accepting them is purely additive** — the coordination the brief feared applies only to the
+renaming half. Widening the enum gets the incident's first failure without the break. Full
+key-unification needs § 2.8's one-release alias machinery and is a designed change.
+
+### Zero new `ErrorCode`, deliberately
+
+Reused `NO_DURABLE_WRITE`. The churn ladder (2026-08-01 silent-parameter-loss debrief § 6): a new
+`ErrorCode` re-fingerprints **all 100 tools**; a member already in `RECEIPT_REASONS` costs nothing.
+"You asked for this and no RTM write happened" is exactly the outcome, and the specifics belong in
+`detail`, which is prose by contract.
+
+### The examples were wrong, and now a test says so
+
+`tool_help.EXAMPLES` is prose, so nothing checked it. `gtd_item_create`'s two examples named
+**three parameters that do not exist** (`contexts`, `life`, `waiting_on`) and omitted every
+required one. `tests/test_tool_examples.py` now parses each example with `ast` and asserts every
+keyword against the **live advertised schema**. It immediately found a third offender the incident
+never touched: **`gtd_chat_post` used `message=` where the parameter is `text`** — both examples,
+both unusable. `make fingerprints` cannot catch this; an example is a string inside the schema.
+
+### Cost
+
+**2 fingerprints** (`gtd_canvas_commit`, `gtd_project_create` — their `adds[]` / `items[]`
+descriptions genuinely changed). Also fixed: `src/rtm_mcp/__init__.py` had drifted to `6.1.0`
+against pyproject's `6.1.1`, so every committed `tool-fingerprints.json` since has recorded a
+stale `source_version`. All three version files now move together.
+
+### Tests
+
+1824 → **1868**, all passing; lint and naming clean.
+
+### Membrane / activation
+
+Additive and backward-compatible: every call legal before v6.2.0 is legal now and behaves
+identically, except that a previously-silent dropped key now appears in `not_applied[]` (advisory
+data, never a gate) and a previously-half-written blank-name draft is now rejected whole. To go
+live: restart the server on v6.2.0. **`high_energy` / `low_energy` must exist in the RTM account**
+before a caller passes `classifiers.energy` under strict-tag mode — they already do, since
+`gtd_item_create` has written them since Phase 1.
+
 ## v6.1.1 — every hyphenated note TYPE was mis-parsed on the context read
 
 Bug fix. No schema change, **no fingerprint churn**, no new `ErrorCode`. One regex.

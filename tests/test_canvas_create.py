@@ -1,6 +1,7 @@
 """Tests for canvas_create — the pure validators + tag collector for gtd_project_create."""
 
 from rtm_mcp.canvas_commit import (
+    ADD_KEYS,
     AI_CONVERSATION,
     AI_DEFERRED,
     AI_PROGRESS,
@@ -8,6 +9,7 @@ from rtm_mcp.canvas_commit import (
 )
 from rtm_mcp.canvas_create import (
     FINALISE_MARK,
+    ITEM_KEYS,
     PROJECT_TAG,
     collect_create_tags,
     item_id,
@@ -116,6 +118,83 @@ class TestValidateCreate:
             {"type": "action", "text": "second", "deps": ["0"]},
         ]
         assert validate_create(self._ok_frame(), items)["rejections"] == []
+
+
+class TestItemTextIsValidatedBeforeAnyWrite:
+    """The incident pin: a draft keyed on `name` must be rejected, not half-written.
+
+    `gtd_item_create` keys the name on `name`; both canvas surfaces key it on `text`. A 17-item
+    plan authored with `name` produced 17 items with empty names — each refused by RTM with
+    *"Task name provided is invalid"*, **after** the project task and its notes were already
+    durable. The create's own documentation promises a half-built project never lands; these
+    rejections are what makes that true for this failure class."""
+
+    def _ok_frame(self):
+        return {"life": "personal", "focus": "Personal", "name": "New Project"}
+
+    def test_missing_text_rejected(self):
+        items = [{"type": "action", "name": "keyed on the wrong field"}]
+        assert "missing_name" in _reasons(validate_create(self._ok_frame(), items))
+
+    def test_whitespace_only_text_rejected(self):
+        items = [{"type": "action", "text": "   \n\t "}]
+        assert "missing_name" in _reasons(validate_create(self._ok_frame(), items))
+
+    def test_empty_string_text_rejected(self):
+        assert "missing_name" in _reasons(
+            validate_create(self._ok_frame(), [{"type": "action", "text": ""}])
+        )
+
+    def test_non_string_text_rejected(self):
+        assert "missing_name" in _reasons(
+            validate_create(self._ok_frame(), [{"type": "action", "text": 42}])
+        )
+
+    def test_rejection_carries_the_index_and_names_the_confusion(self):
+        items = [
+            {"type": "action", "text": "fine"},
+            {"type": "action", "name": "wrong key"},
+        ]
+        rejection = next(
+            r for r in validate_create(self._ok_frame(), items)["rejections"] if "index" in r
+        )
+        assert rejection["index"] == 1
+        assert "name" in rejection["detail"] and "text" in rejection["detail"]
+
+    def test_whole_draft_is_rejected_so_nothing_is_written(self):
+        """One bad item rejects the create — the atomicity the surface promises."""
+        items = [
+            {"type": "action", "text": "good"},
+            {"type": "action", "text": ""},
+            {"type": "action", "text": "also good"},
+        ]
+        assert validate_create(self._ok_frame(), items)["rejections"] != []
+
+
+class TestItemKeys:
+    def test_item_keys_extend_the_commit_add_keys(self):
+        """Create accepts everything a commit add does, plus the five create-only extras."""
+        assert ADD_KEYS < ITEM_KEYS
+        assert {"id", "deps", "done", "execute", "notes"} == ITEM_KEYS - ADD_KEYS
+
+    def test_every_documented_item_field_is_recognised(self):
+        """Guards the receipt against crying wolf on the tool's own advertised shape."""
+        documented = {
+            "id",
+            "type",
+            "text",
+            "classifiers",
+            "chase",
+            "calendar_date",
+            "due",
+            "start",
+            "estimate",
+            "deps",
+            "done",
+            "execute",
+            "notes",
+        }
+        assert documented <= ITEM_KEYS
 
 
 class TestDuplicateAndSelfDeps:

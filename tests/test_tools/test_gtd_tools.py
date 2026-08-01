@@ -763,6 +763,124 @@ class TestGtdApplyCanvasCommit:
         assert not (methods & WRITE_METHODS)
 
     @pytest.mark.asyncio
+    async def test_add_writes_estimate_and_energy(self, gtd_tools):
+        """v6.2.0 — the two Definition-of-Ready designations that used to evaporate.
+
+        `estimate` gets its own RTM call; `energy` rides the tag set (it *is* a tag). Both were
+        accepted and neither was written, which put 17 live items on the board unsized and
+        unrated with a clean success reported."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            adds=[
+                {
+                    "type": "action",
+                    "text": "Draft the migration note",
+                    "classifiers": {"context": "using_device", "energy": "high_energy"},
+                    "estimate": "30 minutes",
+                }
+            ],
+        )
+        assert "rejected" not in result["data"]
+
+        settags = next(c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.setTags")
+        assert "high_energy" in settags.kwargs["tags"]
+
+        estimates = [c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.setEstimate"]
+        assert len(estimates) == 1
+        assert estimates[0].kwargs["estimate"] == "30 minutes"
+
+    @pytest.mark.asyncio
+    async def test_add_without_estimate_makes_no_estimate_call(self, gtd_tools):
+        """Absence is not a write — the optional stays optional."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        await tools["gtd_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            adds=[{"type": "action", "text": "No estimate"}],
+        )
+        methods = [c.args[0] for c in client.call.call_args_list if c.args]
+        assert "rtm.tasks.setEstimate" not in methods
+
+    @pytest.mark.asyncio
+    async def test_unrecognised_keys_are_reported_not_dropped(self, gtd_tools):
+        """The invariant that outlives the two facets: an unknown key REACHES the receipt.
+
+        Checked at both levels, because the two measured losses sat one at each — `estimate` is a
+        sibling key and `energy` a classifier."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            adds=[
+                {
+                    "type": "action",
+                    "text": "Draft the note",
+                    "effort": "large",  # unknown at item level
+                    "classifiers": {"context": "using_device", "vigour": "high"},  # and nested
+                }
+            ],
+        )
+        data = result["data"]
+        assert "rejected" not in data  # reported, never a rejection — the write still lands
+        requested = [r for e in data["not_applied"] for r in (e.get("requested") or [])]
+        assert "effort" in requested
+        assert "vigour" in requested
+        assert {e["reason"] for e in data["not_applied"]} == {"no_durable_write"}
+        assert data["guidance"] and "not_applied" in data["guidance"]
+
+    @pytest.mark.asyncio
+    async def test_a_fully_recognised_add_reports_nothing(self, gtd_tools):
+        """The receipt must not cry wolf on the tool's own advertised shape."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            adds=[
+                {
+                    "type": "action",
+                    "text": "Draft the note",
+                    "classifiers": {
+                        "context": "using_device",
+                        "comms": "conversation_email",
+                        "priority": "1",
+                        "quick": True,
+                        "energy": "low_energy",
+                    },
+                    "due": "tomorrow",
+                    "start": "today",
+                    "estimate": "5 minutes",
+                }
+            ],
+        )
+        assert result["data"]["not_applied"] == []
+
+    @pytest.mark.asyncio
+    async def test_blank_add_text_rejects_before_any_write(self, gtd_tools):
+        """A draft keyed on `name` must cost nothing — not a half-written plan."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
+
+        result = await tools["gtd_canvas_commit"](
+            FakeContext(),
+            project_id=PROJECT_ID,
+            adds=[{"type": "action", "name": "keyed on the wrong field"}],
+        )
+        assert "missing_name" in {r["reason"] for r in result["data"]["rejected"]}
+        assert result["data"]["applied"] == []
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)
+
+    @pytest.mark.asyncio
     async def test_rejects_cross_project_id(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_commit_dispatch(_commit_tree(), _lists()))
@@ -1503,6 +1621,107 @@ class TestGtdCreateProject:
         assert "Win" in inception.kwargs["note_text"]
 
         assert client.record_transaction.called  # undoable via batch_undo
+
+    @pytest.mark.asyncio
+    async def test_item_energy_is_written_as_a_tag(self, gtd_tools):
+        """v6.2.0 — create dropped `energy` too, which the brief's own table got wrong.
+
+        The brief listed `energy` as a working sibling key on this surface. It was not: `estimate`
+        was applied and `energy` was not advertised, not read, and not reported. Both canvas
+        surfaces lost it, so the CBRE plan lost it whichever path wrote each item."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_project_create"](
+            FakeContext(),
+            frame={"life": "work", "focus": "Personal", "name": "P"},
+            items=[
+                {
+                    "id": "a",
+                    "type": "action",
+                    "text": "Draft the note",
+                    "classifiers": {"context": "using_device", "energy": "high_energy"},
+                    "estimate": "30 minutes",
+                }
+            ],
+        )
+        assert "rejected" not in result["data"]
+
+        child_tags = next(
+            c
+            for c in client.call.call_args_list
+            if c.args[0] == "rtm.tasks.setTags" and c.kwargs.get("task_id") == "new2"
+        )
+        assert "high_energy" in child_tags.kwargs["tags"].split(",")
+
+        estimates = [c for c in client.call.call_args_list if c.args[0] == "rtm.tasks.setEstimate"]
+        assert estimates and estimates[0].kwargs["estimate"] == "30 minutes"
+
+    @pytest.mark.asyncio
+    async def test_unrecognised_item_keys_are_reported(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_project_create"](
+            FakeContext(),
+            frame={"life": "work", "focus": "Personal", "name": "P"},
+            items=[
+                {
+                    "id": "a",
+                    "type": "action",
+                    "text": "Draft the note",
+                    "owner": "Sam",
+                    "classifiers": {"vigour": "high"},
+                }
+            ],
+        )
+        data = result["data"]
+        assert "rejected" not in data
+        requested = [r for e in data["not_applied"] for r in (e.get("requested") or [])]
+        assert {"owner", "vigour"} <= set(requested)
+
+    @pytest.mark.asyncio
+    async def test_calendar_entry_spelling_is_accepted(self, gtd_tools):
+        """Incident failure #1: `calendar_entry` here rejected an entire 17-item plan."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_project_create"](
+            FakeContext(),
+            frame={"life": "work", "focus": "Personal", "name": "P"},
+            items=[{"id": "a", "type": "calendar_entry", "text": "Book the room", "due": "friday"}],
+        )
+        data = result["data"]
+        assert "rejected" not in data
+        child_tags = next(
+            c
+            for c in client.call.call_args_list
+            if c.args[0] == "rtm.tasks.setTags" and c.kwargs.get("task_id") == "new2"
+        )
+        assert "calendar_entry" in child_tags.kwargs["tags"].split(",")
+
+    @pytest.mark.asyncio
+    async def test_item_keyed_on_name_rejects_the_whole_create(self, gtd_tools):
+        """Incident failure #2 — and the atomicity claim the surface makes about itself.
+
+        Before this check the project task and its INCEPTION note were already durable when RTM
+        began refusing each empty-named child one by one: a half-built project."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+
+        result = await tools["gtd_project_create"](
+            FakeContext(),
+            frame={"life": "work", "focus": "Personal", "name": "P"},
+            items=[
+                {"id": "a", "type": "action", "text": "Fine"},
+                {"id": "b", "type": "action", "name": "Keyed on the wrong field"},
+            ],
+        )
+        data = result["data"]
+        assert "missing_name" in {r["reason"] for r in data["rejected"]}
+        assert data["created"] == []
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert not (methods & WRITE_METHODS)
 
     @pytest.mark.asyncio
     async def test_done_item_created_then_completed(self, gtd_tools):

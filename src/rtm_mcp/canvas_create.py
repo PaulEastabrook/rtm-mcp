@@ -14,15 +14,25 @@ separately by the strict-tag gate (`strict_tags.enforce_strict_tags`).
 from typing import Any
 
 from .canvas_commit import (
+    ADD_KEYS,
     AI_CONVERSATION,
     AI_DEFERRED,
     AI_PROGRESS,
     AI_PROGRESS_DEFERRED,
+    CANONICAL_TYPES,
     VALID_EXECUTE,
     VALID_TYPES,
+    blank_text_rejection,
     classifiers_to_tags,
 )
 from .error_codes import ErrorCode
+
+#: Recognised top-level keys on a `gtd_project_create` `items[]` entry — the commit surface's
+#: `adds[]` set plus the create-only extras (in-draft identity, the dependency graph, the
+#: already-done flag, the progression directive, per-item notes). Declared here rather than in
+#: `canvas_commit` because these five keys are meaningless on a commit: a commit's items already
+#: exist, so they have RTM ids rather than in-draft ones.
+ITEM_KEYS = ADD_KEYS | frozenset({"id", "deps", "done", "execute", "notes"})
 
 # The new project's own workflow tag, the canonical life-context tags, and the finalise mark.
 PROJECT_TAG = "project"
@@ -161,9 +171,12 @@ def validate_create(frame: dict[str, Any], items: list[dict[str, Any]]) -> dict[
                     "reason": ErrorCode.UNKNOWN_ADD_TYPE.value,
                     "index": i,
                     "type": t,
-                    "detail": f"item type {t!r} not in {sorted(VALID_TYPES)}",
+                    "detail": f"item type {t!r} not in {sorted(CANONICAL_TYPES)}",
                 }
             )
+        blank = blank_text_rejection((item or {}).get("text"), index=i)
+        if blank:
+            rejections.append(blank)
         ex = (item or {}).get("execute")
         if ex is not None and ex not in VALID_EXECUTE:
             rejections.append(

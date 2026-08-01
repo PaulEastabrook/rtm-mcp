@@ -16,7 +16,23 @@ from typing import Any
 from .error_codes import ErrorCode
 
 # Workflow-state tag per add `type` (canvas grammar → RTM workflow tag).
-TYPE_TAG = {"action": "action", "waiting_for": "waiting_for", "calendar": "calendar_entry"}
+#
+# `calendar_entry` is an ACCEPTED SYNONYM of `calendar`, not a fourth type (v6.2.0). The canvas
+# grammar says `calendar`; `gtd_item_create` says `calendar_entry` — the same domain concept under
+# two spellings across sibling create surfaces, which cost a live 17-item plan its entire create
+# (the whole draft was rejected as `unknown_add_type`). The fix is ADDITIVE widening rather than
+# picking a winner: renaming either spelling would break the artifact board, and a *rendered* board
+# is a frozen copy of its template — a live caller no repo grep can see (CONTRIBUTING § 2.8). Both
+# spellings map to the same `calendar_entry` tag, so nothing downstream can tell them apart.
+# `calendar` stays the CANONICAL spelling advertised to callers.
+TYPE_TAG = {
+    "action": "action",
+    "waiting_for": "waiting_for",
+    "calendar": "calendar_entry",
+    "calendar_entry": "calendar_entry",  # synonym of `calendar` — see above
+}
+#: The canonical spellings advertised in the schema — the synonym above is accepted but not offered.
+CANONICAL_TYPES = ("action", "waiting_for", "calendar")
 CONTEXT_TAGS = frozenset({"using_device", "location_office", "location_home", "location_errand"})
 COMMS_TAGS = frozenset(
     {
@@ -27,6 +43,10 @@ COMMS_TAGS = frozenset(
         "conversation_f2f",
     }
 )
+#: The energy-designation tag pair. Lives here beside its `CONTEXT_TAGS` / `COMMS_TAGS` siblings
+#: because this module is the canonical home of the classifier→tag vocabularies (`gtd_writes`
+#: already imports the other two from here and re-exports this one as `ENERGY_LEVELS`).
+ENERGY_TAGS = frozenset({"high_energy", "low_energy"})
 AI_CONVERSATION = "ai_conversation"
 # execute now/quick — immediate progress, drained by the on-commit fire
 AI_PROGRESS = "ai_progress_requested"
@@ -43,6 +63,25 @@ OVERLAY_REFRESH = "ai_overlay_refresh_needed"
 QUICK_WIN = "quick_win"
 
 VALID_TYPES = frozenset(TYPE_TAG)
+
+# ─── The closed key vocabularies, and why they are declared rather than implied ──────────────
+#
+# `classifiers_to_tags` reads a fixed set of keys and ignores everything else. That is correct as
+# a mapping and was a data-loss bug as a *surface*: `energy` and `estimate` were passed by callers
+# for months, never read, never rejected, never reported — 17 live items landed without the two
+# designations the Definition of Ready calls REQUIRED for an action, with no signal at all
+# (`definition-of-ready-catalogue.md` § Posture).
+#
+# So the recognised keys are now NAMED, and `unknown_keys` reports anything outside them into the
+# receipt's `not_applied[]`. The rule this encodes is more important than the two facets that
+# prompted it: **an unrecognised key is REPORTED, never dropped** — which is what makes the next
+# divergence between these sibling surfaces self-announcing instead of silent.
+#: Recognised `classifiers{}` keys on an add / create item. Anything else is reported.
+CLASSIFIER_KEYS = frozenset({"context", "comms", "priority", "quick", "energy"})
+#: Recognised top-level keys on a `gtd_canvas_commit` `adds[]` entry.
+ADD_KEYS = frozenset(
+    {"type", "text", "classifiers", "chase", "calendar_date", "due", "start", "estimate"}
+)
 # Set-modes: the progression directives create AND commit both accept. `execute_progress_tags`
 # maps each of these to the tag it writes.
 VALID_EXECUTE = frozenset({"now", "later", "quick"})
@@ -71,6 +110,7 @@ COMMIT_REJECT_REASONS = frozenset(
     {
         ErrorCode.CROSS_PROJECT,  # validate_commit: a referenced id is not a child of project_id
         ErrorCode.DESTRUCTIVE_UNCONFIRMED,  # validate_commit: completes/removes unconfirmed
+        ErrorCode.MISSING_NAME,  # validate_commit: an add whose `text` is absent/whitespace-only
         ErrorCode.UNKNOWN_ADD_TYPE,  # validate_commit: an add type outside VALID_TYPES
         ErrorCode.INVALID_EXECUTE,  # validate_commit: execute outside VALID_EXECUTE_COMMIT
         ErrorCode.SMART_LIST_TARGET,  # validate_commit: target 'Processed' missing or smart
@@ -93,13 +133,54 @@ def execute_progress_tags(mode: str) -> tuple[str, str]:
     return AI_PROGRESS, AI_PROGRESS_DEFERRED
 
 
+def unknown_keys(mapping: dict[str, Any] | None, known: frozenset[str]) -> list[str]:
+    """The keys of `mapping` this surface does not understand, sorted. Empty when all are known.
+
+    Pure and shape-agnostic so both canvas surfaces and both levels (item and `classifiers{}`) use
+    the one implementation — three sibling create surfaces disagreeing is the defect this whole
+    change exists to stop, and two copies of the check would be the same mistake one layer down."""
+    if not isinstance(mapping, dict):
+        return []
+    return sorted(k for k in mapping if k not in known)
+
+
+def blank_text_rejection(text: Any, *, index: int, key: str = "text") -> dict[str, Any] | None:
+    """A `missing_name` rejection for an item whose name is absent or whitespace-only, else None.
+
+    **This is the up-front half of a durable-first write, and it exists because the write is NOT
+    atomic.** A plan keyed on `name` instead of `text` (the sibling surfaces disagree — see
+    `CLASSIFIER_KEYS` above) yields items with empty names. Without this check the project task and
+    its notes are already durable by the time RTM refuses each child with *"Task name provided is
+    invalid"* — a half-built project, which the surface's own documentation promised could not
+    happen. Validating here restores that promise for this failure class.
+
+    The detail names the `text`/`name` confusion explicitly rather than saying merely "required":
+    the caller reaching this rejection has almost certainly used the sibling surface's key, and the
+    schema alone did not stop them."""
+    if isinstance(text, str) and text.strip():
+        return None
+    return {
+        "reason": ErrorCode.MISSING_NAME.value,
+        "index": index,
+        "detail": (
+            f"item {key!r} is required and must not be whitespace-only. Note that this surface "
+            f"keys the name on {key!r} — `gtd_item_create` uses `name`, and a draft carrying "
+            "`name` here creates items with empty names that RTM rejects one by one."
+        ),
+    }
+
+
 def classifiers_to_tags(item_type: str | None, classifiers: dict[str, Any] | None) -> list[str]:
     """Closed map: an add's type + classifiers → its canonical tag list (deduped, order-stable).
 
     Priority is NOT a tag (set via set_task_priority) and is excluded. Unknown type / non-canonical
-    context/comms are dropped here (validate_commit rejects an unknown type separately); a truthy
-    `quick` classifier adds `quick_win`. `ai_conversation` is always included (every created item
-    carries the journaling tag)."""
+    context/comms/energy are dropped here (validate_commit rejects an unknown type separately, and
+    `unknown_keys` reports an unrecognised KEY); a truthy `quick` classifier adds `quick_win`.
+    `ai_conversation` is always included (every created item carries the journaling tag).
+
+    `energy` (v6.2.0) maps exactly as context and comms do — it is a tag, so it belongs here rather
+    than as a sibling key, and routing it through this one function means the strict-tag existence
+    gate picks it up for free (both `collect_commit_tags` and `collect_create_tags` call this)."""
     classifiers = classifiers or {}
     out: list[str] = []
     type_tag = TYPE_TAG.get(item_type or "")
@@ -111,6 +192,9 @@ def classifiers_to_tags(item_type: str | None, classifiers: dict[str, Any] | Non
     comms = classifiers.get("comms")
     if comms in COMMS_TAGS:
         out.append(comms)
+    energy = classifiers.get("energy")
+    if energy in ENERGY_TAGS:
+        out.append(energy)
     if classifiers.get("quick"):
         out.append(QUICK_WIN)
     out.append(AI_CONVERSATION)
@@ -230,9 +314,12 @@ def validate_commit(
                     "reason": ErrorCode.UNKNOWN_ADD_TYPE.value,
                     "index": i,
                     "type": t,
-                    "detail": f"add type {t!r} not in {sorted(VALID_TYPES)}",
+                    "detail": f"add type {t!r} not in {sorted(CANONICAL_TYPES)}",
                 }
             )
+        blank = blank_text_rejection((add or {}).get("text"), index=i)
+        if blank:
+            rejections.append(blank)
 
     for rid, val in (ops.get("execute") or {}).items():
         if val not in VALID_EXECUTE_COMMIT:
