@@ -201,6 +201,23 @@ class TestContractProjection:
         assert tax["layer"] == "bff"
         assert tax["consumer"] == "either"
 
+    async def test_a_two_mode_gate_names_both_modes_in_its_recovery(self):
+        """`note_shape_rejected` is returned by TWO checks, and the hint must say so.
+
+        The generic "every ErrorCode has a RECOVERY hint" assertion above passes on a hint that
+        is *present and wrong* — which is what happened: v5.2.0 promoted the note gate from
+        shape-only to shape-AND-vocabulary, and this hint kept advising about em-dashes and
+        underscores while the vocabulary check returned the same code. A caller rejected on
+        vocabulary read recovery for a problem they did not have.
+
+        That is the silent-control pattern: a check reporting clean because it does not test for
+        the thing it exists to catch. Coverage is not accuracy.
+        """
+        hint = tool_help.RECOVERY[ErrorCode.NOTE_SHAPE_REJECTED]
+        assert "rejected_by" in hint, "must point at the field that discriminates the two checks"
+        for mode in ("shape", "vocabulary"):
+            assert mode in hint, f"the {mode!r} check is unmentioned"
+
     async def test_no_stale_bff_or_dual_consumer_entry(self):
         """Guards the authored tables against naming a tool that no longer exists."""
         names = {v["name"] for v in await _views()}

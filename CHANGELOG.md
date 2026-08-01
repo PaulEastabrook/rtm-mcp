@@ -4,6 +4,37 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v6.0.2 — the recovery hint for the code the vocabulary gate returns
+
+The fifth statement of the same class, found the same way: by probing the server after the v6.0.1
+restart rather than by reading the diff.
+
+`tool_help.RECOVERY[NOTE_SHAPE_REJECTED]` still read *"the separator is an em-dash, and the TYPE
+token allows no underscore — the commonest two causes."* Pure shape advice — and
+`note_shape_rejected` is **the code the vocabulary check returns too**. A caller refused for an
+unregistered TYPE looked up the recovery and read guidance for a problem they did not have.
+
+v6.0.1 corrected `RECOVERY[INVALID_NOTE_TYPE]` — `gtd_note_add`'s reject reason — and missed this
+one, which is `add_note` / `edit_note`'s. The live `how_to_proceed` inside the error has been
+correct throughout (it lists all 36 registered types); it was only the **pre-call** catalogue that
+lied.
+
+The hint now leads with `error.details.rejected_by` and describes both checks.
+
+**Why the existing test did not catch it, which is the more useful finding.**
+`test_tool_help.py` asserts *every `ErrorCode` has a RECOVERY hint*. That passes on a hint which is
+present and wrong. It is the **silent-control** pattern — a check reporting clean because it does
+not test for the thing it exists to catch — and it is now the fifth instance this arc has produced,
+after a `warn` mode that could not record, a read tool dark for seven weeks, an emission set the
+reader did not know, and a description denying its own gate.
+
+`test_a_two_mode_gate_names_both_modes_in_its_recovery` asserts the hint names `rejected_by` and
+both modes. Narrow by design: the general form of "is this hint accurate?" is not mechanically
+checkable, so the honest move is to pin the one case where a single code covers two checks rather
+than pretend to a coverage rule that cannot exist.
+
+Fingerprint churn: **none** — verified, not assumed: the regenerated `tool-fingerprints.json` differs only in `generated_at` and `source_version`, no per-tool hash. `RECOVERY` feeds `rtm_tool_help` output, not any advertised schema.
+
 ## v6.0.1 — the escape hatch's own description said the gate it now has does not exist
 
 A documentation-only correction, found by **probing the live server after the v6.0.0 restart**
