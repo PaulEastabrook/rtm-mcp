@@ -73,8 +73,11 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         The note title must parse as `YYYY-MM-DD [HH:MM] — TYPE — summary` (spaced em-dashes,
         e.g. `2026-07-26 — OUTPUT — brief drafted`); a malformed title is rejected and nothing
         is written. RTM has no title field — it stores the body as `title\\ntext` — so with no
-        note_title the FIRST LINE of note_text is judged. Only the shape is checked: a
-        well-formed title carrying an unknown TYPE passes. Set RTM_STRICT_NOTES=off to disable.
+        note_title the FIRST LINE of note_text is judged. The TYPE must also be REGISTERED
+        (since v5.2.0) — `error.details.rejected_by` names which check failed. Legacy
+        AI-surface spellings (`Q`, `AR`, `ACTIVITY_REPORT`) stay readable but are no longer
+        writable. Prefer `gtd_note_add`, which builds a conformant title.
+        RTM_STRICT_NOTES=shape drops the vocabulary check; =off drops both.
 
         Caution: task_name uses fuzzy matching across all tasks. For common names,
         prefer passing task_id + taskseries_id + list_id to avoid matching an
@@ -180,10 +183,12 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         """RTM — edit an existing note's content and/or title. Get the note_id from
         get_task_notes. Requires all three task IDs or a task_name.
 
-        A note_title you supply must parse as `YYYY-MM-DD [HH:MM] — TYPE — summary` or the
-        edit is rejected with nothing written. A body-only edit (no note_title) is never
-        judged, so a legacy note whose title predates the grammar can always have its body
-        corrected. Set RTM_STRICT_NOTES=off to disable.
+        A note_title you supply must parse as `YYYY-MM-DD [HH:MM] — TYPE — summary` AND carry
+        a REGISTERED TYPE, or the edit is rejected with nothing written
+        (`error.details.rejected_by` names which check failed). A body-only edit (no
+        note_title) is never judged, so a legacy note whose title predates the grammar can
+        always have its body corrected. RTM_STRICT_NOTES=shape drops the vocabulary check;
+        =off drops both.
 
         Caution: task_name uses fuzzy matching across all tasks. For common names,
         prefer passing task_id + taskseries_id + list_id to avoid matching an

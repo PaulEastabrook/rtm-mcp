@@ -4,6 +4,40 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v6.0.1 — the escape hatch's own description said the gate it now has does not exist
+
+A documentation-only correction, found by **probing the live server after the v6.0.0 restart**
+rather than by reading the diff — which is why it survived v5.2.0 in the first place.
+
+`add_note`'s description still read *"Only the shape is checked: a well-formed title carrying an
+unknown TYPE passes."* Since v5.2.0 that is **false**, and it is false in the worst possible
+place: a tool **description** is the tier-1 surface, the one thing the client always puts in front
+of the model. A caller reading it would confidently author an off-vocabulary TYPE and be rejected
+by the very gate the sentence denies.
+
+Four stale statements corrected, all asserting the pre-v5.2.0 membrane:
+
+| Surface | Was | Now |
+|---|---|---|
+| `add_note` description | "Only the shape is checked … an unknown TYPE passes" | shape **and** a registered TYPE; `rejected_by` names which; legacy spellings readable-not-writable |
+| `edit_note` description | "must parse as … or the edit is rejected" | …**and** carry a registered TYPE |
+| `tool_help.COMBINATION_RULES["gtd_note_add"]` | "the TYPE vocabulary itself is gtd's, not the server's" | gtd's catalogue is the **authority**; the server **codifies and enforces** it |
+| `tool_help.RECOVERY[INVALID_NOTE_TYPE]` | "The catalogue is gtd's, not the server's" | authority vs enforcement distinguished; codification-before-validation named |
+
+**The lesson, which is the same one this whole arc keeps producing.** v5.2.0 updated
+`note_shape.py`, `config.py`, `CLAUDE.md` and `CHANGELOG.md` — every place the *implementer* was
+looking — and missed the two places the *caller* looks. The documentation-lockstep rule
+(CONTRIBUTING § 9) names four locations; it does not name the tool docstrings of tools the change
+governs *indirectly*. The note gate is wired into `add_note` and `edit_note`, so those two
+descriptions are part of its contract even though neither file was touched by the change.
+
+Worth carrying: **when a gate's behaviour changes, grep for the tools it is WIRED INTO, not just
+the module it lives in.** A probe against the running server would have caught it immediately —
+and did, eventually.
+
+Fingerprint churn: 2 tools (`add_note`, `edit_note`), description-only. No signature, schema or
+behaviour change.
+
 ## v6.0.0 — `gtd_note_add` constructs the note body (BREAKING)
 
 Implements the approved designed change `2026-08-01-note-body-construction.md`. **The LLM supplies

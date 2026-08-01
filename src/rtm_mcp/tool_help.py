@@ -145,7 +145,10 @@ COMBINATION_RULES: dict[str, tuple[str, ...]] = {
     "gtd_note_add": (
         "The note TITLE follows the journal grammar `YYYY-MM-DD [HH:MM] — TYPE — summary`. "
         "With `RTM_STRICT_NOTES=shape` a malformed title is rejected as "
-        "`note_shape_rejected`; the TYPE vocabulary itself is gtd's, not the server's.",
+        "`note_shape_rejected`; since v5.2.0 the default `vocabulary` mode ALSO refuses an "
+        "unregistered TYPE, with `error.details.rejected_by` naming which check failed. gtd's "
+        "note-shape catalogue remains the AUTHORITY — the server codifies it, so a genuinely "
+        "new type is added there first.",
         "The BODY is assembled, not parsed: `narrative` → `--- Sources ---` → "
         "`--- AI Context ---`, each block emitted only when you pass content for it. `sources` "
         "and `ai_context` are independent optionals — either, both or neither. There is no "
@@ -363,7 +366,7 @@ RECOVERY: dict[str, str] = {
     ErrorCode.OFF_ENUM: "The value is outside the governed vocabulary; the rejection names the legal set. Choose from that set — the vocabulary is ratified, so inventing a value is never the fix. If none of the legal values fits, the case belongs back with the wrapping skill (gtd) as a grammar question, not a retry.",
     ErrorCode.UNKNOWN_KIND: "The item's kind could not be derived from its tags — it carries no workflow-state tag. Read the item (`gtd_item_context`) and transition it properly (`gtd_item_transition`) rather than forcing a kind at this call site.",
     ErrorCode.DOR_NOT_MET: "The per-kind Definition of Ready is unmet and the rejection names the missing axis. Supply that field. If it is genuinely unknown, the item is not ready to create — capture it instead (`gtd_inbox_capture`) and clarify it later; that ordering is the gtd skill's, and the gate exists to enforce it.",
-    ErrorCode.INVALID_NOTE_TYPE: "The note TYPE is not in the journal catalogue. The catalogue is gtd's, not the server's — take the TYPE from the skill's note-shape reference rather than coining one.",
+    ErrorCode.INVALID_NOTE_TYPE: "The note TYPE is not in the journal catalogue. gtd's note-shape catalogue is the authority and this server codifies it — enforced at the write boundary since v5.2.0, so take the TYPE from that reference rather than coining one; a genuinely new type is added there first (codification before validation).",
     ErrorCode.INVALID_BLOCK_ORDER: "The note's blocks are out of the required order. Reorder them to match the grammar the wrapping skill documents; the server checks order only, not content.",
     ErrorCode.TYPE_ILLEGAL: "The verdict is illegal for this item's kind and the rejection carries the closest legal verdict — usually the right answer. The kind was re-derived server-side, so overriding it from the client is not an option; if the kind itself looks wrong, fix the item's tags first.",
     ErrorCode.TASK_NOT_COMPLETED: "The operation needs a completed task; this one is open.",
