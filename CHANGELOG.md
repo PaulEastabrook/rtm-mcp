@@ -4,6 +4,27 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v5.1.2 — SCOPE registered as a canonical note type
+
+`SCOPE` added to `CATALOGUE_NOTE_TYPES` — the server codification of a canonical-vocabulary
+change made **first** in gtd's `note-shape-catalogue.md` § 2a (codification before validation;
+the markdown stays the authority, this file follows it).
+
+**Why one legacy token was promoted while ~40 others are being rewritten.** The 2026-07-31
+full-estate census found `SCOPE` in use 15 times across three months, always deliberately, always
+recording the same thing: a project changing shape ("Project expanded from single waiting-for to
+10-item phased plan", "Refocused to Shell-only", "Role reframed to Principal Platform Engineer").
+No canonical type carries that meaning. Rewriting it to `CONTEXT` would have been the only change
+in the remediation pass that **destroyed information rather than tidying it** — fifteen times.
+
+The rule this establishes: promote a legacy token when it is recurring, semantically distinct from
+every canonical type, **and** deliberate rather than a misspelling; rewrite it otherwise. Of ~40
+observed tokens, `SCOPE` is the only one meeting all three. `EXECUTOR` (21 uses) is recurring and
+deliberate but not distinct — it is engine `PROGRESS`. The bar is deliberately high: a catalogue
+that admits every observed token stops being prescriptive.
+
+Read-set addition only; no gate, no tool change, fingerprints byte-identical.
+
 ## v5.1.1 — the server recognises what the server writes, and one odd item stops killing a read
 
 Two defects found while measuring for the note-vocabulary promotion (hand-off brief

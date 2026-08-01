@@ -88,6 +88,7 @@ CATALOGUE_NOTE_TYPES = frozenset(
         "PROGRESS",
         "COMPLETION",
         "CASCADE",
+        "SCOPE",
         "STATE",
         "SESSION",
         "BLOCKER",
