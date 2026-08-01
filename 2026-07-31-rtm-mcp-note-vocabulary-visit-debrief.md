@@ -186,17 +186,27 @@ host; the per-tool hashes are unchanged, so this is cosmetic.
 
 ## 8. Open items
 
-1. **Sign off the mapping** (`2026-07-31-note-vocabulary-rewrite-mapping.md` § 3.3 flags the four
-   arguable tokens). *(Paul)*
-2. **Complete the plan** — re-fetch the 11 AI_Questions / AI_Activity notes; decide `117763012`
-   and the summary for `116960677`.
-3. **Execute the rewrite** — batches of 20, transaction ids recorded, sample read-back per batch.
-4. **Then** build the vocabulary gate against the clean corpus, inert, per the brief's § 4.
-5. **Restart the MCP server on v5.1.1** — this is what actually clears the `questions`-surface
-   outage; the fix is proven in test but cannot be proven live until then. *(Paul)*
-6. **gtd lockstep** — register in `note-shape-catalogue.md` § 2 whatever survives the rewrite, and
-   add the catalogue to gtd's lockstep list so the server moves with it. *(marketplace repo)*
-7. **The BFF/consumer designed change** (§ 6) — captured as an improvement candidate.
+**Items 1–4, 6 of the original list are CLOSED** — the mapping was signed off, the plan completed,
+the rewrite executed (135/135, verified live), and the vocabulary gate shipped and locked on rather
+than inert (Paul's call: the census had already measured what a `warn` stage would have re-measured).
+The gtd lockstep landed as v0.204.0.
+
+What remains:
+
+1. **Restart the MCP server on v5.2.0.** Three things depend on it: the vocabulary gate goes live,
+   and the two v5.1.1 fixes stay live. Until then the running server is on shape-only enforcement.
+   *(Paul)*
+2. **The BFF/consumer designed change** (§ 6) — captured, [RTM 1220206239](https://www.rememberthemilk.com/app/#list/51526642/1220206239).
+3. **Note-body construction** — the "tool supplies syntax" change Paul raised at the close;
+   captured as [RTM 1220383027](https://www.rememberthemilk.com/app/#list/51526642/1220383027), designed-change pack and
+   hand-off brief filed under `general/plugin-marketplace-architect/`. Awaiting approval; closure
+   gated on the returned debrief.
+4. **The ~68 edge-case notes left out of scope** — 29 bare `SOURCE` / `COMPLETION` titles (free-text
+   rule protects them), and the mojibake note `118060873`. Recorded, not forgotten.
+5. **A liveness check for read tools.** Two silent failures in one session — a tool writing what it
+   could not read, and a read returning nothing for seven weeks. A periodic assertion that each read
+   tool still returns rows would have caught the second in June. Cheaper than either designed change
+   above and arguably higher value.
 
 ---
 *Created: 2026-07-31 | Source: hand-off brief `note-type vocabulary promotion` (2026-07-30); full read-only census of live RTM note titles, 2026-07-31; direct source read of rtm-mcp at b4d47d3; live failures observed in-session*

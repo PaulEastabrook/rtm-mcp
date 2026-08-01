@@ -1,16 +1,65 @@
 ---
 report_type: rewrite-mapping
-title: Legacy note-title rewrite — proposed token mapping for sign-off
+title: Legacy note-title rewrite — token mapping and execution record
 target: live RTM note titles (AI_Questions, AI_Activity, Inbox_Stuff, Processed)
 raised: 2026-07-31
-status: AWAITING SIGN-OFF — no live write has been made
+status: EXECUTED 2026-08-01 — 135 of 135 applied, 0 drift, 0 failures (see § 0)
 census: full coverage, not sampled (180 / 69 / 974 / 3,342 distinct notes)
 decision_taken: "§5 option 2 — rewrite to canonical, then tighten (Paul, 2026-07-31)"
 edge_cases_in_scope: "near-misses + date-malformed (Paul, 2026-07-31)"
 edge_cases_excluded: "mojibake note 118060873; 29 bare SOURCE / COMPLETION titles"
 ---
 
-# Legacy note-title rewrite — proposed mapping
+# Legacy note-title rewrite — mapping and execution record
+
+## 0. Execution record — 2026-08-01
+
+**135 of 135 applied. Zero drift, zero failures.** 133 executed as a batch (bodies preserved by
+taking the stored body minus its first line; every edit verified against the returned body); 2 done
+by hand because they needed judgement — `116960677` (a complete INCEPTION note with no title-line
+summary; one drawn from its own "What this project is for" section) and `117763012` (whose body's
+*second* line was already a well-formed title, so the malformed stray line 1 was dropped rather than
+left as a duplicate).
+
+**Verified live:** `AI_Activity`'s `unrecognised_notes` fell from **12 → 5**, and **zero
+date-prefixed** off-vocabulary notes remain. The 5 survivors are all undated free-text titles
+("Architect weekly pulse", "Scan summary", "Tag-discipline audit") — correctly exempt under the
+free-text rule, which is the rule working rather than a gap.
+
+### Two corrections the execution forced
+
+**1. `Q` was the wrong target, and this document said so in three places.** `Q_OPEN → Q`, `Q-2 → Q`
+and `q_question → Q` (§ 3.1, § 4) all pointed at `Q` — which is itself one of the **legacy AI-surface
+spellings** that rtm-mcp v5.2.0 makes *readable but not writable*. Rewriting a legacy token to
+another legacy token accomplishes nothing, and would have left three notes carrying a type the
+server can no longer write.
+
+Caught by the executing session, which noticed the writes succeeded and reasoned that the running
+server must therefore predate v5.2.0 — correct, and a good catch. **All three were re-rewritten to
+`QUESTION`**, the registered canonical form, and the notes are on `AI_Questions` where a
+question-body is exactly what they are.
+
+*The lesson for the next pass:* every rewrite target must be checked against
+`WRITE_AUTHORISED_NOTE_TYPES`, not merely against "is it a real type". The dry run validated shape
+(`check_title`) but not vocabulary, because the vocabulary gate did not exist when it was written.
+
+**2. Note edits are NOT undoable.** § 6 step 5 claimed `batch_undo` as the rollback path. Every one
+of the 135 edits returned `transaction_undoable: false` — RTM offers no undo for a note edit. The
+recorded transaction ids are **audit-only**. Rollback would mean re-writing from the original
+titles, which is why the census TSVs (which carry every original) are the real safety net and should
+be retained.
+
+### Also worth keeping
+
+One note (`116633901`) has a blank line immediately after its title, and the leading newline in
+`note_text` was stripped in transmission — twice. It was landed by sending the complete body
+(title line included) as `note_text` with **no** `note_title`, which is valid because this corpus
+stores titles as body line 1 anyway. Verified byte-correct afterwards, along with its
+identically-shaped sibling `116633934`. A body-only edit is also the one `edit_note` path the note
+gate never judges, so this is a usable escape hatch — and worth remembering rather than
+rediscovering.
+
+Results: `outputs/_rewrite/rewrite_applied.tsv` (133 rows) plus the 2 hand-done above.
 
 ## 1. Why this document exists
 
