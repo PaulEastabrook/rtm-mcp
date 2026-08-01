@@ -4,6 +4,33 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v6.0.3 — the canonical statements of the rule, found by sweeping instead of probing
+
+v6.0.1 and v6.0.2 each fixed one stale statement, found by probing after a restart. That is
+finding a class one instance at a time. This release **swept for the class** — grepping every
+phrasing of the pre-v5.2.0 membrane across the repo — and caught the three that matter most,
+because they are where a future implementer goes to decide *where a new check belongs*:
+
+| Surface | Correction |
+|---|---|
+| `CONTRIBUTING.md` § 6 | *"the server enforces mechanical SHAPE; the plugin owns VOCABULARY"* → **the server ENFORCES; the plugin OWNS** — and since v5.2.0 those come apart for notes. The per-gate table now says notes are shape **and** registered TYPE, with the catalogue still the authority |
+| `CLAUDE.md` § write gates | the same governing-compromise statement, same correction, with the measurement that caused it |
+| `CLAUDE.md` test inventory | described `test_note_shape.py` as asserting *"an off-vocabulary TYPE still passes"* — those assertions were **inverted** at v5.2.0. The inventory was describing tests that no longer exist in that form |
+
+**The § 6 rewrite changes the test for a new check, and that is the substantive part.** The old
+rule read: *if implementing a check would require the server to know a gtd-owned value, it belongs
+plugin-side*. That is now too strong — the server holds a codified copy of a gtd-owned vocabulary.
+The question to ask instead is **would the server be DECIDING the value, or codifying a decision
+the plugin already made?** Codifying is fine and carries a lockstep obligation; deciding is not.
+
+**Five surfaces stated the old rule days after the flip**, across three releases to find them all.
+The reason is worth recording once: **the rule was quoted in more places than the code that
+implements it.** One `if` in `note_shape.py`; eight prose statements about it. Nothing tests
+whether documentation is *true* — the suite checks that a recovery hint *exists*, not that it is
+right — so every one of these passed CI.
+
+Docs only. Fingerprint churn none (metadata lines only, verified).
+
 ## v6.0.2 — the recovery hint for the code the vocabulary gate returns
 
 The fifth statement of the same class, found the same way: by probing the server after the v6.0.1

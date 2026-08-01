@@ -469,20 +469,36 @@ several legitimately write a bare marker title (`DEPENDS-ON`, `INCEPTION`, `REDA
 `TMPL-STAMP`) that this grammar would reject. Do **not** "fix" that by widening the wiring: those
 titles are round-tripped by `project_plan._extract_deps_and_files`.
 
-**The governing rule — the server enforces mechanical SHAPE; the plugin owns VOCABULARY.**
-This is the § 4.4 ownership split, and it is the reason each gate stops where it does:
+**The governing rule — the server enforces mechanics; the plugin OWNS the vocabulary. Owning is
+not the same as enforcing, and since v5.2.0 the two come apart for notes.**
+
+Through v5.1.x the rule was simply *server = shape, plugin = vocabulary*, and each gate stopped
+there. That still describes tags and list targets. It no longer describes notes:
 
 - Tags — the server checks a tag **exists in the account**; whether it is the *canonical* tag is
   gtd's `validate-tags.py`. (Tag canonicality is a deliberate **non-goal** here, not an omission.)
-- Notes — the server checks the title **parses** as `YYYY-MM-DD [HH:MM] — TYPE — summary`;
-  whether TYPE is a *canonical* type is gtd's `note-shape-catalogue.md` § 2 +
-  `validate-note.py`. A well-shaped title with an unknown TYPE **passes here by design**.
+- Notes — the server checks the title **parses** as `YYYY-MM-DD [HH:MM] — TYPE — summary` **and,
+  since v5.2.0, that TYPE is registered** (`note_types.WRITE_AUTHORISED_NOTE_TYPES`; mode
+  `vocabulary`, the shipped default). gtd's `note-shape-catalogue.md` § 2 remains the **authority**
+  — the server *codifies* it, as `engage_commit.py` codifies the verdict grammar — so a new type is
+  added to the markdown FIRST and the server's copy follows in a release.
 - List targets — the server refuses a list RTM itself flags `smart` or `locked`; whether a
   *writable* list is the **right** target (Inbox_Stuff as sole capture point, Processed as
   gtd-internal) is gtd's `list-catalogue.md` + `validate-list-target.py`.
 
-If implementing a check would require the server to know a gtd-owned value, it belongs
-plugin-side — stop and flag it. Do not add a taxonomy or import one into the server.
+**Why notes diverged, so the next reader can judge whether their case is the same.** The split was
+correct while it held; it stopped holding when it was measured. A full-estate census on 2026-07-31
+found **~40 off-vocabulary TYPE tokens across 114 notes** accumulated over five months, because a
+client-side validator only runs when a caller remembers to run it. **A gate that can be forgotten
+is not a gate.** That is the same argument that put the other three gates here — it simply took a
+measurement to see that it applied to vocabulary too.
+
+**The test for a new check is therefore ownership, not knowledge.** The old form — *if
+implementing a check would require the server to know a gtd-owned value, it belongs plugin-side* —
+is too strong: the server now holds a codified copy of a gtd-owned vocabulary. The question to ask
+instead is: **would the server be DECIDING the value, or codifying a decision the plugin already
+made?** Codifying is fine, and carries a lockstep obligation. Deciding is not — stop and flag it.
+Never invent a taxonomy in the server.
 
 **Rules when adding to or wiring a gate:**
 
