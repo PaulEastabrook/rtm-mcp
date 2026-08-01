@@ -1,41 +1,72 @@
 ---
 report_type: handback-debrief
-title: Note-type vocabulary visit — what the measurement found, and why the gate did not ship
+title: Note-type vocabulary visit — the measurement, the remediation, and the gate
 target_repo: rtm-mcp
 brief: "Note-type vocabulary — promote the WRITE set to the gate, and prove the READ sets stay permissive (2026-07-30)"
-shipped: v5.1.1 (two defect fixes + one taxonomy correction)
-not_shipped: the vocabulary gate itself — deliberately, see § 4
+shipped: "v5.1.1 (two silent defects) → v5.1.2 (SCOPE registered) → v5.2.0 (the vocabulary gate, ON by default); gtd v0.204.0"
+remediation: 135 of 135 legacy note titles rewritten, verified live
 raised: 2026-07-31
+updated: 2026-08-01
 ---
 
 # Hand-back debrief — note-vocabulary visit
 
 ## 0. Summary
 
-The brief asked for a vocabulary gate on note-title TYPE tokens, shipped inert. **It did not
-ship, and that was the right call** — the measurement it asked for first (§ 5, "re-measure before
-deciding") found the legacy backlog is six times larger than the brief expected and mostly
-composed of types that are in active use rather than mistakes. Tightening ahead of that clean-up
-would have relocated the failure, not removed it.
+*(This section was rewritten on 2026-08-01. Its first version — "the gate did not ship, and that
+was the right call" — was correct when written and was overtaken the same day, once the rewrite it
+was waiting on had run. §§ 1, 2 and 4 carry both answers for the same reason: the sequencing
+judgement is the useful part, and deleting the superseded version would delete the reasoning.)*
 
-What did ship is two **silent defects** the measurement surfaced on the way, both in
-`surface_queue.py`, one of which had taken a read tool off the air entirely.
+The brief asked for a vocabulary gate on note-title TYPE tokens, shipped inert. **Everything
+shipped, in the order the brief required, and the gate is ON rather than inert** — Paul's call at
+the close, on the ground that the census had already measured the population a `warn` stage would
+have re-measured.
+
+The sequence: measure → find the backlog is six times larger than expected and mostly types in
+*active use* → promote the one token that deserved it (`SCOPE`) → rewrite the other 135 → **then**
+tighten. Tightening ahead of the clean-up would have relocated the failure, not removed it, which
+is why the brief sequenced it that way and why the order held.
+
+Landed: **v5.1.1** (two silent defects found while measuring, one of which had taken a read tool
+off the air for seven weeks), **v5.1.2** (`SCOPE` registered), **v5.2.0** (the vocabulary gate,
+default `vocabulary`), **gtd v0.204.0** (the catalogue entry and the narrowed `validate-note.py`
+mandate), and the **135-note remediation** — verified live, zero date-prefixed off-vocabulary notes
+remaining.
 
 ## 1. § 8 Q1 — what is in the write-authorisation set, and what rule composed it?
 
-**Not answered, because the set was not built.** The brief's § 4.1 asks for a set derived from
-existing constants rather than a fourth hand-maintained list. That remains the right shape, and
-the measurement adds a constraint the brief did not have: `CATALOGUE ∪ SURFACE` is **not**
-sufficient (see Q5), and neither is `CATALOGUE ∪ SURFACE ∪ RESPONSE` while ~40 tokens are in live
-use outside all three.
+**Answered, and the rule is a union of three existing sets:**
 
-The composition rule can only be settled after the rewrite lands, because the rewrite is what
-determines whether those ~40 tokens still exist.
+```
+WRITE_AUTHORISED_NOTE_TYPES = CATALOGUE | RESPONSE | BARE_MARKER
+```
+
+— composed in `note_types.py`, a new leaf module holding all four vocabularies. **Derived, never
+hand-listed**, and that is asserted against the *source* by an `ast` check, because value-equality
+passes just as happily against a hand-typed duplicate that happens to match today.
+
+**What is deliberately absent is `SURFACE_NOTE_TYPES`** — the legacy spellings. They stay
+*readable* and stop being *writable*. A write set that admitted them would license exactly the
+drift the gate exists to stop, and would have made the remediation pointless the day after it ran.
+
+Two things the measurement added to the brief's § 4.1: `RESPONSE_NOTE_TYPES` is a fourth vocabulary
+the brief did not count (§ 5.1), and the `BARE_MARKER` types are needed so a properly date-prefixed
+`REDACTION` or `TMPL-STAMP` is still writable.
+
+*(Superseded answer, retained: "Not answered, because the set was not built. The composition rule
+can only be settled after the rewrite lands." That was true when written — the rewrite has since
+landed.)*
 
 ## 2. § 8 Q2 — did the read sets stay permissive?
 
-**Vacuously yes — nothing narrowed them, and one was widened.** No vocabulary gate was added, so
-no read path changed behaviour except `SURFACE_NOTE_TYPES`, which gained `ACTIVITY-REPORT`.
+**Yes, and now non-vacuously.** No read set narrowed. `SURFACE_NOTE_TYPES` gained `ACTIVITY-REPORT`
+in v5.1.1; `CATALOGUE_NOTE_TYPES` gained `SCOPE` and the five AI-surface body types that had been
+registered in the markdown for a week without the server following.
+
+`tests/test_note_types.py` pins the asymmetry **both ways** — no legacy spelling is writable, and
+every legacy spelling is still recognised. The second half is the one that matters: losing it does
+not raise, it silently mis-classifies live notes.
 
 The permissiveness tests the brief asked for are in place for the part that shipped:
 `tests/test_surface_queue.py::TestEmittedSurfaceTitlesAreRecognisedOnTheReadPath::test_the_legacy_underscore_spelling_is_still_recognised`
@@ -82,14 +113,24 @@ Two gaps to close before execution:
 
 ## 4. § 8 Q4 — is it shipped inert, and what is the probe?
 
-**Not shipped at all.** The brief sequenced the gate behind a re-measurement whose purpose was to
-inform the § 5 decision; the measurement changed that decision's shape substantially, and the
-rewrite it selected has not yet run. Shipping a gate — even inert — against a corpus about to be
-rewritten would mean authoring the write-authorisation set twice.
+**Shipped ON, not inert — Paul's decision, and the `warn` stage was skipped deliberately.** The
+brief's § 4.2 asked for inert-then-flip on the v2.2.0 → v5.1.0 precedent. Declined on the grounds
+that the precedent's *purpose* had already been served: `warn` exists to measure the population a
+gate would fire on, and the census had measured it exhaustively. Re-measuring it would have delayed
+the gate without informing it.
 
-The sequence now is: sign off the mapping → complete the plan (the 11 + 2 above) → execute the
-rewrite → **then** build the gate against a clean corpus, ship it inert, and flip it in a separate
-release with its own probe. That is the brief's own § 4.2 discipline, unchanged.
+**The probe is the remediation itself.** 135 rewrites executed against the live corpus with every
+proposed title pre-checked, then verified live: `AI_Activity`'s `unrecognised_notes` fell 12 → 5
+with **zero date-prefixed** survivors. A gate flipped onto a corpus that has just been proven clean
+needs no separate probe.
+
+Rollback has **two depths** rather than one — `RTM_STRICT_NOTES=shape` drops the vocabulary check
+while keeping the grammar (v5.1.0 byte-for-byte); `off` drops both. A single switch would have made
+the only way to unblock an unregistered TYPE also the way to unblock a malformed title.
+
+*(Superseded answer, retained: "Not shipped at all… build the gate against a clean corpus, ship it
+inert, and flip it in a separate release." The corpus is now clean; the flip happened in the same
+session rather than a later one.)*
 
 ## 5. § 8 Q5 — what measurement contradicted
 
