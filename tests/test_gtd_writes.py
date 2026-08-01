@@ -132,13 +132,106 @@ def test_note_title_em_dash_form():
     )
 
 
-def test_block_order_valid_and_invalid():
-    good = "narrative\n--- Sources ---\n- a\n--- AI Context ---\nk: v"
-    assert w.check_block_order(good) is None
-    bad = "narrative\n--- AI Context ---\nk: v\n--- Sources ---\n- a"
-    assert w.check_block_order(bad) is not None
-    assert w.check_block_order("just narrative") is None
-    assert w.check_block_order(None) is None
+# --------------------------------------------------------------------------- #
+# Body assembly (v6.0.0) — replaces the deleted `check_block_order`
+#
+# `check_block_order` and its two tests were DELETED, not adapted: the order is now
+# constructed, so there is no longer a wrong order to reject. `TestBlockOrderIsUnrepresentable`
+# below is what stands in their place.
+# --------------------------------------------------------------------------- #
+
+
+def test_assemble_narrative_only_emits_no_delimiters():
+    out = w.assemble_note_body("just narrative")
+    assert out == "just narrative"
+    assert w.SOURCES_DELIM not in out and w.AI_CONTEXT_DELIM not in out
+
+
+def test_assemble_matches_the_hand_composed_form_byte_for_byte():
+    """The equality that proves this is a SURFACE change, not a behaviour change.
+
+    The literal on the right is the exact string the pre-v6.0.0 `check_block_order` accepted as
+    well-formed (it was that test's `good` fixture); the server now produces it from parts."""
+    assert (
+        w.assemble_note_body("narrative", sources=["a"], ai_context={"k": "v"})
+        == "narrative\n--- Sources ---\n- a\n--- AI Context ---\nk: v"
+    )
+
+
+def test_assemble_sources_only():
+    assert w.assemble_note_body("n", sources=["a", "b"]) == "n\n--- Sources ---\n- a\n- b"
+
+
+def test_assemble_ai_context_only():
+    assert (
+        w.assemble_note_body("n", ai_context={"Blockers": "none", "Next": "ship"})
+        == "n\n--- AI Context ---\nBlockers: none\nNext: ship"
+    )
+
+
+def test_assemble_absorbs_a_callers_own_bullet_rather_than_doubling_it():
+    # The model supplies the citation; the server supplies the punctuation. A caller who
+    # helpfully bullets its own list must not get "- - Allen".
+    assert w.assemble_note_body("n", sources=["- Allen", "* Gartner", "Raw"]) == (
+        "n\n--- Sources ---\n- Allen\n- Gartner\n- Raw"
+    )
+
+
+def test_assemble_flattens_an_ai_context_value_to_one_line():
+    # The block's grammar is one `Key: value` per line, so a raw newline inside a value would
+    # silently split one entry into two unparseable ones.
+    out = w.assemble_note_body("n", ai_context={"Rejected": "lakehouse\ntoo costly"})
+    assert out.endswith("Rejected: lakehouse too costly")
+    assert out.count("\n") == 2  # narrative, delimiter, the single entry
+    assert w.assemble_note_body("n", ai_context={"Tools": ["jira", "rtm"]}).endswith(
+        "Tools: jira; rtm"
+    )
+
+
+def test_an_empty_block_emits_no_bare_delimiter():
+    # Absent and empty both write no block — a heading with nothing under it is exactly the
+    # malformation the caller was avoiding. (They DIFFER to the receipt: see the tool tests.)
+    for empty in ([], ["", "   "]):
+        assert w.assemble_note_body("n", sources=empty) == "n"
+    for empty_ctx in ({}, {"k": "  "}, {"  ": "v"}):
+        assert w.assemble_note_body("n", ai_context=empty_ctx) == "n"
+
+
+def test_render_helpers_agree_with_what_assembly_emits():
+    # The tool asks these the same question the assembler asks, so the receipt can never
+    # disagree with the body. One rule, one place.
+    sources, ctx = ["a", "  "], {"k": "v", "blank": ""}
+    body = w.assemble_note_body("n", sources=sources, ai_context=ctx)
+    for line in w.render_sources(sources) + w.render_ai_context(ctx):
+        assert line in body
+    assert w.render_sources(["  "]) == [] and w.render_ai_context({"k": ""}) == []
+
+
+class TestBlockOrderIsUnrepresentable:
+    """The deliverable: there is no ARGUMENT that produces the wrong order.
+
+    This replaces the v5.x rejection test. `check_block_order` is gone, so the assertion moves
+    from "the bad order is refused" to "the bad order cannot be asked for"."""
+
+    def test_the_validator_is_gone(self):
+        assert not hasattr(w, "check_block_order")
+
+    def test_sources_always_precede_ai_context_whatever_the_argument_order(self):
+        # Including when the caller passes them in the opposite order, and when the payloads
+        # themselves mention the other block's name.
+        body = w.assemble_note_body(
+            "n",
+            ai_context={"Note": "see the sources block"},
+            sources=["a paper about AI Context"],
+        )
+        assert body.index(w.SOURCES_DELIM) < body.index(w.AI_CONTEXT_DELIM)
+
+    def test_the_reject_vocabulary_no_longer_offers_the_reason(self):
+        from rtm_mcp.error_codes import ErrorCode
+
+        assert ErrorCode.INVALID_BLOCK_ORDER not in w.GTD_WRITE_REJECT_REASONS
+        # ADDITIVE-ONLY: the registry member itself is never removed, only this scoped view.
+        assert ErrorCode.INVALID_BLOCK_ORDER.value == "invalid_block_order"
 
 
 def test_state_body_marker_is_idempotent():
@@ -198,17 +291,9 @@ def test_create_rejects_smart_processed_list():
 
 
 def test_add_note_rejections():
-    assert "invalid_note_type" in _reasons(
-        w.validate_add_note(note_type="DEPENDS-ON", summary="s", body="")
-    )
-    assert "missing_parameter" in _reasons(
-        w.validate_add_note(note_type="PROGRESS", summary=" ", body="")
-    )
-    bad = "n\n--- AI Context ---\nx\n--- Sources ---\ny"
-    assert "invalid_block_order" in _reasons(
-        w.validate_add_note(note_type="PROGRESS", summary="s", body=bad)
-    )
-    assert w.validate_add_note(note_type="STATE", summary="s", body="fine") == []
+    assert "invalid_note_type" in _reasons(w.validate_add_note(note_type="DEPENDS-ON", summary="s"))
+    assert "missing_parameter" in _reasons(w.validate_add_note(note_type="PROGRESS", summary=" "))
+    assert w.validate_add_note(note_type="STATE", summary="s") == []
 
 
 def test_capture_requires_text():

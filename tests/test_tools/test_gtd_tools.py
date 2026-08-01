@@ -3286,7 +3286,7 @@ class TestGtdAddNote:
             task_ref="1001",
             note_type="PROGRESS",
             summary="did a thing",
-            body="narrative",
+            narrative="narrative",
         )
         title = res["data"]["note_title"]
         assert " — PROGRESS — did a thing" in title
@@ -3299,7 +3299,11 @@ class TestGtdAddNote:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
         await tools["gtd_note_add"](
-            FakeContext(), task_ref="1001", note_type="STATE", summary="snap", body="where we are"
+            FakeContext(),
+            task_ref="1001",
+            note_type="STATE",
+            summary="snap",
+            narrative="where we are",
         )
         note = _kw_for(client, "rtm.tasks.notes.add")[0]
         assert note["note_text"].startswith("Snapshot as of: ")
@@ -3307,17 +3311,67 @@ class TestGtdAddNote:
         assert "rtm.tasks.notes.delete" not in _methods(client)
 
     @pytest.mark.asyncio
-    async def test_side_effect_note_type_rejected_without_writing(self, gtd_tools):
+    async def test_state_marker_precedes_the_assembled_blocks(self, gtd_tools):
+        # § 6 puts the snapshot marker on the FIRST body line. It is applied to the narrative
+        # before assembly, so a STATE note carrying blocks still opens with it.
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        await tools["gtd_note_add"](
+            FakeContext(),
+            task_ref="1001",
+            note_type="STATE",
+            summary="snap",
+            narrative="where we are",
+            sources=["Allen, D. (2015). Getting Things Done"],
+            ai_context={"Blockers": "none"},
+        )
+        text = _kw_for(client, "rtm.tasks.notes.add")[0]["note_text"]
+        assert text.startswith("Snapshot as of: ")
+        assert text.index("--- Sources ---") < text.index("--- AI Context ---")
+
+    @pytest.mark.asyncio
+    async def test_server_assembles_the_blocks_the_caller_never_writes(self, gtd_tools):
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
         res = await tools["gtd_note_add"](
-            FakeContext(), task_ref="1001", note_type="DEPENDS-ON", summary="x", body=""
+            FakeContext(),
+            task_ref="1001",
+            note_type="DECISION",
+            summary="warehouse over lakehouse",
+            narrative="Cost decided it.",
+            sources=["Q4 budget summary — uploaded 2026-04-01"],
+            ai_context={"Rejected": "lakehouse-first"},
         )
-        assert "invalid_note_type" in {r["reason"] for r in res["data"]["rejected"]}
-        assert not (set(_methods(client)) & WRITE_METHODS)
+        assert _kw_for(client, "rtm.tasks.notes.add")[0]["note_text"] == (
+            "Cost decided it.\n"
+            "--- Sources ---\n"
+            "- Q4 budget summary — uploaded 2026-04-01\n"
+            "--- AI Context ---\n"
+            "Rejected: lakehouse-first"
+        )
+        assert res["data"]["not_applied"] == []
 
     @pytest.mark.asyncio
-    async def test_bad_block_order_rejected_without_writing(self, gtd_tools):
+    async def test_complex_params_accept_a_json_string(self, gtd_tools):
+        # The defensive in-body `coerce_json`, for a client that stringifies a complex param.
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        await tools["gtd_note_add"](
+            FakeContext(),
+            task_ref="1001",
+            note_type="SESSION",
+            summary="handoff",
+            narrative="n",
+            sources='["a paper"]',
+            ai_context='{"Blockers": "none"}',
+        )
+        text = _kw_for(client, "rtm.tasks.notes.add")[0]["note_text"]
+        assert "- a paper" in text and "Blockers: none" in text
+
+    @pytest.mark.asyncio
+    async def test_an_all_blank_block_writes_nothing_and_says_so_in_the_receipt(self, gtd_tools):
+        # The note still lands — a blank sources list is not worth failing a journal entry —
+        # but the caller learns from not_applied[] rather than from silence (§ 4.1).
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
         res = await tools["gtd_note_add"](
@@ -3325,9 +3379,47 @@ class TestGtdAddNote:
             task_ref="1001",
             note_type="PROGRESS",
             summary="x",
-            body="n\n--- AI Context ---\nk: v\n--- Sources ---\n- a",
+            narrative="n",
+            sources=["   "],
         )
-        assert "invalid_block_order" in {r["reason"] for r in res["data"]["rejected"]}
+        assert _kw_for(client, "rtm.tasks.notes.add")[0]["note_text"] == "n"
+        entries = res["data"]["not_applied"]
+        assert [e["op"] for e in entries] == ["note:sources"]
+        assert entries[0]["reason"] == "no_change"
+        assert res["data"]["guidance"]  # v4.1.0: not_applied is one of the two live branches
+
+    @pytest.mark.asyncio
+    async def test_an_empty_list_is_supplied_not_absent(self, gtd_tools):
+        # `sources=[]` and an omitted `sources` produce the same BODY, and deliberately differ
+        # to the receipt: an explicit empty is evidence the caller was not stripped bare, so
+        # the advisory stays silent — and nothing was requested, so not_applied stays empty.
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        supplied = await tools["gtd_note_add"](
+            FakeContext(),
+            task_ref="1001",
+            note_type="PROGRESS",
+            summary="x",
+            narrative="n",
+            sources=[],
+        )
+        omitted = await tools["gtd_note_add"](
+            FakeContext(), task_ref="1001", note_type="PROGRESS", summary="x", narrative="n"
+        )
+        bodies = [kw["note_text"] for kw in _kw_for(client, "rtm.tasks.notes.add")]
+        assert bodies == ["n", "n"]
+        assert supplied["data"]["not_applied"] == [] and omitted["data"]["not_applied"] == []
+        assert supplied["data"]["advisory"] is None
+        assert omitted["data"]["advisory"] is not None
+
+    @pytest.mark.asyncio
+    async def test_side_effect_note_type_rejected_without_writing(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_note_add"](
+            FakeContext(), task_ref="1001", note_type="DEPENDS-ON", summary="x", narrative="n"
+        )
+        assert "invalid_note_type" in {r["reason"] for r in res["data"]["rejected"]}
         assert not (set(_methods(client)) & WRITE_METHODS)
 
 
@@ -5614,8 +5706,8 @@ class TestEmptyPayloadRejection:
         ("gtd_project_create", "frame", {"frame": {}}),
         (
             "gtd_note_add",
-            "body",
-            {"task_ref": "t", "note_type": "STATE", "summary": "s", "body": ""},
+            "narrative",
+            {"task_ref": "t", "note_type": "STATE", "summary": "s", "narrative": ""},
         ),
         ("gtd_inbox_item_close", "derived_refs", {"inbox_item_ref": "t", "derived_refs": []}),
     ]
@@ -5646,14 +5738,15 @@ class TestEmptyPayloadRejection:
 
     @pytest.mark.asyncio
     async def test_whitespace_only_body_counts_as_empty(self, gtd_tools):
-        # A note body of "   " is contentless by exactly the same argument; accepting it would
-        # leave the hole half-closed.
+        # A note narrative of "   " is contentless by exactly the same argument; accepting it
+        # would leave the hole half-closed. (`body` became `narrative` at v6.0.0 — the rule is
+        # unchanged, only the parameter it guards.)
         tools, client = gtd_tools
         client.call = AsyncMock(return_value={"stat": "ok"})
         res = await tools["gtd_note_add"](
-            FakeContext(), task_ref="t", note_type="STATE", summary="s", body="   "
+            FakeContext(), task_ref="t", note_type="STATE", summary="s", narrative="   "
         )
-        assert any(r.get("parameter") == "body" for r in res["data"]["rejected"])
+        assert any(r.get("parameter") == "narrative" for r in res["data"]["rejected"])
 
     @pytest.mark.asyncio
     async def test_a_legitimate_non_empty_call_still_applies(self, gtd_tools):
@@ -5662,7 +5755,11 @@ class TestEmptyPayloadRejection:
         tools, client = gtd_tools
         client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
         res = await tools["gtd_note_add"](
-            FakeContext(), task_ref="1001", note_type="STATE", summary="s", body="real content"
+            FakeContext(),
+            task_ref="1001",
+            note_type="STATE",
+            summary="s",
+            narrative="real content",
         )
         assert not (res["data"].get("rejected") or [])
         assert res["data"]["applied"]

@@ -146,6 +146,13 @@ COMBINATION_RULES: dict[str, tuple[str, ...]] = {
         "The note TITLE follows the journal grammar `YYYY-MM-DD [HH:MM] — TYPE — summary`. "
         "With `RTM_STRICT_NOTES=shape` a malformed title is rejected as "
         "`note_shape_rejected`; the TYPE vocabulary itself is gtd's, not the server's.",
+        "The BODY is assembled, not parsed: `narrative` → `--- Sources ---` → "
+        "`--- AI Context ---`, each block emitted only when you pass content for it. `sources` "
+        "and `ai_context` are independent optionals — either, both or neither. There is no "
+        "argument that produces a different block order, so do not hand-write the delimiters "
+        "into `narrative`; they would be emitted a second time and out of place.",
+        "A `sources` / `ai_context` that arrives with only blank entries writes no block, and "
+        "says so in the receipt's `not_applied[]` rather than failing the note.",
     ),
 }
 
@@ -185,6 +192,18 @@ EXAMPLES: dict[str, tuple[str, ...]] = {
         'gtd_engage_commit(items=[{"id": "123", "verdict": "draft", '
         '"note": "focus on the cost section"}])   # steer the AI first pass',
         'gtd_engage_commit(items=[{"id": "123", "verdict": "drop"}], confirm_destructive=True)',
+    ),
+    "gtd_note_add": (
+        'gtd_note_add(task_ref="123", note_type="PROGRESS", summary="drafted the brief", '
+        'narrative="First pass is with Sam for comment.")   # narrative only — the common case',
+        'gtd_note_add(task_ref="123", note_type="DECISION", summary="warehouse over lakehouse", '
+        'narrative="Cost, not capability, decided it.", '
+        'sources=["Allen, D. (2015). Getting Things Done, ch. 3", '
+        '"Q4 budget summary — uploaded 2026-04-01"])',
+        'gtd_note_add(task_ref="123", note_type="SESSION", summary="handoff", '
+        'narrative="Covered the migration plan.", '
+        'ai_context={"Blockers": "waiting on Raj\'s staging env", '
+        '"Next executable": "draft the SLA benchmarks"})',
     ),
     "gtd_item_create": (
         'gtd_item_create(name="Email Sam the figures", kind="action", '

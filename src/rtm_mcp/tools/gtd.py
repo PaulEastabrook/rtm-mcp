@@ -136,6 +136,7 @@ from ..gtd_reports import (
 from ..gtd_writes import (
     ACTION_CONTEXTS,
     AI_ANALYSIS_TYPE,
+    AI_CONTEXT_DELIM,
     AI_REVIEW,
     CALENDAR_TAG,
     CHASE_VERDICTS,
@@ -156,6 +157,7 @@ from ..gtd_writes import (
     MOSCOW_TO_PRIORITY,
     PROCESSED_LIST,
     RESPONSE_SHAPES,
+    SOURCES_DELIM,
     SURFACE_BODY_NOTE_TYPE,
     SURFACE_ENTITY_TYPES,
     SURFACE_ITEM_TYPES,
@@ -168,6 +170,7 @@ from ..gtd_writes import (
     ai_link_targets,
     append_outputs_row,
     apply_edit_op,
+    assemble_note_body,
     auto_close_at,
     check_payload,
     collapse_write,
@@ -190,6 +193,8 @@ from ..gtd_writes import (
     output_approval_transition,
     output_note_body,
     outputs_register_row,
+    render_ai_context,
+    render_sources,
     resolution_link_status,
     resolution_tags,
     split_batch,
@@ -3833,52 +3838,83 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             ),
         ],
         summary: Annotated[str, Field(description="The title's brief summary (after the TYPE).")],
-        body: Annotated[
+        narrative: Annotated[
             str,
             Field(
-                description="REQUIRED. The note body (the narrative) — a journal note with a "
-                "title and no content is never legitimate."
+                description="REQUIRED. The note's prose, in your own words — and ONLY the prose. "
+                "Do not hand-write a `--- Sources ---` or `--- AI Context ---` block here; pass "
+                "`sources` / `ai_context` instead and the server writes both, in order."
             ),
         ],
+        sources: Annotated[
+            list[str] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_str_array_schema(
+                    "Citations that materially informed the note — one plain-text entry each "
+                    "(book + chapter, document + date, a raw URL, a prior RTM note). The server "
+                    "emits the `--- Sources ---` block and the `- ` bullets; omit when the only "
+                    'source would be "GTD says have a next action".'
+                )
+            ),
+        ] = None,
+        ai_context: Annotated[
+            dict[str, Any] | None,
+            BeforeValidator(coerce_json),
+            WithJsonSchema(
+                coerced_object_schema(
+                    "Machine-readable context for a future session, as key -> value (e.g. "
+                    '{"Blockers": "...", "Next executable": "..."}). The server emits the '
+                    "`--- AI Context ---` block and the `Key: value` lines. Expected on SESSION "
+                    "/ STATE / BLOCKER notes; usually omitted on PROGRESS / CONTEXT."
+                )
+            ),
+        ] = None,
         timestamp: Annotated[
             bool,
             Field(description="Include HH:MM in the title (default False — date only)."),
         ] = False,
     ) -> dict[str, Any]:
-        """GTD — write a conforming journal note on a task: the server builds the
-        `YYYY-MM-DD [HH:MM] — TYPE — summary` title and validates the body's block order, so a
-        malformed note can't reach RTM.
+        """GTD — write a conforming journal note on a task. You supply the semantics (the prose,
+        the citations, the machine-readable context); the server supplies the syntax — it builds
+        the `YYYY-MM-DD [HH:MM] — TYPE — summary` title AND the delimited body blocks, so a
+        malformed note cannot reach RTM.
 
-        Governed write. Validate-then-apply — an unknown TYPE, an empty summary or an
-        out-of-order body block rejects with NOTHING written. The write is
-        transaction-recorded (revert with undo / batch_undo).
+        Governed write. Validate-then-apply — an unknown TYPE, an empty summary or an empty
+        `narrative` rejects with NOTHING written. The write is transaction-recorded (revert with
+        undo / batch_undo).
 
-        Note shape enforced: the em-dash title grammar (never en-dash), and the fixed body block
-        order narrative → `--- Sources ---` → `--- AI Context ---`. A STATE note additionally
-        gets its `Snapshot as of: <date>` marker prepended; STATE is LATEST-WINS — the prior
-        STATE note is never deleted or retitled (older snapshots remain as history).
+        Note shape CONSTRUCTED (v6.0.0 — no longer yours to compose): the em-dash title grammar
+        (never en-dash), and the body as narrative → `--- Sources ---` → `--- AI Context ---`,
+        each block emitted only if you pass content for it. Never write those delimiters into
+        `narrative`; pass `sources` / `ai_context` instead. A STATE note also gets its
+        `Snapshot as of: <date>` marker prepended; STATE is LATEST-WINS — the prior STATE note
+        is never deleted or retitled (older snapshots remain as history).
 
         Args:
             task_ref: the task (id preferred; a name resolves, ambiguous → candidates).
-            note_type / summary / body / timestamp: see each.
+            note_type / summary / narrative / sources / ai_context / timestamp: see each.
+                `sources` and `ai_context` are INDEPENDENT optionals — either, both, or neither.
 
         Returns (on success): {"task_id", "note_title", "note_type", "applied", "errors",
             "message"} — the title the server actually wrote.
         Returns (on ambiguity): {"candidates": [{id, name, list_id}]} — call again with an id.
         Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
-            reason ∈ "invalid_note_type" | "invalid_block_order" | "missing_parameter".
+            reason ∈ "invalid_note_type" | "missing_parameter".
         Returns (on miss): {"error": {"code": "task_not_found", "message": …}} — branch on
             `error.code`, never the prose.
         """
         client: RTMClient = await get_client()
-        # `+`, not `or`: `validate_add_note` has no empty-body rule of its own, so the two
-        # checks are COMPLEMENTARY and a caller with both a bad note_type and an empty body
+        sources = coerce_json(sources)
+        ai_context = coerce_json(ai_context)
+        # `+`, not `or`: `validate_add_note` has no empty-narrative rule of its own, so the two
+        # checks are COMPLEMENTARY and a caller with both a bad note_type and an empty narrative
         # should learn both in one round trip. Where a validator DOES already reject the
         # empty set (inbox_drain / waiting_for_sweep / cluster_consolidate) the sites below
         # use `or` instead, so the more specific message wins without duplicating it.
-        rejections = check_payload("body", body, carries="note content") + validate_add_note(
-            note_type=note_type, summary=summary, body=body
-        )
+        rejections = check_payload(
+            "narrative", narrative, carries="note content"
+        ) + validate_add_note(note_type=note_type, summary=summary)
         if rejections:
             return build_response(
                 data={
@@ -3902,10 +3938,31 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             except Exception:
                 time_part = None
         title = format_note_title(note_type, summary, date=today, time=time_part)
-        text = state_body(body, date=today) if note_type == "STATE" else body
+        # The snapshot marker goes on the NARRATIVE, before assembly — § 6 puts it on the first
+        # body line, and applying it to the assembled string would be indistinguishable only by
+        # accident (it would break the moment a block preceded the narrative).
+        prose = state_body(narrative, date=today) if note_type == "STATE" else narrative
+        text = assemble_note_body(prose, sources=sources, ai_context=ai_context)
 
         applied: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        # A block the caller ASKED for but which carried nothing renderable (an all-blank
+        # sources list, an ai_context of empty values) writes no delimiter — and § 4.1 says the
+        # caller learns that from the receipt rather than from silence.
+        not_applied: list[dict[str, Any]] = [
+            not_applied_entry(
+                f"note:{block}",
+                item_id=str(task.get("id")),
+                requested=supplied,
+                reason=ErrorCode.NO_CHANGE,
+                detail=f"every {block} entry was blank, so no `{delim}` block was written.",
+            )
+            for block, delim, supplied, rendered in (
+                ("sources", SOURCES_DELIM, sources, render_sources(sources)),
+                ("ai_context", AI_CONTEXT_DELIM, ai_context, render_ai_context(ai_context)),
+            )
+            if supplied and not rendered
+        ]
         _write = _writer(applied, errors, client)
         await _write(
             "rtm.tasks.notes.add",
@@ -3923,6 +3980,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "note_title": title,
                 "note_type": note_type,
                 "applied": applied,
+                "not_applied": not_applied,
                 "errors": errors,
                 "message": f"Wrote a {note_type} note.",
             },

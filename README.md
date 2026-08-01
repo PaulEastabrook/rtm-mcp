@@ -591,10 +591,14 @@ MoSCoW `priority`, `note_type`) are now **server-owned** advisory enums, asserte
   the MoSCoW band on RTM's priority field, resolves the due phrase via `parse_time` **before** any
   write, writes an optional CONTEXT note, and stamps `#ai_overlay_refresh_needed` on the nearest
   `#project` ancestor. **Definition-of-Ready is hard-gated** per kind.
-- `gtd_note_add` - write a conforming journal note; the server builds the
-  `YYYY-MM-DD [HH:MM] — TYPE — summary` title and validates body block order. Journalling types
-  only (side-effect types get their own tools). STATE is latest-wins — the prior STATE note is
-  never deleted.
+- `gtd_note_add` - write a conforming journal note from typed parts. You supply the semantics
+  (`narrative`, `sources[]`, `ai_context{}`); the server builds the
+  `YYYY-MM-DD [HH:MM] — TYPE — summary` title **and** the body — narrative →
+  `--- Sources ---` → `--- AI Context ---`, each block emitted only when you pass content for it.
+  Since v6.0.0 the block order is **constructed, not validated**: there is no argument that
+  produces the wrong order, so `invalid_block_order` can no longer occur. Journalling types only
+  (side-effect types get their own tools). STATE is latest-wins — the prior STATE note is never
+  deleted.
 - `gtd_inbox_capture` - atomic `Inbox_Stuff` capture: task (verbatim, SmartAdd disabled) + SOURCE note +
   `#ai_conversation`. Staged **raw** — there is no tag parameter, so a capture cannot be
   "helpfully" classified; `pre_analysis` adds an AI ANALYSIS note + `#ai_review`.

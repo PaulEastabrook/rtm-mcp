@@ -4,6 +4,86 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v6.0.0 — `gtd_note_add` constructs the note body (BREAKING)
+
+Implements the approved designed change `2026-08-01-note-body-construction.md`. **The LLM supplies
+semantics; the tool supplies syntax** — anything a machine reads is constructed from typed
+parameters, never parsed back out of model prose.
+
+### The change
+
+`gtd_note_add(body: str)` — one free string carrying the narrative, the `--- Sources ---` block and
+the `--- AI Context ---` block — becomes:
+
+| Parameter | | |
+|---|---|---|
+| `narrative` | **required**, non-empty | the prose, and only the prose |
+| `sources` | optional `list[str]` | citations; the server emits the block and the `- ` bullets |
+| `ai_context` | optional `dict` | machine-readable context; the server emits the `Key: value` lines |
+
+`gtd_writes.assemble_note_body` writes them in the fixed order of `note-shape-catalogue.md` § 6,
+each block only when it has content. The catalogue stays the authority for what the assembled shape
+*is*; it stops being something a model must reproduce and becomes something the server guarantees.
+
+### What it deletes, which is the point
+
+**`check_block_order` is gone** — deleted, not deprecated, along with its tests. There is no
+argument to `gtd_note_add` that produces `--- AI Context ---` before `--- Sources ---`, so a wrong
+block order stopped being *rejected* and became *unrepresentable*. `TestBlockOrderIsUnrepresentable`
+replaces the rejection tests rather than adapting them: the assertion moves from *the bad order is
+refused* to *the bad order cannot be asked for*.
+
+`invalid_block_order` is retired from `GTD_WRITE_REJECT_REASONS` and can no longer be returned by
+any tool. **The `ErrorCode` member itself stays** — the registry is additive-only, and a shipped
+code is never removed even once nothing can reach it.
+
+### Two things measured during the build, both correcting the designed change
+
+**Fingerprint churn is 18 tools, not one.** The pack *reasoned* it would be confined to
+`gtd_note_add`. It is not: `models.GtdWriteRejection.reason` advertises a closed enum sourced from
+`GTD_WRITE_REJECT_REASONS`, so shrinking that frozenset re-serialises the output schema of every
+governed write that can return a rejection. Structural — the mirror image of the documented "adding
+an `ErrorCode` churns all 100 fingerprints" — and in the safer direction, since it removes a value
+rather than adding one.
+
+**The bare-call advisory went live on this tool.** Before v6.0.0 `gtd_note_add`'s only optional was
+`timestamp`, a boolean, which `receipt.is_facet` excludes — so the advisory could never fire.
+`sources` and `ai_context` are genuine facets, so it now fires on a narrative-only call, which per
+`journaling-lifecycle.md` is the modal journal note. That is the receipt working rather than
+regressing: a caller who misspells `sorces=[…]` has it stripped client-side and reads *"none of:
+ai_context, sources"*, which is exactly the silent-partial-write the field exists for. An explicit
+`sources=[]` counts as *supplied* and silences it.
+
+### Migration
+
+Rename `body=` to `narrative=`, and lift any hand-composed blocks out of it:
+
+```python
+# before
+gtd_note_add(task_ref="123", note_type="DECISION", summary="warehouse over lakehouse",
+             body="Cost decided it.\n--- Sources ---\n- Q4 budget summary\n"
+                  "--- AI Context ---\nRejected: lakehouse-first")
+# after
+gtd_note_add(task_ref="123", note_type="DECISION", summary="warehouse over lakehouse",
+             narrative="Cost decided it.",
+             sources=["Q4 budget summary"],
+             ai_context={"Rejected": "lakehouse-first"})
+```
+
+A `narrative` that still contains the delimiters is not rejected — it is written verbatim, and any
+`sources` / `ai_context` blocks are appended after it, which is visibly wrong. The parameter
+descriptions say so; there is no server-side check, because detecting it would mean parsing the
+body again.
+
+### Membrane / activation
+
+Vault-free, no new tag, no strict-tag interaction, no new `ErrorCode`. `gtd_note_add` writes via
+`rtm.tasks.notes.add` directly and is deliberately **not** wired into `note_shape` — the gate
+governs the generic `add_note` / `edit_note` escape hatch only. To go live: restart the server on
+v6.0.0, in lockstep with the gtd-side edits (`SKILL.md` § System Journal,
+`journaling-lifecycle.md`, `validate-note.py`'s block-order check becoming audit-only). Rollback is
+a signature revert plus restoring `check_block_order` from history — no data migration.
+
 ## v5.2.0 — the note gate now enforces vocabulary, not just shape
 
 Implements the 2026-07-30 hand-off brief, after the re-measurement it sequenced first. **A
