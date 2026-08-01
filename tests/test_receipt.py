@@ -340,7 +340,7 @@ class TestTightenedParameters:
         "gtd_cluster_consolidate": "moves",
         "gtd_item_transition_batch": "items",
         "gtd_project_create": "frame",
-        "gtd_note_add": "body",
+        "gtd_note_add": "narrative",
         "gtd_inbox_item_close": "derived_refs",
     }
 

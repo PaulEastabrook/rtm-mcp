@@ -71,7 +71,10 @@ PROCESSED_LIST = "Processed"  # clarified items — the single system of record
 INBOX_LIST = "Inbox_Stuff"  # the sole capture entry point
 AI_REVIEW = "ai_review"  # inbox pipeline state: analysed, awaiting Paul
 
-#: Note body block order (note-shape-catalogue § 6): narrative → Sources → AI Context.
+#: Note body block delimiters (note-shape-catalogue § 6). **EMISSION constants since v6.0.0** —
+#: `assemble_note_body` writes them in the fixed order narrative → Sources → AI Context. Nothing
+#: reads them back out of a caller-supplied string any more, which is what makes a wrong block
+#: order unrepresentable rather than merely rejected.
 SOURCES_DELIM = "--- Sources ---"
 AI_CONTEXT_DELIM = "--- AI Context ---"
 
@@ -86,7 +89,9 @@ GTD_WRITE_REJECT_REASONS = frozenset(
         ErrorCode.MISSING_PARAMETER,
         ErrorCode.DOR_NOT_MET,
         ErrorCode.INVALID_NOTE_TYPE,
-        ErrorCode.INVALID_BLOCK_ORDER,
+        # ErrorCode.INVALID_BLOCK_ORDER retired from this view at v6.0.0 — the server now
+        # CONSTRUCTS the block order, so no call can produce it. The registry member stays
+        # (additive-only: a shipped code is never removed), but nothing reaches it.
         ErrorCode.SMART_LIST_TARGET,
         ErrorCode.STRICT_TAG_REJECTED,
         ErrorCode.TASK_NOT_FOUND,
@@ -182,7 +187,7 @@ def collect_item_tags(
 
 
 # --------------------------------------------------------------------------- #
-# Note grammar — title construction + block-order validation
+# Note grammar — title AND body construction
 # --------------------------------------------------------------------------- #
 
 
@@ -192,18 +197,76 @@ def format_note_title(note_type: str, summary: str, *, date: str, time: str | No
     return f"{stamp} — {note_type} — {summary.strip()}"
 
 
-def check_block_order(body: str | None) -> str | None:
-    """Validate the fixed body block order. Returns an error detail, or None when well-formed.
+def _source_line(source: str) -> str:
+    """One `- <source>` bullet. A caller's own leading bullet is absorbed rather than doubled —
+    the model supplies the citation, the server supplies the punctuation."""
+    text = source.strip()
+    for marker in ("- ", "* ", "• "):
+        if text.startswith(marker):
+            text = text[len(marker) :].lstrip()
+            break
+    return f"- {text}"
 
-    Ordering is fixed: narrative → `--- Sources ---` → `--- AI Context ---`. A hard-fail per the
-    note-shape catalogue § 8 error policy (wrong block order is machine-breaking, not style drift).
+
+def _context_value(value: Any) -> str:
+    """One AI-Context value, flattened to the single line the block's `Key: value` grammar allows.
+    A list becomes a `; `-joined run; a newline inside a scalar becomes a space. Never a raw
+    newline, which would silently split one entry into two unparseable ones."""
+    if isinstance(value, (list, tuple)):
+        parts = [_context_value(v) for v in value]
+        return "; ".join(p for p in parts if p)
+    return " ".join(str(value).split())
+
+
+def render_sources(sources: list[str] | None) -> list[str]:
+    """The `- ` bullet lines a `--- Sources ---` block would carry — `[]` when it emits none.
+
+    Public because the TOOL needs the same verdict the assembler reaches (to populate the
+    receipt's `not_applied[]` when a caller sent sources that rendered to nothing). Re-deriving
+    it from the assembled string would be a second copy of the rule, and a wrong one the first
+    time a narrative legitimately quotes a delimiter."""
+    return [_source_line(s) for s in (sources or []) if str(s).strip()]
+
+
+def render_ai_context(ai_context: dict[str, Any] | None) -> list[str]:
+    """The `Key: value` lines an `--- AI Context ---` block would carry — `[]` when it emits none.
+    Public for the same reason as `render_sources`."""
+    return [
+        f"{key}: {flat}"
+        for key, flat in (
+            (str(k).strip(), _context_value(v)) for k, v in (ai_context or {}).items()
+        )
+        if key and flat
+    ]
+
+
+def assemble_note_body(
+    narrative: str,
+    *,
+    sources: list[str] | None = None,
+    ai_context: dict[str, Any] | None = None,
+) -> str:
+    """Build the note body from typed parts, in the fixed order (note-shape-catalogue § 6).
+
+    **The deliverable of v6.0.0.** The caller supplies semantics — prose, a list of citations, a
+    map of machine-readable context — and this supplies the syntax. There is no argument that
+    produces `--- AI Context ---` before `--- Sources ---`, so the wrong order stopped being a
+    rejection and became unrepresentable; `check_block_order` was deleted, not deprecated.
+
+    A block is emitted only when it has content: an empty or all-blank `sources` writes no
+    delimiter, because a bare `--- Sources ---` heading with nothing under it is exactly the
+    malformation the caller was trying to avoid. (The *caller* still learns nothing was written —
+    that is the receipt's `not_applied[]`, populated by the tool, not by this pure builder.)
     """
-    text = body or ""
-    src = text.find(SOURCES_DELIM)
-    ctx = text.find(AI_CONTEXT_DELIM)
-    if src >= 0 and ctx >= 0 and ctx < src:
-        return f"'{AI_CONTEXT_DELIM}' appears before '{SOURCES_DELIM}'"
-    return None
+    blocks = [narrative.rstrip()]
+    for delim, lines in (
+        (SOURCES_DELIM, render_sources(sources)),
+        (AI_CONTEXT_DELIM, render_ai_context(ai_context)),
+    ):
+        if lines:
+            blocks.append(delim)
+            blocks.extend(lines)
+    return "\n".join(blocks)
 
 
 def state_body(body: str, *, date: str) -> str:
@@ -228,7 +291,9 @@ def check_payload(param: str, value: Any, *, carries: str) -> list[dict[str, Any
     """Reject a payload parameter that arrived **present but empty** (v5.0.0).
 
     Scoped deliberately narrowly: only the eight parameters **whose value IS the work** — the
-    verdict set, the disposition set, the note body. v4.0.0 made them required, which closed
+    verdict set, the disposition set, the note narrative (`gtd_note_add.body` until v6.0.0 split
+    it into `narrative` + `sources` + `ai_context`; the rule follows the prose, since the two new
+    optionals are facets and a facet is legitimately empty). v4.0.0 made them required, which closed
     *absence*; `[]` / `{}` / `""` stayed legal and produced a silent no-op, and v4.1.0's
     `guidance` narrowing then removed the one signal that made that no-op visible. Rather than
     restore the signal, the silent case is removed.
@@ -359,7 +424,13 @@ def validate_create_item(
     }
 
 
-def validate_add_note(*, note_type: str, summary: str, body: str | None) -> list[dict[str, Any]]:
+def validate_add_note(*, note_type: str, summary: str) -> list[dict[str, Any]]:
+    """Validate what a journal note still *can* get wrong (v6.0.0: the body no longer can).
+
+    `body` was dropped from the signature when `check_block_order` was deleted — the block order
+    is now constructed by `assemble_note_body`, so there is nothing about the body left for this
+    to judge. Emptiness is `check_payload`'s, and always was.
+    """
     rejections: list[dict[str, Any]] = []
     if note_type not in JOURNAL_NOTE_TYPES:
         rejections.append(
@@ -373,9 +444,6 @@ def validate_add_note(*, note_type: str, summary: str, body: str | None) -> list
         )
     if not (summary or "").strip():
         rejections.append(_reject(ErrorCode.MISSING_PARAMETER, "summary is required"))
-    order_err = check_block_order(body)
-    if order_err:
-        rejections.append(_reject(ErrorCode.INVALID_BLOCK_ORDER, order_err))
     return rejections
 
 

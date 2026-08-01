@@ -129,6 +129,10 @@ def is_facet(default: Any) -> bool:
     `confirm_destructive` and on `gtd_note_add` it was `timestamp` — so both fired the advisory
     on 100% of legitimate calls in the suite. Excluding booleans took the overall rate from
     31.8% to a figure driven entirely by genuine facets.
+
+    (v6.0.0 gave `gtd_note_add` two genuine facets — `sources` / `ai_context` — so the advisory
+    is live there again, on purpose: measured 7/12 suite calls, and the overall governed-write
+    rate moved 17.8% → 21.1%. The rule below is unchanged; `timestamp` is still not a facet.)
     """
     return not isinstance(default, bool)
 
