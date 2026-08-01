@@ -300,7 +300,7 @@ from ..project_plan import (
     resolve_focus,
     resolve_project,
 )
-from ..receipt import RECEIPT_DOC, is_facet, not_applied_entry
+from ..receipt import RECEIPT_DOC, detect_leaked_markup, is_facet, not_applied_entry
 from ..receipt import attach as attach_receipt
 from ..response_builder import (
     ADDITIVE_WRITE_ANNOTATIONS,
@@ -386,6 +386,11 @@ def _with_receipt(fn: Any, annotations: Any) -> Any:
         if p.default is not inspect.Parameter.empty and is_facet(p.default)
     }
     declared = sorted(defaults)
+    # EVERY declared name, not just the optionals — the leaked-markup anchor matches a closing
+    # tag against the tool's own parameter names, and all three measured leaks closed over a
+    # REQUIRED one (`narrative`, `analysis_body`, `completion`). `ctx` is excluded: it is the
+    # framework's, never a name a caller could be closing.
+    all_params = frozenset(signature.parameters) - {"ctx"}
 
     @functools.wraps(fn)
     async def _wrapped(*args: Any, **kwargs: Any) -> Any:
@@ -406,11 +411,17 @@ def _with_receipt(fn: Any, annotations: Any) -> Any:
             for name, default in defaults.items()
             if _at_default(supplied.get(name, default), default)
         ]
+        # Detected here for the ADVISORY only — the middleware already logged it, for every tool,
+        # before this body ran. Logging again would emit two records per event and silently
+        # double-count any future "how often does this happen?" measurement, which is precisely
+        # the class of error this detector exists because of.
+        leaked = detect_leaked_markup(supplied, all_params)
         attach_receipt(
             result["data"],
             tool_name=fn.__name__,
             absent_optional=absent,
             declared_optional=declared,
+            leaked=leaked,
         )
         return result
 

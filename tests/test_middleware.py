@@ -299,3 +299,95 @@ class TestRejectionTeaches:
         message = str(exc.value)
         assert "nonsense" in message and "rtm_tool_help" in message
         assert rtm_client.call.await_count == 0
+
+
+class TestLeakedMarkupIsLoggedNotBlocked:
+    """The other 75 tools (v6.1.0).
+
+    The receipt carries the caller-visible half, but only on the 25 governed writes. This
+    middleware sees every call — including `add_note`, measured at 78x the traffic of
+    `gtd_note_add` and the documented escape hatch where drift enters. It can only raise, so it
+    cannot report without blocking; it therefore LOGS, and the WARNING reaches the v5.1.0 file
+    sink that survives a Desktop-spawned server's /dev/null fd 2.
+
+    Not blocking is the load-bearing property, not an implementation detail: the anchor cannot
+    distinguish a genuine leak from a note DOCUMENTING one, and this repo journals its own
+    defects into RTM through these very tools.
+    """
+
+    async def test_a_leak_on_a_generic_tool_is_logged_and_the_write_still_lands(
+        self, mcp_client, rtm_client, caplog
+    ):
+        """`add_note` carries no receipt at all, so the log is the ONLY channel here.
+
+        The call is driven to SUCCESS deliberately. An earlier version let it fail on the mock's
+        response shape, which proved the detection ran but left the not-a-gate property
+        untested — and abandoned an un-awaited AsyncMock coroutine that surfaced as a
+        RuntimeWarning two files later on 3.12 only.
+        """
+        caplog.set_level(logging.WARNING, logger="rtm_mcp.middleware")
+        # The shared fixture leaves `strict_notes` a bare MagicMock; pin it so this test
+        # exercises the middleware rather than write gate 2.
+        rtm_client.config = MagicMock(strict_tags=False, strict_notes="off")
+        # `timeline_id` and `record_transaction` must be real values, not auto-created AsyncMock
+        # children: the former is serialised into the envelope (an AsyncMock there fails output
+        # validation) and the latter is called SYNCHRONOUSLY by `record_and_build_response`, so
+        # an AsyncMock leaves an un-awaited coroutine that surfaces as a RuntimeWarning under a
+        # later test's GC — on 3.12 only, two files away, which is a genuinely nasty trail.
+        rtm_client.timeline_id = "tl1"
+        rtm_client.record_transaction = MagicMock()
+        rtm_client.call.return_value = {
+            "transaction": {"id": "tx1", "undoable": "1"},
+            "note": {"id": "n1", "title": "", "$t": "body", "created": "", "modified": ""},
+        }
+        res = await mcp_client.call_tool(
+            "add_note",
+            {
+                "task_id": "t1",
+                "taskseries_id": "ts1",
+                "list_id": "L1",
+                "note_title": "2026-08-01 — CONTEXT — x",
+                "note_text": 'body</note_text>\n<parameter name="note_title">["y"]',
+            },
+        )
+        leaked = [r for r in caplog.records if "Leaked tool-call markup" in r.getMessage()]
+        assert leaked, "the markup detector did not run on the generic-tool path"
+        assert "add_note" in leaked[0].getMessage()
+        # NOT a gate: the write went through.
+        assert rtm_client.call.await_count
+        assert "error" not in (res.structured_content.get("data") or {})
+
+    async def test_the_detection_does_not_raise(self, mcp_client, rtm_client):
+        """A leak must never become a rejection. `gtd_item_shape` is offline and read-only, so
+        if the detection raised, this call would fail — and it must not."""
+        res = await mcp_client.call_tool(
+            "gtd_item_shape", {"name": "Draft the thing</name>\n<parameter name='x'>1"}
+        )
+        # The call COMPLETED — that is the assertion. The tool also still did its job.
+        assert res.structured_content["data"]["shape"] == "draft"
+        assert rtm_client.call.await_count == 0  # still offline, still no write
+
+    async def test_a_governed_write_logs_exactly_once(self, mcp_client, rtm_client, caplog):
+        """The receipt wrapper detects for the ADVISORY but does not log — the middleware
+        already did, before the tool body ran. Two records per event would silently double-count
+        any future "how often does this happen?" measurement, which is the precise class of
+        error this detector exists because of."""
+        caplog.set_level(logging.WARNING)
+        rtm_client.config = MagicMock(strict_tags=False, strict_notes="off")
+        rtm_client.timeline_id = "tl1"
+        rtm_client.record_transaction = MagicMock()
+        rtm_client.call.return_value = {"transaction": {"id": "tx1", "undoable": "1"}}
+        await mcp_client.call_tool(
+            "gtd_item_set_redaction",
+            {"task_id": "t1</task_id>\n<parameter name='redacted'>true", "redacted": True},
+        )
+        leaked = [r for r in caplog.records if "Leaked tool-call markup" in r.getMessage()]
+        assert len(leaked) == 1, f"expected exactly one record, got {len(leaked)}"
+        assert leaked[0].name == "rtm_mcp.middleware"
+
+    async def test_a_clean_call_logs_nothing(self, mcp_client, rtm_client, caplog):
+        """Guard-the-guard: without this, a detector that fired on every call would pass the
+        test above and be worse than none."""
+        caplog.set_level(logging.WARNING, logger="rtm_mcp.middleware")
+        await mcp_client.call_tool("gtd_item_shape", {"name": "Draft the quarterly report"})
+        assert not [r for r in caplog.records if "Leaked tool-call markup" in r.getMessage()]

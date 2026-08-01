@@ -4,6 +4,129 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v6.1.0 — the server can see leaked tool-call markup, so now it says so
+
+Additive. **No gate, no rejection, no new `ErrorCode`, no signature change.** One new detection,
+reported two ways, blocking nothing.
+
+### What it detects, and why this one is detectable at all
+
+The client strip destroys a parameter upstream, so nothing server-side can ever see it — that
+asymmetry is the premise the whole receipt design rests on. **Leaked tool-call markup is the
+opposite shape.** The caller emits XML-style tool-call delimiters mid-argument and the serialiser
+folds them into the *preceding* string, so the value **arrives** — in the wrong parameter — and is
+written verbatim. Measured 2026-08-01: 13 events over five months across four MCP servers and four
+model generations; 5 corrupted RTM notes via three governed writes; two parameters genuinely lost,
+one of them silently (`gtd_inbox_item_annotate.questions`, reported only as `questions_count: 0`).
+
+`receipt.detect_leaked_markup` is the whole rule and it is **tool-scoped**: a closing tag is a
+finding only when its name is a parameter *the tool being called declares*. Over 13,435 real RTM
+calls that fired **7 times, all true positives, zero false positives** — including on a full HTML
+document passed to `add_note` (`</head>`, `</body>`, `</script>`), which stays silent because none
+of those is an `add_note` parameter. A bare `</…>` predicate flags it.
+
+### One predicate, two consumers
+
+| Consumer | Covers | Channel |
+|---|---|---|
+| `_with_receipt` → `advisory` | the 25 governed writes | the caller, in the response |
+| `middleware` (log only) | all 100 tools | the v5.1.0 file sink |
+
+The middleware half is where the traffic is — `add_note` alone was measured at **78× the volume of
+`gtd_note_add`**, and it is the documented escape hatch. It can only raise, so it cannot report
+without blocking; hence log-only.
+
+### Advisory, never a gate — and it closes the partial-loss blind spot
+
+The anchor cannot separate a genuine leak from a note *documenting* one, and this repo journals its
+own defects into RTM through exactly the tools being watched. A gate would make writing about the
+bug impossible, so the advisory says outright that nothing was blocked.
+
+It also speaks where the old advisory could not. `build_advisory` fires only when **every** optional
+facet is absent — silent for 15 of the 25 governed writes whenever one facet is supplied and another
+lost. The markup advisory fires on the evidence itself. Where both would fire, **markup outranks**,
+because it explains the absence and names the lost parameter instead of merely listing what is
+missing.
+
+`not_applied[]` is deliberately **not** used: the write happened, so "you asked for this and nothing
+was written" would be false.
+
+### A failing test improved the design
+
+The bare-tag dialect (`</analysis_body>`) has no `<parameter name=…>` opener, so it looked
+information-poor. It is not: `</analysis_body>\n<questions>[…]</questions>` closes `questions`,
+which is *also* a declared parameter of that tool. **A closing tag naming a declared parameter other
+than the carrier is itself the lost-parameter signal**, so both dialects reduce to one `lost` field.
+The test that found this asserted `[]` and the code was right.
+
+### Cost
+
+**25 fingerprints** — the governed writes, from rewording the shared `RECEIPT_DOC` block (whose old
+text described only one of the advisory's two triggers), not from 25 tools changing behaviour.
+
+### Tests
+
++19 (1799 → 1818). The load-bearing ones are `TestTheDetectorRunsOnTheRealServer`, which drives the
+in-memory protocol end-to-end — every pure-function test would pass against a server that never
+calls the detector, which is the exact vacuity this whole investigation was about — and
+`TestLeakedMarkupIsLoggedNotBlocked`, which asserts the middleware half logs and does **not** raise.
+Both carry a guard-the-guard proving a clean call stays silent, without which a detector that fired
+on everything would pass. A third pins **exactly one log record per event**: the receipt wrapper
+detects for the advisory but does not log, because the middleware already did — two records would
+silently double-count the very measurement this detector exists to enable.
+
+### Also in this release — the advisory stops asserting a cause it has never once been right about
+
+*(Developed as v6.0.5 and released here; it was never a separate tag.)*
+
+Investigation-only release: **no gate, no schema, no signature and no tool behaviour changed**, and
+all 100 fingerprints are byte-identical. What changed is prose the server tells callers, which was
+confidently wrong, plus the architecture record.
+
+#### The advisory named one cause; measured, it has been that cause 0 of 2 times
+
+`receipt.build_advisory` told every caller, as fact, that *"a misspelt optional is dropped by some
+MCP clients before the server sees it, so the write lands without it"*. Across the entire transcript
+population the advisory has fired **twice**, and that was the cause **neither time**: once the call
+was legitimately bare, and once — 2026-08-01 on `gtd_note_add` — the caller emitted the value as
+literal tool-call markup folded into a sibling string, so nothing was misspelt, no client dropped
+anything, and the write landed **with** the value (as garbage) rather than without it.
+
+The wrong cause was not inert. It sent a hand-off brief hunting a host-side strip of a declared
+optional — a failure mode that, re-measured, **does not exist**: on this host a declared optional
+either passes through or throws; only *undeclared* keys strip.
+
+So the advisory now states the **observation** and offers both recorded causes without committing to
+either, naming the markup cause first because it is the one a caller can check for itself. Same
+firing rule (`receipt.is_facet` and the all-absent condition are untouched), same never-a-gate
+posture. Corrected on all three surfaces that carried it: `receipt.build_advisory`, the module
+docstring, and `tool_help.RECEIPT_CONTRACT["advisory"]`.
+
+#### `CLAUDE.md` — the converter trace extended, and a new defect class recorded
+
+The 2026-07-26 trace stands on undeclared-key stripping and nested `.passthrough()`, and is
+corrected on three points (the wrap happens in the vendored SDK, not the converter; there are three
+call sites; the conversion reads twelve JSON-Schema keywords, not two). Two new measured facts:
+a declared optional is **never** silently dropped, and `anyOf`/`oneOf` degrades a parameter to
+`z.unknown()` — a mechanism for the single-typed-parameter policy that was previously justified only
+by client-side flattening.
+
+A new section records **leaked tool-call markup** as a distinct parameter-loss mechanism: 13 events
+across four servers and four model generations, 5 corrupted RTM notes via three governed writes, and
+2 genuine parameter losses (one of them semantic — `gtd_inbox_item_annotate.questions`). Unlike the
+client strip, this one is **server-detectable**, because the value arrives in the wrong parameter
+rather than being destroyed upstream. A detector is specified and measured (0 false positives across
+13,435 real calls, zero fingerprint cost) but **deliberately not implemented** — it is a designed
+change, and the one false-positive class it cannot separate is a note documenting this very defect.
+
+#### Tests
+
+Two tests replace one. `test_offers_both_recorded_causes_and_asserts_neither` and
+`test_does_not_assert_a_single_cause_as_fact` supersede
+`test_explains_that_a_misspelt_optional_is_dropped_client_side`, which passed happily for four
+releases while the message was wrong — it asserted only that the word "drop" appeared. The inverted
+test carries its previous claim in its docstring, per the `note_shape` precedent.
+
 ## v6.0.4 — SCOPE was canonical but unauthorable, and a worked example contradicted its own schema
 
 Two small fixes from a verification pass over the open improvement backlog. The first was found the
