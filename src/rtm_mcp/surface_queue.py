@@ -58,6 +58,12 @@ from .gtd_writes import (
     Q_PROCESSED,
     SURFACE_TYPE_TAG,
 )
+from .note_types import (
+    CATALOGUE_NOTE_TYPES,
+    RESPONSE_NOTE_TYPES,
+    SURFACE_NOTE_TYPES,
+    SYSTEM_NOTE_TYPES,
+)
 from .parsers import extract_note_body
 from .project_plan import _permalink
 
@@ -76,84 +82,16 @@ ACTIVITY_FILTER = (
     "AND NOT tag:test AND NOT tag:q_acknowledged AND NOT tag:auto_closed"
 )
 
-#: `note-shape-catalogue.md` § 2, codified. The server is standalone and cannot read the
-#: marketplace markdown at runtime, so the vocabulary is a constant here exactly as the engage
-#: verdict grammar is in `engage_commit.py` — codification before validation. The CATALOGUE
-#: remains the authority; a change there is a lockstep change here.
-CATALOGUE_NOTE_TYPES = frozenset(
-    {
-        "INCEPTION",
-        "CONTEXT",
-        "DECISION",
-        "PROGRESS",
-        "COMPLETION",
-        "CASCADE",
-        "SCOPE",
-        "STATE",
-        "SESSION",
-        "BLOCKER",
-        "SOURCE",
-        "SOURCE-DRAFT",
-        "AI ANALYSIS",
-        "CONTRIB",
-        "CONTRIB-UPDATE",
-        "CHAT",
-        "PREP",
-        "OUTCOME",
-        "OUTPUT",
-        "OUTPUTS",
-        "DEPENDS-ON",
-        "AI-LINK",
-        "COMMIT",
-        "ORDER",
-        "STEER",
-        "TMPL-CHILD",
-    }
-)
-
-#: Engine-authored note types seen on the AI-surface lists that are NOT registered in the
-#: catalogue. `QUESTION`/`ALERT`/`NOTIFICATION`/`SURFACE`/`ACTIVITY-REPORT` are written TODAY by
-#: this server's own `gtd_surface_create` (the body-note title is `<date> — <ITEM_TYPE> — …`);
-#: the single-letter and `Q-*` forms are the pre-v2.8.0 composition path. All are live on the
-#: lists now (measured 2026-07-25). Registering these in `note-shape-catalogue.md` § 2 is a
-#: gtd-side follow-up — `validate-note.py` would reject the server's own writes today.
+#: The note-type vocabularies now live in the leaf module `note_types` — one home, four sets, each
+#: with a different job. They are re-exported here because this module was their first consumer and
+#: `__all__` / the test suite import them from here; the definitions moved because `note_shape`
+#: needs the write-authorised composition and cannot import this module without inverting the
+#: layering (a low-level write gate importing a high-level read builder).
 #:
-#: **Both spellings of the activity-report type are here, and that is not redundancy.** Wave 1b
-#: fixed the EMITTED token to `ACTIVITY-REPORT` (hyphen) via `gtd_writes.SURFACE_BODY_NOTE_TYPE`,
-#: because `note_shape.check_title`'s TYPE grammar is `[A-Z][A-Z -]*` and rejects the underscore.
-#: This READ set was not updated with it, so for two releases the server wrote a type its own
-#: classifier scored `unrecognised` — measured live 2026-07-31, two notes on `AI_Activity` sitting
-#: in `unrecognised_notes[]`. The underscore form stays because pre-Wave-1b notes carry it and a
-#: read set must recognise what is THERE; the hyphen form is added because a read set must also
-#: recognise what this server WRITES. Removing either re-opens a silent mis-classification.
-SURFACE_NOTE_TYPES = frozenset(
-    {
-        "QUESTION",
-        "ALERT",
-        "NOTIFICATION",
-        "SURFACE",
-        "ACTIVITY-REPORT",  # emitted today (Wave 1b onwards)
-        "ACTIVITY_REPORT",  # legacy spelling, unwritable under the shape gate — read-only
-        "Q",
-        "A",
-        "N",
-        "S",
-        "AR",
-        "Q-BODY",
-        "Q-UPDATE",
-        "UPDATE",
-        "META QUESTION",
-    }
-)
+#: The move also closed a measured drift: the five AI-surface body types were registered in
+#: `note-shape-catalogue.md` § 2 on 2026-07-25 but sat in `SURFACE_NOTE_TYPES` here for a week under
+#: a comment asserting they were unregistered. They are catalogue members now.
 
-SYSTEM_NOTE_TYPES = CATALOGUE_NOTE_TYPES | SURFACE_NOTE_TYPES
-
-#: A note carrying one of these types records Paul's answer. Observed live on every item that
-#: has ever reached `#q_answered` / `#q_processed`; `DECISION` is also a catalogue journalling
-#: type, and on a surface item a decision IS the response, so the response test runs first.
-RESPONSE_NOTE_TYPES = frozenset({"ANSWER", "RESPONSE", "REPLY", "DECISION"})
-
-#: `response_detected` evidence paths — a closed vocabulary so the agent can branch on it.
 RESPONSE_PATHS = frozenset({"q_answered_tag", "completed_unresolved", "response_note"})
 
 _FRONTMATTER_FENCE = "---"

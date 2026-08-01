@@ -4,6 +4,69 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v5.2.0 — the note gate now enforces vocabulary, not just shape
+
+Implements the 2026-07-30 hand-off brief, after the re-measurement it sequenced first. **A
+deliberate reversal of the CONTRIBUTING § 6 membrane for notes**, and the reasoning is the
+substance of the release.
+
+### The reversal, and what triggered it
+
+Through v5.1.x this server gated note **shape** and left **vocabulary** to gtd's
+`validate-note.py` — the same split that has the server gate tag *existence* while gtd gates tag
+*canonicality*. That was correct while it held.
+
+It stopped holding when it was measured. A full read-only census on 2026-07-31 (coverage provable
+against RTM's own `notes_count`, not sampled — `AI_Questions` 180 notes, `AI_Activity` 69 items,
+`Inbox_Stuff` 974, `Processed` 3,342 distinct) found **~40 distinct off-vocabulary TYPE tokens
+across 114 notes**, accumulated over five months. The client-side validator had been correct and
+available throughout; it only runs when a caller remembers it. **A gate that can be forgotten is
+not a gate** — the argument that put the other three write gates here.
+
+**Authorship did not move.** `note-shape-catalogue.md` § 2 remains the authority; this server
+*codifies* it (`note_types.py`), exactly as `engage_commit.py` codifies the verdict grammar. A new
+type goes in the markdown first — codification before validation — and gtd's validator picks it up
+at runtime with no release. Only the server's copy needs a version bump; that lockstep is the
+accepted cost of enforcement.
+
+### `note_types.py` — one home for four vocabularies
+
+The sets moved out of `surface_queue.py` into a leaf module. Not tidying: `note_shape` needs the
+write-authorised composition and could not import a high-level read builder without inverting the
+layering — and the move closed a **measured drift**, the five AI-surface body types having been
+registered in the markdown on 2026-07-25 while the server's `CATALOGUE_NOTE_TYPES` omitted them
+for a week under a comment asserting they were unregistered.
+
+The load-bearing property is the **asymmetry**: `SURFACE_NOTE_TYPES` (legacy spellings — `Q`, `AR`,
+`ACTIVITY_REPORT`, the single letters) stay **readable and are no longer writable**. Unwritable is
+not unreadable; conflating the two would mis-classify every legacy note on the surface lists.
+`WRITE_AUTHORISED_NOTE_TYPES` is **derived, never hand-listed** — a fifth hand-kept vocabulary
+would be the very drift the gate exists to stop, and a test asserts the source composes it by
+union rather than typing it out.
+
+### Modes are an escalation, and rollback has two depths
+
+`off` → `warn` (log only) → `shape` (grammar; the v5.1.0 behaviour byte-for-byte) → `vocabulary`
+(grammar **and** a registered TYPE; **the shipped default**). Two rollback depths rather than one
+is deliberate: a single on/off switch would make the only way to unblock an unregistered TYPE also
+the way to unblock a malformed title.
+
+**No `warn` stage was run before the flip.** Offered and declined (Paul, 2026-08-01) — the census
+had already measured the population the gate fires on, so `warn` would have re-measured what was
+known.
+
+**No new `ErrorCode`.** `note_shape_rejected` already ships; the shape-vs-vocabulary distinction
+rides in `error.details.rejected_by`. A `note_vocabulary_rejected` synonym would have churned all
+100 fingerprints for a distinction the details already carry — the drift the unified registry
+removed in v2.0.0.
+
+### Four existing tests were inverted, and the inversions are the change
+
+`test_an_off_vocabulary_TYPE_passes__the_ownership_boundary` became
+`..._is_now_REJECTED__the_boundary_moved`; the legacy-`ACTIVITY`-spellings test likewise. Both
+carry their previous claim in the docstring, because a test whose assertion silently flips is a
+test that has stopped documenting a decision.
+
 ## v5.1.2 — SCOPE registered as a canonical note type
 
 `SCOPE` added to `CATALOGUE_NOTE_TYPES` — the server codification of a canonical-vocabulary

@@ -98,13 +98,14 @@ class RTMConfig(BaseSettings):
 
     # Note-shape mode (mechanical title-grammar gate) — see note_shape.py
     strict_notes: str = Field(
-        default="shape",
+        default="vocabulary",
         description=(
-            "Gate note-title writes against the mechanical grammar "
-            "'YYYY-MM-DD [HH:MM] — TYPE — summary'. Env var RTM_STRICT_NOTES. "
-            "'shape' (default) rejects a malformed title; 'warn' logs but allows; "
-            "'off' inert. SHAPE only — the canonical TYPE vocabulary stays plugin-side, "
-            "so a well-formed title with an unknown TYPE passes."
+            "Gate note-title writes. Env var RTM_STRICT_NOTES, an escalation: "
+            "'vocabulary' (default since v5.2.0) rejects a malformed title AND an "
+            "unregistered TYPE; 'shape' rejects only a malformed title (the v5.1.0 "
+            "behaviour, and the byte-for-byte rollback step); 'warn' logs but allows; "
+            "'off' inert. The registered vocabulary is derived from the server's "
+            "codification of gtd's note-shape catalogue — see note_types.py."
         ),
     )
 

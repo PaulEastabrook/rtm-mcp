@@ -1,9 +1,10 @@
-"""Note-shape gate — the mechanical title-grammar write boundary.
+"""Note-shape gate — the title-grammar and vocabulary write boundary.
 
 Mirrors test_strict_tags.py in shape: pure-policy unit tests for the grammar plus the
-three-mode enforcement flow (off / warn / shape).
+four-mode enforcement escalation (off / warn / shape / vocabulary).
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -152,11 +153,23 @@ class TestGuidedError:
         assert "YYYY-MM-DD" in details["expected_shape"]
         assert "RTM_STRICT_NOTES" in details["how_to_proceed"]
 
-    def test_how_to_proceed_points_at_the_plugin_for_vocabulary(self):
-        """Recovery guidance must not imply the server owns the TYPE vocabulary."""
-        assert (
-            "note-shape-catalogue" in guided_error("x", "y")["error"]["details"]["how_to_proceed"]
-        )
+    def test_how_to_proceed_points_at_the_catalogue_for_a_vocabulary_rejection(self):
+        """The server now ENFORCES the vocabulary but still does not OWN it.
+
+        Through v5.1.x this assertion sat on the shape rejection, where it meant "we check shape,
+        they own types". Since v5.2.0 the server checks types too — so the pointer moves to the
+        vocabulary rejection, where it now means something sharper: a new type is added to the
+        catalogue FIRST, never minted at the call site. Codification before validation.
+        """
+        how = guided_error("x", "y", kind="vocabulary")["error"]["details"]["how_to_proceed"]
+        assert "note-shape-catalogue" in how
+        assert "first" in how.lower()
+
+    def test_the_two_rejection_kinds_are_distinguishable_without_a_new_error_code(self):
+        for kind in ("shape", "vocabulary"):
+            err = guided_error("x", "y", kind=kind)["error"]
+            assert err["code"] == "note_shape_rejected"
+            assert err["details"]["rejected_by"] == kind
 
     def test_recovery_guidance_matches_the_shipped_default(self):
         """The guidance is caller-facing recovery, so a stale default makes it actively wrong.
@@ -168,7 +181,9 @@ class TestGuidedError:
 
 
 def test_mode_vocabulary_is_the_config_contract():
-    assert VALID_STRICT_NOTES_MODES == ("off", "warn", "shape")
+    """An escalation, in order. `vocabulary` was appended in v5.2.0; `shape` stays as the
+    byte-for-byte rollback step, which is why it is not simply replaced."""
+    assert VALID_STRICT_NOTES_MODES == ("off", "warn", "shape", "vocabulary")
 
 
 class TestTheShippedDefaultIsLive:
@@ -180,10 +195,12 @@ class TestTheShippedDefaultIsLive:
     """
 
     @staticmethod
-    def _real_client(monkeypatch) -> MagicMock:
+    def _real_client(monkeypatch, mode: str | None = None) -> MagicMock:
         from rtm_mcp.config import RTMConfig
 
         monkeypatch.delenv("RTM_STRICT_NOTES", raising=False)
+        if mode is not None:
+            monkeypatch.setenv("RTM_STRICT_NOTES", mode)
         client = MagicMock()
         client.config = RTMConfig()
         return client
@@ -199,28 +216,57 @@ class TestTheShippedDefaultIsLive:
             enforce_note_shape(client, "2026-07-26 — OUTPUT — brief drafted", "", tool="x") is None
         )
 
-    def test_an_off_vocabulary_TYPE_passes__the_ownership_boundary(self, monkeypatch):
-        """The membrane, now that the gate is live: the server checks SHAPE, gtd owns the TYPE
-        vocabulary (`note-shape-catalogue.md` § 2). Switching the gate on must not quietly
-        promote it into a vocabulary gate — that is a separate, deliberately-sequenced change."""
+    def test_an_off_vocabulary_TYPE_is_now_REJECTED__the_boundary_moved(self, monkeypatch):
+        """**This assertion was inverted in v5.2.0, and the inversion is the change.**
+
+        Through v5.1.x it read "an off-vocabulary TYPE passes — the ownership boundary": the
+        server checked shape, gtd owned the vocabulary, and promoting the gate was called out as
+        a separate, deliberately-sequenced change. That change is this one. The sequencing held —
+        it landed only after the vocabulary was measured (~40 tokens / 114 notes, 2026-07-31) and
+        the corpus scheduled for remediation.
+
+        What did NOT move is who OWNS the vocabulary: `note-shape-catalogue.md` § 2 is still the
+        authority and the server codifies it. Enforcement moved; authorship did not.
+        """
         client = self._real_client(monkeypatch)
+        assert (
+            enforce_note_shape(client, "2026-07-26 — WIDGET — invented type", "", tool="x")
+            is not None
+        )
+
+    def test_shape_mode_restores_the_old_boundary_exactly(self, monkeypatch):
+        """The rollback is one env var, and it must land on the PREVIOUS behaviour, not near it."""
+        client = self._real_client(monkeypatch, mode="shape")
         assert (
             enforce_note_shape(client, "2026-07-26 — WIDGET — invented type", "", tool="x") is None
         )
 
-    def test_the_legacy_ACTIVITY_spellings_pass_but_the_underscore_does_not(self, monkeypatch):
-        """The measured live sample. `ACTIVITY`, `AR` and `ACTIVITY REPORT` are legacy spellings
-        that still parse — a space is legal in a TYPE token — so switching the gate on does not
-        invalidate history. `ACTIVITY_REPORT` is the v3.3.0 defect and is the one that fails:
-        the TYPE token admits no underscore. Verified absent from live data before the flip."""
+    def test_every_legacy_ACTIVITY_spelling_is_now_unwritable(self, monkeypatch):
+        """Also inverted in v5.2.0 — and this is the inversion the gate exists FOR.
+
+        In `shape` mode all three legacy spellings passed, because a space is legal in a TYPE
+        token. That is exactly how four spellings of one concept accumulated. They now fail on
+        different grounds, and the distinction is worth keeping: `ACTIVITY` and `AR` are
+        well-SHAPED but unregistered; `ACTIVITY_REPORT` never parsed at all, the TYPE token
+        admitting no underscore.
+
+        They remain READABLE throughout — see test_note_types.py. Unwritable is not unreadable,
+        and conflating the two would mis-classify every legacy note on the surface lists.
+        """
         client = self._real_client(monkeypatch)
         for legacy in ("ACTIVITY", "AR", "ACTIVITY REPORT"):
-            assert (
-                enforce_note_shape(client, f"2026-07-05 — {legacy} — scan report", "", tool="x")
-                is None
-            )
+            err = enforce_note_shape(client, f"2026-07-05 — {legacy} — scan report", "", tool="x")
+            assert err is not None, legacy
+            assert err["error"]["details"]["rejected_by"] == "vocabulary", legacy
+        underscore = enforce_note_shape(client, "2026-07-05 — ACTIVITY_REPORT — x", "", tool="x")
+        assert underscore["error"]["details"]["rejected_by"] == "shape"
+
+    def test_the_canonical_replacement_for_each_legacy_spelling_writes(self, monkeypatch):
+        """A gate that refuses the old spelling without accepting the new one is just an outage."""
+        client = self._real_client(monkeypatch)
         assert (
-            enforce_note_shape(client, "2026-07-05 — ACTIVITY_REPORT — x", "", tool="x") is not None
+            enforce_note_shape(client, "2026-07-05 — ACTIVITY-REPORT — scan report", "", tool="x")
+            is None
         )
 
     def test_pauls_free_text_note_is_rejected_only_because_it_is_an_MCP_WRITE(self, monkeypatch):
@@ -241,3 +287,95 @@ class TestTheShippedDefaultIsLive:
         client = MagicMock()
         client.config = RTMConfig()
         assert enforce_note_shape(client, "garbage", "", tool="add_note") is None
+
+
+class TestVocabularyTier:
+    """`vocabulary` mode — the v5.2.0 default. Grammar AND a registered TYPE.
+
+    The reversal these tests pin: through v5.1.x a well-shaped title with an off-vocabulary TYPE
+    passed here by design (the CONTRIBUTING § 6 membrane), and the plugin validator caught it —
+    when a caller remembered to run it. A 2026-07-31 census measured what that cost: ~40 tokens
+    across 114 notes over five months. A gate that can be forgotten is not a gate.
+    """
+
+    def _gate(self, mode, title):
+        client = SimpleNamespace(config=SimpleNamespace(strict_notes=mode))
+        return enforce_note_shape(client, title, "", tool="add_note")
+
+    def test_registered_type_passes(self):
+        assert self._gate("vocabulary", "2026-08-01 — CONTEXT — fine") is None
+
+    def test_unregistered_type_is_rejected(self):
+        err = self._gate("vocabulary", "2026-08-01 — EXECUTOR — skipped")
+        assert err is not None
+        assert err["error"]["code"] == "note_shape_rejected"
+
+    def test_shape_mode_still_lets_an_unregistered_type_through(self):
+        """The rollback step must reproduce v5.1.0 byte-for-byte, or it is not a rollback."""
+        assert self._gate("shape", "2026-08-01 — EXECUTOR — skipped") is None
+
+    def test_off_mode_lets_everything_through(self):
+        assert self._gate("off", "not a title at all") is None
+
+    def test_a_malformed_title_is_a_SHAPE_finding_not_a_vocabulary_one(self):
+        """Ordering matters: an unparseable title has no TYPE to judge, so shape reports first."""
+        err = self._gate("vocabulary", "no date prefix here")
+        assert err["error"]["details"]["rejected_by"] == "shape"
+
+    def test_a_well_shaped_unregistered_type_is_a_VOCABULARY_finding(self):
+        err = self._gate("vocabulary", "2026-08-01 — EXECUTOR — skipped")
+        assert err["error"]["details"]["rejected_by"] == "vocabulary"
+
+    def test_no_new_error_code_was_minted(self):
+        """A `note_vocabulary_rejected` synonym would churn all 100 fingerprints for a
+        distinction `error.details` already carries — the drift the unified registry removed."""
+        for title in ("no date prefix", "2026-08-01 — EXECUTOR — x"):
+            assert self._gate("vocabulary", title)["error"]["code"] == "note_shape_rejected"
+
+    def test_the_vocabulary_rejection_teaches_codification_before_validation(self):
+        how = self._gate("vocabulary", "2026-08-01 — EXECUTOR — x")["error"]["details"][
+            "how_to_proceed"
+        ]
+        assert "note-shape-catalogue.md" in how  # where a NEW type is added
+        assert "first" in how.lower()  # ...and that it goes there FIRST
+        assert "gtd_note_add" in how  # the governed path that avoids this entirely
+        assert "RTM_STRICT_NOTES=shape" in how  # the precise rollback, not just "off"
+
+    def test_warn_mode_logs_a_vocabulary_finding_but_allows_it(self):
+        assert self._gate("warn", "2026-08-01 — EXECUTOR — x") is None
+
+
+class TestTheShippedVocabularyDefaultIsLive:
+    """Drives a REAL RTMConfig, not a mode-forced double.
+
+    Every test in `TestVocabularyTier` passes against a server where the default is still
+    `shape` — the exact vacuity that let the note-shape gate ship inert for two releases while
+    its own suite stayed green.
+    """
+
+    def _real(self):
+        from rtm_mcp.config import RTMConfig
+
+        cfg = RTMConfig(api_key="k", shared_secret="s", auth_token="t")
+        return SimpleNamespace(config=cfg)
+
+    def test_the_default_mode_is_vocabulary(self):
+        assert self._real().config.strict_notes == "vocabulary"
+
+    def test_an_unregistered_type_is_rejected_with_no_env_set(self):
+        err = enforce_note_shape(
+            self._real(), "2026-08-01 — EXECUTOR — skipped", "", tool="add_note"
+        )
+        assert err is not None
+        assert err["error"]["details"]["rejected_by"] == "vocabulary"
+
+    def test_a_legacy_surface_spelling_is_rejected_with_no_env_set(self):
+        err = enforce_note_shape(self._real(), "2026-08-01 — Q — legacy", "", tool="add_note")
+        assert err is not None
+        assert "LEGACY" in err["error"]["details"]["reason"]
+
+    def test_a_registered_type_still_writes(self):
+        assert (
+            enforce_note_shape(self._real(), "2026-08-01 — SCOPE — refocused", "", tool="add_note")
+            is None
+        )

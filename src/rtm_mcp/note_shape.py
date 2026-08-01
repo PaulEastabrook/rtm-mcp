@@ -4,18 +4,33 @@ The sibling of ``strict_tags.py``: a deterministic write-boundary gate that refu
 malformed write at the server, so the discipline becomes an invariant no agent, session,
 or scheduled engine can forget.
 
-**Mechanical SHAPE only — never vocabulary.** The gate checks that a note title parses as::
+**Two checks, and since v5.2.0 both are enforced.** The gate checks that a note title parses as::
 
     YYYY-MM-DD [HH:MM] — TYPE — summary
 
 …a real calendar date, both em-dash separators, a well-formed non-empty TYPE token, and a
-non-empty summary. It does **not** check that TYPE is a *canonical* note type — that
-vocabulary lives in the gtd plugin (``references/note-shape-catalogue.md`` § 2, enforced by
-``validate-note.py``) and stays plugin-side, exactly as canonical tag policing stays
-plugin-side while this server gates tag *existence*. A well-shaped note carrying an
-off-vocabulary TYPE passes here and is caught by the plugin validator / weekly notes-audit.
+non-empty summary (:func:`check_title`) — **and** that TYPE is a registered type
+(:func:`check_type`).
 
-Importing a vocabulary into the server would be the drift this split exists to prevent.
+**The vocabulary check is a reversal, and the reasoning is worth keeping.** Through v5.1.x this
+module enforced shape only, on the CONTRIBUTING § 6 membrane: the server gates mechanics, the
+plugin gates vocabulary, exactly as the server gates tag *existence* while gtd gates tag
+*canonicality*. That split was correct while it held. It stopped holding when the split was
+measured: a full-estate census on 2026-07-31 found **~40 off-vocabulary TYPE tokens across 114
+notes**, accumulated over five months, because the plugin-side validator only runs when a caller
+remembers to run it. A gate that can be forgotten is not a gate — the same argument that put the
+other three write gates here.
+
+What did NOT change is where the vocabulary is *decided*. `note-shape-catalogue.md` § 2 remains
+the authority; this server **codifies** it (see :mod:`note_types`), exactly as
+:mod:`engage_commit` codifies the verdict grammar. A new type is added to the markdown first —
+codification before validation — and the gtd-side ``validate-note.py`` picks it up at runtime with
+no release. Only the server's copy needs a version bump, and that lockstep is the accepted cost of
+enforcement.
+
+The write-authorised set is **derived**, never hand-listed
+(:data:`note_types.WRITE_AUTHORISED_NOTE_TYPES`): a fifth hand-maintained vocabulary would be the
+very drift this gate exists to stop.
 
 **Where the title comes from.** RTM has no note-title field: ``notes.add``/``notes.edit``
 store the body as ``<note_title>\\n<note_text>`` and return an empty title on read (the same
@@ -31,8 +46,14 @@ and would otherwise report them: *no date prefix → informational, never a find
 but off-vocabulary TYPE → agent-written, and that is the finding.* The data separates cleanly —
 agent-written notes always carry the ``YYYY-MM-DD — TYPE —`` prefix, Paul's are free prose.
 
-Modes (``config.strict_notes``): ``shape`` (**the default since v5.1.0** — reject), ``warn``
-(log only, never rejects), ``off`` (inert). See CONTRIBUTING § 6.
+Modes (``config.strict_notes``), an escalation: ``off`` (inert) → ``warn`` (log only, never
+rejects) → ``shape`` (grammar; the v5.1.0 default, and the byte-for-byte rollback step) →
+``vocabulary`` (grammar **and** a registered TYPE; **the default since v5.2.0**). See
+CONTRIBUTING § 6.
+
+**No ``warn`` stage was run before the flip, deliberately.** The observe-before-enforce step was
+offered and declined (Paul, 2026-08-01) — the census had already measured the population the gate
+would fire on, so `warn` would have re-measured what was known. Rollback is one env var per tier.
 
 **Scope, precisely — this gate governs the escape hatch, not the gtd write paths.** It is wired
 into the generic ``add_note`` and ``edit_note`` only. Every ``gtd_*`` note write calls
@@ -70,7 +91,47 @@ EXPECTED_SHAPE = "YYYY-MM-DD [HH:MM] — TYPE — summary"
 # The `config.strict_notes` vocabulary. Owned here (the gate owns its own modes) and
 # imported by config.py for field validation, so a typo'd env var fails loudly at load
 # rather than silently leaving the gate inert.
-VALID_STRICT_NOTES_MODES = ("off", "warn", "shape")
+#
+# Ordered as an escalation: off → warn (log only) → shape (mechanical grammar) →
+# vocabulary (grammar AND a registered TYPE). `vocabulary` is the shipped default since v5.2.0.
+VALID_STRICT_NOTES_MODES = ("off", "warn", "shape", "vocabulary")
+
+#: The modes in which the gate rejects rather than merely logging.
+_ENFORCING_MODES = ("shape", "vocabulary")
+
+
+def check_type(title: str) -> str | None:
+    """Judge a note title's TYPE against the write-authorised vocabulary.
+
+    Returns a reason string, or None when the type is registered (or the title does not parse,
+    which is `check_title`'s finding to report, not this one's).
+
+    **The allow-list is derived, never hand-listed** — see `note_types.WRITE_AUTHORISED_NOTE_TYPES`.
+    A fifth hand-maintained vocabulary is precisely the drift this gate exists to stop, so it must
+    not be created in order to enforce it.
+
+    **The legacy AI-surface spellings are deliberately absent from the write set**, which is the
+    asymmetry that makes this gate worth having: `ACTIVITY_REPORT`, `Q`, `AR` and the rest stay
+    *readable* (`note_types.SURFACE_NOTE_TYPES`, consulted by `surface_queue.classify_note`) and
+    stop being *writable*. A write set that admitted them would license the drift the 2026-07-31
+    remediation pass was run to clear, the day after it ran.
+    """
+    from .note_types import SURFACE_NOTE_TYPES, WRITE_AUTHORISED_NOTE_TYPES
+
+    match = _TITLE_RE.match(title or "")
+    if not match:
+        return None  # not a vocabulary finding — `check_title` owns the shape verdict
+    note_type = match.group("type").strip()
+    if note_type in WRITE_AUTHORISED_NOTE_TYPES:
+        return None
+    # Name the legacy case specifically. A caller reaching for `Q` is not guessing — they are
+    # copying what is already on the list — so "unknown type" would be actively misleading.
+    if note_type in SURFACE_NOTE_TYPES:
+        return (
+            f"note type '{note_type}' is a recognised LEGACY spelling and is no longer "
+            "writable — it is read-only so existing notes still classify"
+        )
+    return f"note type '{note_type}' is not in the registered vocabulary"
 
 
 def effective_title(note_title: str, note_text: str) -> str:
@@ -118,25 +179,46 @@ def check_title(title: str) -> str | None:
     return None
 
 
-def guided_error(title: str, reason: str) -> dict[str, Any]:
-    """Build the self-documenting rejection (teaches recovery, like the strict-tag gate)."""
+def guided_error(title: str, reason: str, *, kind: str = "shape") -> dict[str, Any]:
+    """Build the self-documenting rejection (teaches recovery, like the strict-tag gate).
+
+    `kind` is `"shape"` or `"vocabulary"`. It rides in `error.details`, NOT as a second
+    `ErrorCode`: `note_shape_rejected` already ships, and minting a `note_vocabulary_rejected`
+    synonym would recreate exactly the drift the unified registry removed in v2.0.0 — and would
+    churn all 100 tool fingerprints for a distinction the details already carry.
+    """
+    if kind == "vocabulary":
+        from .note_types import WRITE_AUTHORISED_NOTE_TYPES
+
+        how = (
+            "The title's SHAPE is fine; its TYPE is not registered. Re-issue with a "
+            f"registered type: {', '.join(sorted(WRITE_AUTHORISED_NOTE_TYPES))}. "
+            "The canonical vocabulary is gtd's note-shape catalogue "
+            "(plugins/gtd/skills/gtd/references/note-shape-catalogue.md § 2) and the server "
+            "codifies it — so a genuinely new type is added THERE first (codification before "
+            "validation), never minted at the call site. If none fits, take the documented out: "
+            "use the closest registered type, record the intended one in the body, and raise an "
+            "#improvement_candidate. Prefer gtd_note_add, which builds a conformant title for "
+            "you. To disable: RTM_STRICT_NOTES=shape keeps the grammar check without the "
+            "vocabulary check; RTM_STRICT_NOTES=off disables both."
+        )
+    else:
+        how = (
+            "Re-issue with a title matching "
+            f"'{EXPECTED_SHAPE}' — for example "
+            "'2026-07-19 — OUTPUT — brief drafted'. The date is the session's temporal "
+            "anchor; separators are a spaced em-dash. Prefer gtd_note_add, which builds the "
+            "title for you. The gate is ON by default: set RTM_STRICT_NOTES=warn to log "
+            "without rejecting, or RTM_STRICT_NOTES=off to disable it entirely."
+        )
     return build_error(
         ErrorCode.NOTE_SHAPE_REJECTED,
         f"strict_notes: write rejected — {reason}",
         rejected_title=title,
         reason=reason,
+        rejected_by=kind,
         expected_shape=EXPECTED_SHAPE,
-        how_to_proceed=(
-            "Re-issue with a title matching "
-            f"'{EXPECTED_SHAPE}' — for example "
-            "'2026-07-19 — OUTPUT — brief drafted'. The date is the session's temporal "
-            "anchor; separators are a spaced em-dash. This gate checks SHAPE only — the "
-            "canonical TYPE vocabulary lives in the gtd note-shape catalogue "
-            "(plugins/gtd/skills/gtd/references/note-shape-catalogue.md § 2), so a "
-            "well-shaped title with an unknown TYPE passes here and is caught there. "
-            "The gate is ON by default: set RTM_STRICT_NOTES=warn to log without "
-            "rejecting, or RTM_STRICT_NOTES=off to disable it entirely."
-        ),
+        how_to_proceed=how,
         strict_notes_mode=True,
     )
 
@@ -156,13 +238,21 @@ def enforce_note_shape(
     that fires on a config it cannot read would be enforcing on a guess.
     """
     mode = getattr(client.config, "strict_notes", "off")
-    if mode not in ("warn", "shape"):
+    if mode not in ("warn", *_ENFORCING_MODES):
         return None
 
     title = effective_title(note_title, note_text)
     reason = check_title(title)
+    kind = "shape"
     if reason is None:
-        return None
+        # Shape is fine. In `vocabulary` mode the TYPE is judged too — and only then, so that
+        # `shape` reproduces v5.1.0 behaviour byte-for-byte and remains a genuine rollback step.
+        if mode != "vocabulary":
+            return None
+        reason = check_type(title)
+        if reason is None:
+            return None
+        kind = "vocabulary"
 
     # WARNING, not INFO — see the v3.0.1 note in `server.configure_logging`. In `warn` mode this
     # record is the ONLY effect the gate has, so a level that needs configuration to emit made
@@ -180,4 +270,4 @@ def enforce_note_shape(
     if mode == "warn":
         return None
 
-    return guided_error(title, reason)
+    return guided_error(title, reason, kind=kind)

@@ -239,11 +239,24 @@ class TestWriteGateFlags:
     """
 
     def test_both_gates_default_on(self, monkeypatch):
+        """`strict_notes` defaults to the TOP of the escalation, not merely to "on".
+
+        v5.1.0 shipped `shape`; v5.2.0 moved the default to `vocabulary` (grammar AND a
+        registered TYPE). Asserting the exact value rather than truthiness is what makes a
+        silent downgrade — the failure mode that would matter — visible here.
+        """
         monkeypatch.delenv("RTM_STRICT_NOTES", raising=False)
         monkeypatch.delenv("RTM_STRICT_LIST_TARGETS", raising=False)
         config = RTMConfig()
-        assert config.strict_notes == "shape"
+        assert config.strict_notes == "vocabulary"
         assert config.strict_list_targets is True
+
+    def test_shape_remains_available_as_the_partial_rollback(self, monkeypatch):
+        """Two rollback depths, not one: `shape` drops the vocabulary check while keeping the
+        grammar; `off` drops both. A single on/off switch would make the only way to unblock an
+        unregistered TYPE also the way to unblock a malformed title."""
+        monkeypatch.setenv("RTM_STRICT_NOTES", "shape")
+        assert RTMConfig().strict_notes == "shape"
 
     def test_each_gate_is_switchable_off(self, monkeypatch):
         """The escape hatch. An enabled-by-default gate with no way back is a one-way door,
@@ -254,7 +267,7 @@ class TestWriteGateFlags:
         assert config.strict_notes == "off"
         assert config.strict_list_targets is False
 
-    @pytest.mark.parametrize("mode", ["off", "warn", "shape"])
+    @pytest.mark.parametrize("mode", ["off", "warn", "shape", "vocabulary"])
     def test_valid_strict_notes_modes_accepted(self, monkeypatch, mode):
         monkeypatch.setenv("RTM_STRICT_NOTES", mode)
         assert RTMConfig().strict_notes == mode
