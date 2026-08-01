@@ -72,6 +72,38 @@ class TestTheServerCanWriteWhatTheServerWrites:
             assert check_title(title) is None, item_type
             assert check_type(title) is None, f"{item_type} emits {token!r}, which is unwritable"
 
+    def test_every_journalling_catalogue_type_is_authorable_by_gtd_note_add(self):
+        """Registering a journalling type is a TWO-set change, and only one has a prompt.
+
+        v5.1.2 registered `SCOPE` in `CATALOGUE_NOTE_TYPES` — making it writable through the
+        generic `add_note` escape hatch — and did not add it to `JOURNAL_NOTE_TYPES`, so the
+        GOVERNED tool rejected the type the server had just declared canonical. Found when a real
+        `gtd_note_add(note_type="SCOPE")` was refused, not by any test.
+
+        The asymmetry that makes this easy to miss: side-effect types are excluded from the journal
+        set BY DESIGN (each rides with its owning tool), so "canonical but not journal" is a
+        legitimate state and cannot simply be banned. This asserts the narrower thing that is
+        actually true — every type the catalogue files under the JOURNALLING lifecycle must be
+        authorable by the journalling tool.
+        """
+        journalling = {
+            "INCEPTION",
+            "CONTEXT",
+            "DECISION",
+            "PROGRESS",
+            "COMPLETION",
+            "CASCADE",
+            "SCOPE",
+            "STATE",
+            "SESSION",
+            "BLOCKER",
+        }
+        assert journalling <= nt.CATALOGUE_NOTE_TYPES, "the fixture has drifted from the catalogue"
+        # COMPLETION is the one deliberate exclusion: it rides with gtd_item_complete.
+        assert journalling - {"COMPLETION"} <= JOURNAL_NOTE_TYPES, (
+            "a journalling type is canonical but not authorable by gtd_note_add"
+        )
+
     def test_every_journal_type_gtd_note_add_accepts_is_writable(self):
         # gtd_note_add's closed enum must be a SUBSET of what the escape hatch permits, else the
         # governed path could write something the generic path refuses — an incoherent estate.

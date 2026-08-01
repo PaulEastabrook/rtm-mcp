@@ -184,8 +184,8 @@ EXAMPLES: dict[str, tuple[str, ...]] = {
     "gtd_project_create": (
         'gtd_project_create(frame={"life": "work", "focus": "Engineering", '
         '"name": "Migrate CI", "outcome": "CI runs on the new runner"}, '
-        'items=[{"id": "a", "name": "Audit the current pipeline", "type": "action"}, '
-        '{"id": "b", "name": "Cut over", "type": "action", "deps": ["a"]}])',
+        'items=[{"id": "a", "text": "Audit the current pipeline", "type": "action"}, '
+        '{"id": "b", "text": "Cut over", "type": "action", "deps": ["a"]}])',
     ),
     "gtd_engage_commit": (
         'gtd_engage_commit(items=[{"id": "123", "verdict": "next_actions"}])   # clear a '

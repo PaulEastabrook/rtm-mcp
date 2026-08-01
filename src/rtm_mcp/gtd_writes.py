@@ -57,8 +57,32 @@ MOSCOW_TO_PRIORITY: dict[str, str] = {"must": "1", "should": "2", "could": "3"}
 #: 7. Note types this phase writes — the free-prose journalling subset of the 25-type catalogue.
 #: The machine-parsed / side-effect-bearing types (DEPENDS-ON, OUTPUT, CHAT, ORDER, AI-LINK,
 #: TMPL-CHILD, CONTRIB…) each own a grammar and get their own tool in a later phase.
+#: What `gtd_note_add` will author — the JOURNALLING types, a strict subset of
+#: `note_types.CATALOGUE_NOTE_TYPES`. Side-effect types are excluded on purpose: each rides with
+#: the tool that owns its write (OUTPUT → `gtd_note_attach_output`, CONTRIB/PREP →
+#: `gtd_contribution_attach`, DEPENDS-ON → `gtd_dependency_link`, CHAT → `gtd_chat_post`,
+#: COMPLETION/OUTCOME → `gtd_item_complete`), so admitting one here would create a second,
+#: ungoverned path to the same note.
+#:
+#: **`SCOPE` was added on 2026-08-01, one release late, and the gap is worth recording.** v5.1.2
+#: registered it as canonical in `note_types.CATALOGUE_NOTE_TYPES` — which made it *writable* through
+#: the generic `add_note` escape hatch — but not here, so the GOVERNED tool rejected the type its own
+#: server had just declared canonical. Caught when a real call to `gtd_note_add(note_type="SCOPE")`
+#: was refused. The lesson generalises: **registering a journalling type is a TWO-set change** —
+#: canonical (what may exist) and journal (what `gtd_note_add` may author) — and the catalogue rows
+#: do not distinguish them, so nothing prompts for the second.
 JOURNAL_NOTE_TYPES = frozenset(
-    {"INCEPTION", "CONTEXT", "DECISION", "PROGRESS", "CASCADE", "STATE", "SESSION", "BLOCKER"}
+    {
+        "INCEPTION",
+        "CONTEXT",
+        "DECISION",
+        "PROGRESS",
+        "SCOPE",
+        "CASCADE",
+        "STATE",
+        "SESSION",
+        "BLOCKER",
+    }
 )
 
 # --------------------------------------------------------------------------- #

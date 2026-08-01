@@ -4,6 +4,39 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v6.0.4 — SCOPE was canonical but unauthorable, and a worked example contradicted its own schema
+
+Two small fixes from a verification pass over the open improvement backlog. The first was found the
+way most of this arc's defects were found — by a real call failing, not by reading code.
+
+### `SCOPE` was registered but `gtd_note_add` would not write it
+
+v5.1.2 registered `SCOPE` in `note_types.CATALOGUE_NOTE_TYPES`, making it writable through the
+generic `add_note` escape hatch. It was **not** added to `gtd_writes.JOURNAL_NOTE_TYPES`, which is
+`gtd_note_add`'s advertised enum — so **the governed tool rejected the type its own server had just
+declared canonical**, while the ungoverned one accepted it. Found when a live
+`gtd_note_add(note_type="SCOPE")` came back `invalid_value`.
+
+**Registering a journalling type is a TWO-set change**, and only one of the two has anything
+prompting for it. The catalogue rows in `note-shape-catalogue.md` § 2 do not distinguish *canonical*
+(what may exist) from *journal* (what `gtd_note_add` may author), so a registration naturally lands
+in the first and stops.
+
+The asymmetry that makes it easy to miss is real and must not be "fixed" by equating the sets:
+side-effect types are excluded from the journal set **by design** — each rides with the tool that
+owns its write — so *canonical but not journal* is a legitimate state. The new test asserts the
+narrower true thing: every type the catalogue files under the **journalling lifecycle** must be
+authorable by the journalling tool, with `COMPLETION` named as the one deliberate exclusion
+(it rides with `gtd_item_complete`).
+
+### The `gtd_project_create` worked example used a field the schema does not have
+
+`tool_help.EXAMPLES` showed `items=[{"id": "a", "name": "…"}]`; the parameter is `text`. A caller
+following the example loses every item's name silently — and this had already cost a full
+plan-create and contributed to a live partial write (RTM `1220192114`). One string.
+
+Fingerprint churn: **1 tool** (`gtd_note_add` — the enum is advertised).
+
 ## v6.0.3 — the canonical statements of the rule, found by sweeping instead of probing
 
 v6.0.1 and v6.0.2 each fixed one stale statement, found by probing after a restart. That is
