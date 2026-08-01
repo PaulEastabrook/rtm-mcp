@@ -34,6 +34,18 @@ Three fields, attached to every governed write:
     parameters, and name the ones that are absent. It reasons about **absence**, which is the
     only thing still observable — which is precisely why it works where tier 3 cannot.
 
+    **Absence has more than one cause, and this module must not pretend otherwise.** The client
+    strip above is one. A second was measured on 2026-08-01: the caller emitted the value as
+    literal tool-call markup folded into a sibling string parameter, so the key never existed
+    and nothing was stripped — see ``build_advisory``, which names both and asserts neither.
+
+    That second cause is, unlike the strip, **server-detectable** — the value arrives, in the
+    wrong parameter, instead of being destroyed upstream. So since v6.1.0 the advisory has two
+    triggers: ``build_advisory`` (absence, the original) and ``build_markup_advisory``
+    (evidence). The second **closes the partial-loss blind spot for that cause**, because it
+    fires on the markup itself rather than on total absence — the case the all-absent rule is
+    silent in by construction, and which covers 15 of the 25 governed writes.
+
 **The advisory is never a rejection and never blocks.** A minimal call is often legitimate,
 so this is data the caller may ignore; a caller that ignores all three still gets a correct,
 complete result. That is a hard invariant, not a preference.
@@ -53,6 +65,8 @@ documented permissive escape hatch and are deliberately untouched.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from typing import Any
 
 from .error_codes import ErrorCode
@@ -87,7 +101,8 @@ MAX_NAMED_OPTIONALS = 12
 RECEIPT_DOC = (
     "Receipt: `not_applied[]` = what you asked for that was NOT written (empty when all "
     "landed); `guidance` = the next step when the outcome was not a clean success; `advisory` "
-    "= the call carried no optional parameter. Check `not_applied[]` before reporting success."
+    "= something about the call itself worth checking. Check `not_applied[]` before reporting "
+    "success."
 )
 
 
@@ -147,6 +162,19 @@ def build_advisory(tool_name: str, absent: list[str], declared: list[str]) -> st
     Names the absent parameters rather than saying merely "no optional parameters were
     received": the caller is being asked to compare the outcome against an intent only it
     knows, and it can only do that against specific names.
+
+    **It states the OBSERVATION, and offers causes as possibilities (v6.0.5).** Through v6.0.4
+    it asserted one cause — "a misspelt optional is dropped by some MCP clients" — as fact.
+    Measured over the whole transcript population on 2026-08-01, that cause had been the actual
+    cause **0 of the 2 times the advisory has ever fired**: once the call was legitimately bare,
+    and once the value was emitted as literal tool-call markup folded into a sibling string
+    (`</narrative>\\n<parameter name="sources">[…]`), so nothing was misspelt and no client
+    dropped anything — the key was never emitted. A confidently wrong cause is worse than none:
+    it sent a hand-off brief hunting a client-side strip that had not happened.
+
+    The markup cause is named FIRST because it is the one the caller can check for itself, and
+    because — unlike a strip — it leaves the value in the durable write, so the damage is
+    recoverable rather than merely reportable.
     """
     if not declared or len(absent) < len(declared):
         return None
@@ -155,10 +183,106 @@ def build_advisory(tool_name: str, absent: list[str], declared: list[str]) -> st
     names = ", ".join(shown) + (f", and {more} more" if more > 0 else "")
     return (
         f"No optional parameter reached this call to {tool_name} — none of: {names}. "
-        "If you meant to set one, it did not arrive: a misspelt optional is dropped by some "
-        "MCP clients before the server sees it, so the write lands without it and still "
-        "reports success. Compare the returned state against what you intended, and re-send "
-        f'the missing property with the exact name above. See rtm_tool_help("{tool_name}").'
+        "That is the observation; the cause is not visible from here. If you meant to set one, "
+        "two causes are on record. (1) It was emitted as literal tool-call markup inside "
+        "another parameter — check the text you sent for a stray `</…>` or `<parameter "
+        "name=…>` tail, which is written VERBATIM into the record if present. (2) A misspelt "
+        "name was dropped by the client before the server saw it. Compare the returned state "
+        "against what you intended, and re-send with the exact name above. "
+        f'See rtm_tool_help("{tool_name}").'
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Leaked tool-call markup (v6.1.0) — the ONE parameter-loss cause the server can see.
+#
+# The client strip destroys the value upstream, so nothing here can detect it. This is the
+# other cause, and it is the opposite shape: the caller emits XML-style tool-call delimiters
+# mid-argument and the serialiser folds them into the PRECEDING string, so the value ARRIVES
+# — in the wrong parameter — and is written verbatim. Measured 2026-08-01: 13 events over
+# five months across four MCP servers and four model generations; 5 corrupted RTM notes via
+# three governed writes; two parameters genuinely lost, one of them silently
+# (`gtd_inbox_item_annotate.questions`, reported only as `questions_count: 0`).
+#
+# THE ANCHOR IS TOOL-SCOPED, and that is what makes it precise. A closing tag is a finding
+# only when its name is a parameter THIS tool declares. Measured over 13,435 real RTM calls:
+# 7 firings, all true positives, zero false positives — including a full HTML document passed
+# to `add_note` (`</head>`, `</body>`, `</script>`), which does not fire because none of those
+# is an `add_note` parameter. A bare `</…>` predicate would have flagged it.
+#
+# ADVISORY, NEVER A GATE, and this is not a preference. The one class the anchor cannot
+# separate is a note DOCUMENTING this defect — and this repo journals its own findings into
+# RTM through exactly the tools being watched. A gate would make writing about the bug
+# impossible; the advisory merely mentions it, and says so in its own text.
+# --------------------------------------------------------------------------- #
+
+#: A closing tag. Matched against the tool's own declared parameter names — never used bare.
+_CLOSE_TAG = re.compile(r"</\s*([A-Za-z_][A-Za-z0-9_-]*)\s*>")
+
+#: The `<parameter name="X">` opener of the other dialect. Used ONLY to name the parameter the
+#: caller was trying to open, never as the anchor — the bare-tag dialect (`</analysis_body>`,
+#: `</completion>`) carries no opener at all and accounts for the majority of measured events,
+#: so anchoring on this would miss most of them.
+_PARAM_OPEN = re.compile(r"""<parameter\s+name\s*=\s*["']([A-Za-z_][A-Za-z0-9_-]*)["']""")
+
+
+def detect_leaked_markup(supplied: dict[str, Any], declared: Iterable[str]) -> list[dict[str, Any]]:
+    """Find tool-call markup folded into a string argument → one entry per affected parameter.
+
+    `supplied` is the call's bound arguments; `declared` is every parameter name the tool
+    defines (not only the optionals — the measured leaks closed over `narrative`,
+    `analysis_body` and `completion`, all of them REQUIRED).
+
+    Each entry is `{"param", "closed", "lost"}`: the parameter carrying the markup, the declared
+    names whose closing tags appear inside it, and the parameters that consequently did NOT
+    arrive as arguments.
+
+    **`lost` unifies the two dialects, and the second half of it was found by a failing test
+    rather than by design.** Dialect 1 names the target in a `<parameter name="sources">`
+    opener. Dialect 2 has no opener at all — but it turns out to carry the same information:
+    `</analysis_body>\\n<questions>[…]</questions>` closes `questions`, which is *also* a
+    declared parameter of that tool. So a closing tag naming a declared parameter OTHER than
+    the carrier is itself a lost-parameter signal, and both dialects reduce to one field.
+
+    Empty list when there is nothing to report, so a caller can branch on truthiness.
+    """
+    names = set(declared)
+    findings: list[dict[str, Any]] = []
+    for param, value in sorted(supplied.items()):
+        if not isinstance(value, str) or "</" not in value:
+            continue
+        closed = sorted({tag for tag in _CLOSE_TAG.findall(value) if tag in names})
+        if not closed:
+            continue
+        lost = set(_PARAM_OPEN.findall(value)) | (set(closed) - {param})
+        findings.append({"param": param, "closed": closed, "lost": sorted(lost)})
+    return findings
+
+
+def build_markup_advisory(tool_name: str, findings: list[dict[str, Any]]) -> str | None:
+    """The leaked-markup advisory, or None when nothing was found.
+
+    **This is the half that closes the partial-loss blind spot.** `build_advisory` fires only
+    when EVERY optional facet is absent, so a call that supplies one facet correctly and loses
+    another is silent — 15 of the 25 governed writes have that gap. This fires on the evidence
+    itself rather than on total absence, so it speaks in exactly the case the other cannot.
+    """
+    if not findings:
+        return None
+    parts = []
+    for f in findings:
+        tags = ", ".join(f"`</{t}>`" for t in f["closed"])
+        lost = ", ".join(f"`{name}`" for name in f["lost"])
+        naming = f", and {lost} did not arrive as an argument" if lost else ""
+        parts.append(f"inside `{f['param']}` ({tags}){naming}")
+    where = "; ".join(parts)
+    return (
+        f"Tool-call markup arrived INSIDE a string argument to {tool_name} — {where}. That text "
+        "is written VERBATIM into the record. This happens when tool-call delimiters are emitted "
+        "mid-argument and folded into the preceding string, so the value never becomes a "
+        "separate JSON key. Re-send the named parameter as its own argument, and check the "
+        "written record for the stray markup. Nothing was blocked — if you are quoting this "
+        "markup deliberately, ignore this."
     )
 
 
@@ -213,6 +337,7 @@ def attach(
     tool_name: str,
     absent_optional: list[str],
     declared_optional: list[str],
+    leaked: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Attach the three receipt fields to a governed write's success payload.
 
@@ -223,10 +348,19 @@ def attach(
 
     A `not_applied[]` a tool body has already populated is preserved; this only guarantees the
     key exists. `guidance` is derived last, so it sees those entries.
+
+    **`leaked` OUTRANKS the bare-call advisory, because it explains it.** When markup is found,
+    the absence of the optionals is not a separate fact to report — it is the same fact, and the
+    markup advisory names the lost parameter where the bare-call one can only list what is
+    missing. Reporting both would say one thing twice, which is the duplication v4.1.0 narrowed
+    `guidance` to avoid. And the markup advisory still fires when the bare-call one is silent
+    (some facets supplied, one lost), which is the whole point of having it.
     """
     if not isinstance(data, dict) or "error" in data:
         return data
     data.setdefault("not_applied", [])
-    data["advisory"] = build_advisory(tool_name, absent_optional, declared_optional)
+    data["advisory"] = build_markup_advisory(tool_name, leaked or []) or build_advisory(
+        tool_name, absent_optional, declared_optional
+    )
     data["guidance"] = build_guidance(data)
     return data

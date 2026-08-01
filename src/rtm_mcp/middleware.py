@@ -73,6 +73,7 @@ from fastmcp.server.middleware import Middleware
 
 from . import tool_help
 from .guided_rejection import build_rejection, render_prose
+from .receipt import detect_leaked_markup
 
 logger = logging.getLogger(__name__)
 
@@ -163,5 +164,21 @@ class RejectUnknownParameters(Middleware):
                     input_schema=schema,
                 )
             )
+
+        # Leaked tool-call markup — LOG ONLY, never a rejection (v6.1.0).
+        #
+        # This middleware can only raise, so it is a gate by construction and therefore cannot
+        # carry the caller-visible half; the receipt does that, on the 25 governed writes. What
+        # it can do is cover the OTHER 75, which is where the traffic actually is — `add_note`
+        # alone was measured at 78x the volume of `gtd_note_add`, and it is the documented
+        # escape hatch, i.e. exactly where drift enters. A WARNING reaches the v5.1.0 file sink,
+        # which survives the /dev/null fd 2 of a Desktop-spawned server.
+        #
+        # Deliberately NOT a ToolError: the anchor cannot distinguish a genuine leak from a note
+        # DOCUMENTING one, and this repo journals its own defects into RTM through these tools.
+        # Blocking would make writing about the bug impossible. See `receipt.detect_leaked_markup`.
+        leaked = detect_leaked_markup(message.arguments or {}, valid)
+        if leaked:
+            logger.warning("Leaked tool-call markup in call to %s: %s", message.name, leaked)
 
         return await call_next(context)

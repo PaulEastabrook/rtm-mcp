@@ -33,6 +33,8 @@ from rtm_mcp.receipt import (
     attach,
     build_advisory,
     build_guidance,
+    build_markup_advisory,
+    detect_leaked_markup,
     is_facet,
     not_applied_entry,
 )
@@ -143,10 +145,44 @@ class TestAdvisory:
         # Absence carries no information there — gtd_item_set_redaction is the live example.
         assert build_advisory("t", [], []) is None
 
-    def test_explains_that_a_misspelt_optional_is_dropped_client_side(self):
-        # The advisory has to say WHY absence is worth mentioning, or it reads as pedantry.
+    def test_offers_both_recorded_causes_and_asserts_neither(self):
+        """The advisory must say why absence is worth mentioning WITHOUT asserting one cause.
+
+        **This test previously asserted the opposite** — it was
+        `test_explains_that_a_misspelt_optional_is_dropped_client_side`, and it checked only
+        that the message contained "drop". That passed happily while the message told every
+        caller, as fact, that a client had dropped a misspelt name.
+
+        Measured 2026-08-01 across the whole transcript population: the advisory has fired
+        twice, and that cause was the actual cause **neither time** (once a legitimately bare
+        call; once tool-call markup folded into a sibling string, where nothing was misspelt
+        and nothing was dropped). The wrong cause was not inert — it sent a hand-off brief
+        hunting a client-side strip that had never happened.
+
+        So the rule is now: name the observation, offer both recorded causes, commit to
+        neither. The markup cause must come first — it is the one the caller can check itself.
+        """
         msg = build_advisory("t", ["a"], ["a"])
-        assert msg and "drop" in msg.lower()
+        assert msg
+        lower = msg.lower()
+        # Both causes present.
+        assert "markup" in lower, "the markup cause must be named"
+        assert "drop" in lower, "the client-strip cause must still be named"
+        # The observation is framed as an observation, not a diagnosis.
+        assert "the cause is not visible from here" in lower
+        # The markup cause is actionable, so it leads.
+        assert lower.index("markup") < lower.index("misspelt")
+
+    def test_does_not_assert_a_single_cause_as_fact(self):
+        """The exact phrasing that made the v6.0.4 advisory wrong, pinned as forbidden.
+
+        A bare "it did not arrive: a misspelt optional is dropped …" reads as a diagnosis. The
+        guard is deliberately on the *asserting* construction rather than on the words, since
+        the words themselves remain legitimate inside the enumerated causes above.
+        """
+        msg = build_advisory("t", ["a"], ["a"])
+        assert msg
+        assert "arrive: a misspelt optional is dropped" not in msg
 
     def test_control_flags_are_not_facets(self):
         """A boolean is a mode switch, not data, so it can never be silently lost.
@@ -440,6 +476,284 @@ class TestReceiptSurvivesMcpSerialisation:
         text = "".join(getattr(b, "text", "") for b in res.content)
         assert "not_applied" in text, "receipt missing from the serialised text block"
         assert json.loads(text)["data"]["not_applied"] == []
+
+
+#: The 2026-08-01 live incident, byte-exact from the Desktop audit log (audit.jsonl:4739,
+#: toolu_018X5Di4RQ9EKtkBCPUTYjU2). Kept verbatim because a paraphrase would not prove the
+#: detector catches the thing that actually happened.
+LIVE_LEAK = (
+    "…how a defect outlives its own fix.</narrative>\n"
+    '<parameter name="sources">["AI Memory general/…", "gtd v0.206.0 …", "RTM 1218844852 — …"]'
+)
+
+#: The other measured dialect — a bare closing tag, no `<parameter name=` opener anywhere.
+#: `gtd_inbox_item_annotate`, 2026-07-26, which silently lost its `questions` array.
+LIVE_LEAK_BARE = (
+    "…a distinct action, not a citation problem.</analysis_body>\n"
+    '<questions>["Run the four prove re-runs now?","May I close this item?"]</questions>\n'
+    "</invoke>"
+)
+
+
+class TestDetectLeakedMarkup:
+    """The tool-scoped anchor: a closing tag is a finding only when it names a parameter THIS
+    tool declares. That scoping is the whole precision story — measured over 13,435 real RTM
+    calls it fired 7 times with zero false positives."""
+
+    def test_catches_the_live_incident_and_names_the_lost_parameter(self):
+        found = detect_leaked_markup(
+            {"narrative": LIVE_LEAK}, {"narrative", "sources", "ai_context", "note_type"}
+        )
+        assert found == [{"param": "narrative", "closed": ["narrative"], "lost": ["sources"]}]
+
+    def test_catches_the_bare_tag_dialect_and_still_names_what_was_lost(self):
+        """The majority of measured events, and the case that taught the predicate something.
+
+        There is no `<parameter name=` opener here at all, so a detector anchored on that would
+        miss it — which is why the anchor is the CLOSING tag. But the dialect is not
+        information-poor: `</analysis_body>` is followed by `<questions>…</questions>`, and
+        `questions` is ALSO a declared parameter of this tool. A closing tag naming a declared
+        parameter other than the carrier IS the lost parameter, so both dialects reduce to one
+        `lost` field. This assertion originally expected `[]` and the code was right."""
+        found = detect_leaked_markup(
+            {"analysis_body": LIVE_LEAK_BARE}, {"analysis_body", "questions", "rename"}
+        )
+        assert found == [
+            {
+                "param": "analysis_body",
+                "closed": ["analysis_body", "questions"],
+                "lost": ["questions"],
+            }
+        ]
+
+    def test_the_anchor_is_the_tools_own_parameter_names(self):
+        """The same string is a finding on one tool and silent on another. Nothing else in the
+        predicate does any work — this is what buys the zero false-positive rate."""
+        assert detect_leaked_markup({"narrative": LIVE_LEAK}, {"narrative"})
+        assert detect_leaked_markup({"body": LIVE_LEAK}, {"body", "summary"}) == []
+
+    def test_an_html_document_is_not_a_finding(self):
+        """THE measured false-positive that a naive `</…>` predicate produces. A real live call
+        passed a full HTML document to `add_note`; none of those tags is an `add_note`
+        parameter, so the anchor stays silent while a bare predicate would have fired."""
+        html = "<html><head><style>a{}</style></head><body><script>x</script></body></html>"
+        assert (
+            detect_leaked_markup({"note_text": html}, {"note_text", "note_title", "note_id"}) == []
+        )
+
+    def test_prose_naming_a_parameter_without_a_closing_tag_is_not_a_finding(self):
+        text = "The `sources` parameter did not arrive; see <parameter name=…> in the debrief."
+        assert detect_leaked_markup({"narrative": text}, {"narrative", "sources"}) == []
+
+    def test_non_strings_and_empties_are_skipped(self):
+        supplied = {"items": ["</narrative>"], "count": 3, "flag": True, "narrative": ""}
+        assert detect_leaked_markup(supplied, {"items", "count", "flag", "narrative"}) == []
+
+    def test_reports_every_affected_parameter_deterministically(self):
+        found = detect_leaked_markup(
+            {"summary": "x</summary>", "narrative": LIVE_LEAK}, {"summary", "narrative", "sources"}
+        )
+        assert [f["param"] for f in found] == ["narrative", "summary"]  # sorted, not call order
+
+
+class TestMarkupAdvisory:
+    def test_none_when_nothing_was_found(self):
+        assert build_markup_advisory("gtd_note_add", []) is None
+
+    def test_names_the_carrier_the_tag_and_the_lost_parameter(self):
+        found = detect_leaked_markup({"narrative": LIVE_LEAK}, {"narrative", "sources"})
+        msg = build_markup_advisory("gtd_note_add", found)
+        assert msg
+        assert "`narrative`" in msg and "`</narrative>`" in msg and "`sources`" in msg
+        assert "VERBATIM" in msg  # the caller must know the text was written, not dropped
+
+    def test_says_it_did_not_block(self):
+        """The anchor cannot separate a genuine leak from a note DOCUMENTING one, and this repo
+        journals its own defects through these very tools. Saying so is part of the contract."""
+        found = detect_leaked_markup({"narrative": LIVE_LEAK}, {"narrative", "sources"})
+        msg = build_markup_advisory("gtd_note_add", found) or ""
+        assert "Nothing was blocked" in msg
+
+    def test_markup_outranks_the_bare_call_advisory_because_it_explains_it(self):
+        data = {"applied": [{"op": "note"}]}
+        found = detect_leaked_markup({"narrative": LIVE_LEAK}, {"narrative", "sources"})
+        attach(
+            data,
+            tool_name="gtd_note_add",
+            absent_optional=["ai_context", "sources"],  # bare-call would ALSO fire
+            declared_optional=["ai_context", "sources"],
+            leaked=found,
+        )
+        assert "Tool-call markup arrived" in data["advisory"]
+        assert "No optional parameter reached" not in data["advisory"]
+
+    def test_it_fires_where_the_bare_call_advisory_is_silent(self):
+        """**The partial-loss blind spot, closed for the one detectable cause.**
+
+        `build_advisory` returns None unless EVERY facet is absent, so a call that supplies one
+        facet and loses another says nothing — 15 of the 25 governed writes have that gap. Here
+        `ai_context` was supplied and `sources` was lost, so the bare-call advisory is silent by
+        construction and this is the only thing that speaks.
+        """
+        assert build_advisory("gtd_note_add", ["sources"], ["ai_context", "sources"]) is None
+        data = {"applied": [{"op": "note"}]}
+        attach(
+            data,
+            tool_name="gtd_note_add",
+            absent_optional=["sources"],
+            declared_optional=["ai_context", "sources"],
+            leaked=detect_leaked_markup({"narrative": LIVE_LEAK}, {"narrative", "sources"}),
+        )
+        assert data["advisory"] and "`sources`" in data["advisory"]
+
+    def test_it_is_advisory_and_never_touches_not_applied_or_guidance(self):
+        """A hard invariant: the receipt must never become a gate, and a detection is not a
+        failed operation. `not_applied[]` means 'you asked and nothing was written'; here the
+        write happened."""
+        data = {"applied": [{"op": "note"}]}
+        attach(
+            data,
+            tool_name="gtd_note_add",
+            absent_optional=[],
+            declared_optional=["sources"],
+            leaked=detect_leaked_markup({"narrative": LIVE_LEAK}, {"narrative", "sources"}),
+        )
+        assert data["not_applied"] == []
+        assert data["guidance"] is None
+
+
+class TestTheDetectorRunsOnTheRealServer:
+    """**The anti-vacuity test.** Every assertion above exercises a pure function, and all of
+    them would pass unchanged against a server that never calls it — which is precisely the
+    failure mode this whole investigation was about (`test_middleware.py` says the same thing
+    about the parameter gate). This drives the real in-memory protocol layer end to end.
+
+    Same safety discipline as `TestReceiptSurvivesMcpSerialisation`: `RTMConfig.load` is stubbed
+    so the lifespan cannot build a real client, and the fake is installed INSIDE the context
+    after the lifespan has overwritten the global.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_leaked_narrative_produces_the_advisory_over_the_protocol(self, monkeypatch):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fastmcp.client import Client
+
+        from rtm_mcp import server
+        from rtm_mcp.config import RTMConfig
+
+        monkeypatch.setattr(RTMConfig, "load", classmethod(lambda cls: RTMConfig()))
+
+        async def dispatch(method, **kwargs):
+            if method == "rtm.tasks.getList":
+                return {
+                    "tasks": {
+                        "list": [
+                            {
+                                "id": "L1",
+                                "taskseries": [
+                                    {
+                                        "id": "ts1",
+                                        "name": "A task",
+                                        "tags": [],
+                                        "notes": [],
+                                        "task": [{"id": "t1", "completed": ""}],
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            return {"transaction": {"id": "tx1", "undoable": "1"}}
+
+        fake = MagicMock()
+        fake.call = AsyncMock(side_effect=dispatch)
+        fake.config = MagicMock(strict_tags=False)
+        fake.timeline_id = "tl1"
+        fake.record_transaction = MagicMock()
+        fake.get_timezone = AsyncMock(return_value="Europe/London")
+        fake.get_account_tags = AsyncMock(return_value=set())
+        fake.close = AsyncMock()
+
+        async with Client(server.mcp) as c:
+            monkeypatch.setattr(server, "_client", fake)
+            res = await c.call_tool(
+                "gtd_note_add",
+                {
+                    "task_ref": "t1",
+                    "note_type": "CONTEXT",
+                    "summary": "a summary",
+                    "narrative": f"Some genuine prose. {LIVE_LEAK}",
+                },
+            )
+
+        assert fake.call.await_count, "the fake client was bypassed — the test proved nothing"
+        data = res.structured_content["data"]
+        advisory = data["advisory"] or ""
+        assert "Tool-call markup arrived" in advisory, "the detector did not run on the real path"
+        assert "`sources`" in advisory
+        # ADVISORY, not a gate: the note was still written.
+        assert data["applied"], "the detection must not have blocked the write"
+
+    @pytest.mark.asyncio
+    async def test_a_clean_call_produces_no_markup_advisory(self, monkeypatch):
+        """The guard-the-guard. Without it the test above passes against a detector that fires
+        on everything, which would be worse than no detector at all."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fastmcp.client import Client
+
+        from rtm_mcp import server
+        from rtm_mcp.config import RTMConfig
+
+        monkeypatch.setattr(RTMConfig, "load", classmethod(lambda cls: RTMConfig()))
+
+        async def dispatch(method, **kwargs):
+            if method == "rtm.tasks.getList":
+                return {
+                    "tasks": {
+                        "list": [
+                            {
+                                "id": "L1",
+                                "taskseries": [
+                                    {
+                                        "id": "ts1",
+                                        "name": "A task",
+                                        "tags": [],
+                                        "notes": [],
+                                        "task": [{"id": "t1", "completed": ""}],
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                }
+            return {"transaction": {"id": "tx1", "undoable": "1"}}
+
+        fake = MagicMock()
+        fake.call = AsyncMock(side_effect=dispatch)
+        fake.config = MagicMock(strict_tags=False)
+        fake.timeline_id = "tl1"
+        fake.record_transaction = MagicMock()
+        fake.get_timezone = AsyncMock(return_value="Europe/London")
+        fake.get_account_tags = AsyncMock(return_value=set())
+        fake.close = AsyncMock()
+
+        async with Client(server.mcp) as c:
+            monkeypatch.setattr(server, "_client", fake)
+            res = await c.call_tool(
+                "gtd_note_add",
+                {
+                    "task_ref": "t1",
+                    "note_type": "CONTEXT",
+                    "summary": "a summary",
+                    "narrative": "Ordinary prose about </head> and <parameter name=x> in passing.",
+                    "sources": ["a source"],
+                },
+            )
+
+        data = res.structured_content["data"]
+        assert "Tool-call markup arrived" not in (data["advisory"] or "")
 
 
 class TestReceiptDocIsVersionIndependent:

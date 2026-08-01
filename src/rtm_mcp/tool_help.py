@@ -618,9 +618,11 @@ def build_index(tools: list[dict[str, Any]]) -> dict[str, Any]:
 #: the imperative (`receipt.RECEIPT_DOC`, ~190 bytes charged against ~2 KB), and this carries
 #: the reasoning behind it. Neither restates the other, which is the § 3 rule.
 #:
-#: Why a caller should care, stated once: the hosted client deletes an undeclared argument
-#: before this server sees it, so a misspelt OPTIONAL modifier does not fail — the write lands
-#: without it and reports success. The receipt is how that becomes visible after the fact.
+#: Why a caller should care, stated once: an optional modifier can fail to arrive without
+#: anything failing — the hosted client deletes an undeclared argument before this server sees
+#: it, and (measured 2026-08-01) a caller can emit the value as literal tool-call markup folded
+#: into a sibling string, so the key never exists. Either way the write lands without that
+#: property and reports success. The receipt is how that becomes visible after the fact.
 RECEIPT_CONTRACT: dict[str, Any] = {
     "applied": (
         "One entry per RTM write that actually happened, each with the `transaction_id` "
@@ -645,10 +647,13 @@ RECEIPT_CONTRACT: dict[str, Any] = {
     "advisory": (
         "Set when the call arrived carrying NONE of this tool's optional parameters, naming "
         "them. Not a rejection and never blocking — a minimal call is often legitimate. It "
-        "exists because some MCP clients silently DROP a misspelt optional before the server "
-        "sees it: the write then succeeds without that property and reports success, and "
-        "absence is the only evidence left. If you sent an optional and see this, it did not "
-        "arrive — re-send with the exact name."
+        "reports the OBSERVATION only; two causes are on record and the server cannot tell "
+        "them apart. (1) The value was emitted as literal tool-call markup folded into another "
+        "parameter (a stray `</…>` or `<parameter name=…>` tail) — the key never existed, and "
+        "the text is written VERBATIM into the record. (2) Some MCP clients silently DROP a "
+        "misspelt optional before the server sees it, so the write succeeds without that "
+        "property. If you sent an optional and see this, it did not arrive as a parameter — "
+        "check your own text for markup first, then re-send with the exact name."
     ),
     "how_to_use": (
         "After any governed write: if `not_applied[]` is non-empty, reconcile it against what "
