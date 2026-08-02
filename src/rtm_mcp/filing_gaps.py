@@ -147,11 +147,21 @@ def build_filing_gaps(
                     )
         register_defects.extend(_duplicate_registers(task, timezone, by_id))
 
+    # TRACKED artefacts only — `meta is not None`. The class means "the file store says this is
+    # filed, and nothing journalled it", so an untracked file is a different finding and is
+    # counted separately as `untracked_unlinked_count`.
+    #
+    # The filter was missing at v6.4.0 and the first live run showed why it matters: 2,704 rows
+    # against a measured baseline of 97, because `walk_artefacts` enumerates every file in the
+    # vault — `.auto-memory/` caches, `.bak` files, Syncthing sync-conflict artefacts. A class
+    # whose whole value is that its findings are real was ~96% noise, which is worse than not
+    # reporting it. The two sets also overlapped, contradicting the disjointness the comment
+    # below asserts; with the filter they are disjoint by construction, as intended.
     filed_unlinked = (
         [
-            {"path": p, "companion": a.get("meta") is not None}
+            {"path": p, "companion": True}
             for p, a in sorted(tracked.items())
-            if p not in referenced
+            if p not in referenced and a.get("meta") is not None
         ]
         if have_vault
         else []

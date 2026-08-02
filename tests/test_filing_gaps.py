@@ -91,6 +91,10 @@ def artefacts():
         _artefact("work/tracked.md", {"title": "T"}),
         # filed_unlinked: tracked and referenced by nothing.
         _artefact("work/orphan.md", {"title": "O"}),
+        # UNtracked AND unreferenced. Absent until 2026-08-02, and its absence is why the
+        # v6.4.0 defect passed a green suite: every other fixture artefact is either tracked
+        # or referenced, so the one case where the two classes could overlap never ran.
+        _artefact("work/junk.cache", None),
     ]
 
 
@@ -109,6 +113,30 @@ class TestEveryClassFires:
     def test_filed_unlinked_is_the_artefact_no_note_references(self, estate, artefacts):
         rows = build_filing_gaps(estate, artefacts=artefacts)["findings"]["filed_unlinked"]["rows"]
         assert [r["path"] for r in rows] == ["work/orphan.md"]
+
+    def test_filed_unlinked_counts_TRACKED_artefacts_only(self, estate, artefacts):
+        """The class means "the file store says this is filed, and nothing journalled it".
+
+        An untracked file is a different finding and belongs to `untracked_unlinked_count`.
+        Measured on the first live run of v6.4.0: without this filter the class reported
+        **2,704** rows against a baseline of **97**, because `walk_artefacts` enumerates every
+        file in the vault — `.auto-memory/` caches, `.bak` files, Syncthing sync-conflict
+        artefacts. A class whose whole value is that its findings are real was ~96% noise.
+        """
+        out = build_filing_gaps(estate, artefacts=artefacts)
+        paths = [r["path"] for r in out["findings"]["filed_unlinked"]["rows"]]
+        assert "work/junk.cache" not in paths, "an untracked file is not a filed artefact"
+        assert all(r["companion"] for r in out["findings"]["filed_unlinked"]["rows"])
+
+    def test_the_two_unlinked_classes_are_disjoint(self, estate, artefacts):
+        """The module comment asserts disjointness; until 2026-08-02 it was false —
+        `filed_unlinked` CONTAINED every row `untracked_unlinked_count` counted, so a total
+        across the classes double-counted every untracked orphan."""
+        out = build_filing_gaps(estate, artefacts=artefacts)
+        assert out["untracked_unlinked_count"] == 1
+        filed = {r["path"] for r in out["findings"]["filed_unlinked"]["rows"]}
+        assert "work/junk.cache" not in filed
+        assert out["findings"]["filed_unlinked"]["count"] + out["untracked_unlinked_count"] == 2
 
     def test_companion_missing_is_reported_against_the_note(self, estate, artefacts):
         rows = build_filing_gaps(estate, artefacts=artefacts)["findings"]["companion_missing"][

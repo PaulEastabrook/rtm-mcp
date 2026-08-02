@@ -1,5 +1,66 @@
 # Changelog
 
+## v6.4.1 — `filed_unlinked` counted every file in the vault, so its findings were 96% noise
+
+Bug fix. No schema change, **no fingerprint churn**, no new `ErrorCode`. One predicate.
+
+### Found on the first live run, which is the point
+
+The v6.4.0 debrief recorded, explicitly, that **no live smoke test had been run** — the gate,
+the derived register and both reads had never executed against the real account or vault. The
+first invocation of `gtd_note_filing_gaps` after the restart reported:
+
+```
+filed_unlinked:            2704      ← measured baseline: 97
+artefacts_scanned:         2729      ← companion-tracked: 171
+untracked_unlinked_count:  2534
+```
+
+The rows were `.auto-memory/inbox_stuff_drive_scanner.json`, its `.bak`, and Syncthing
+sync-conflict artefacts. **A class whose entire value is that its findings are real was ~96%
+noise**, which is worse than not reporting it — a reader who has to filter a report stops
+reading it.
+
+### The defect, and why it survived a green suite
+
+`filed_unlinked` had no `meta is not None` filter, so it returned every unreferenced file that
+`walk_artefacts` enumerated — and `walk_artefacts` walks the whole vault by design, because
+"filed but untracked" is a finding in its own right (`untracked_unlinked_count`).
+
+So the two classes **overlapped**: `filed_unlinked` ⊇ `orphan_untracked`. The comment directly
+below asserted *"the two sets are disjoint by construction, so a total across classes never
+double-counts"* — **and it was false**, which is the more interesting half. The module's own
+docstring had it right all along (*"a **tracked** artefact no OUTPUT note references — 97 of
+126"*); only the predicate disagreed.
+
+**The fixture is why the suite passed.** Every artefact in it was either tracked or referenced,
+so the one combination where the classes could overlap — untracked **and** unreferenced — was
+never constructed. `test_each_class_has_at_least_one_row` was green because each class fired;
+no test asked whether a class fired on the *wrong* rows.
+
+### The fix
+
+One clause: `and a.get("meta") is not None`. `filed_unlinked` becomes tracked-only (~170 live),
+`untracked_unlinked_count` keeps the rest, and the disjointness the comment claimed becomes
+true.
+
+Two tests, both verified to fail with the clause removed: `filed_unlinked` excludes an untracked
+artefact, and the two classes sum without double-counting. The fixture gained the
+untracked-and-unreferenced row whose absence caused this.
+
+### Not fixed here
+
+`linked_missing` still counts pre-v6.4.0 hand-written `FILING: <path> (unfiled)` markers as
+broken links — malformed rather than missing, and v6.4.0's own `UNFILED:` marker is the correct
+form now. All live instances are eval fixtures. Captured as RTM 1220547491.
+
+### Membrane / activation
+
+Vault-free in the write direction, read-only path, no new tag, no strict-tag interaction, **all
+102 fingerprints byte-identical** (an internal predicate appears in no advertised schema). To go
+live: restart the server on v6.4.1. Rollback is a one-line revert.
+
+
 Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release with a migration
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
