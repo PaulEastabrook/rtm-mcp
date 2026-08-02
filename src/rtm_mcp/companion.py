@@ -150,19 +150,26 @@ def companion_candidates(folder: str, filename: str) -> list[tuple[str, str]]:
     return cands
 
 
-def resolve_companion_meta(vault_root: str | None, rel_path: str) -> dict[str, Any] | None:
-    """Resolve a filed artefact's companion metadata → the parsed frontmatter dict, or None.
+def _resolve_companion(
+    vault_root: str | None, rel_path: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """``(meta, absolute companion path)`` for a filed artefact — the ONE resolution.
+
+    Both public resolvers delegate here so "which file is the companion?" and "what does it
+    say?" can never disagree. They previously could not disagree only because one of them did
+    not exist; :func:`resolve_companion_path` is what `walk_artefacts` needs in order to stop
+    enumerating a companion as an artefact in its own right.
 
     Read-only; stays within ``vault_root`` (containment guard); skips non-artefact names; tries
-    each companion form in order and returns the first non-empty parse. None when there is no
-    vault, no companion, an empty companion, or any read error.
+    each form in order and returns the first **non-empty parse** — note that is a stronger test
+    than "the file exists", and it is deliberately the one both callers share.
     """
     if not vault_root or not rel_path:
-        return None
+        return None, None
     vault = os.path.abspath(os.path.expanduser(vault_root))
     artefact = os.path.normpath(os.path.join(vault, rel_path.strip().lstrip("/")))
     if artefact != vault and not artefact.startswith(vault + os.sep):
-        return None  # path escapes the vault
+        return None, None  # path escapes the vault
     folder, filename = os.path.dirname(artefact), os.path.basename(artefact)
     if (
         not filename
@@ -170,7 +177,7 @@ def resolve_companion_meta(vault_root: str | None, rel_path: str) -> dict[str, A
         or filename.startswith("_")
         or filename.endswith(".meta.md")
     ):
-        return None
+        return None, None
     for cand, mode in companion_candidates(folder, filename):
         cand = os.path.normpath(cand)
         if cand != vault and not cand.startswith(vault + os.sep):
@@ -186,8 +193,30 @@ def resolve_companion_meta(vault_root: str | None, rel_path: str) -> dict[str, A
             continue
         meta = parse_frontmatter(text) if mode == "frontmatter" else parse_yaml_body(text)
         if meta:
-            return meta
-    return None
+            return meta, cand
+    return None, None
+
+
+def resolve_companion_meta(vault_root: str | None, rel_path: str) -> dict[str, Any] | None:
+    """Resolve a filed artefact's companion metadata → the parsed frontmatter dict, or None.
+
+    Read-only; stays within ``vault_root`` (containment guard); skips non-artefact names; tries
+    each companion form in order and returns the first non-empty parse. None when there is no
+    vault, no companion, an empty companion, or any read error.
+    """
+    return _resolve_companion(vault_root, rel_path)[0]
+
+
+def resolve_companion_path(vault_root: str | None, rel_path: str) -> str | None:
+    """The absolute path of the file acting as *rel_path*'s companion, or None.
+
+    Exists so :func:`walk_artefacts` can stop counting companions as artefacts. `X.md` is the
+    companion of a non-md `X.<ext>` (:func:`companion_candidates` form 2) — a fact
+    `_COMPANION_SUFFIXES` **structurally cannot express**, because it depends on a SIBLING's
+    existence rather than on the filename alone. Deriving the answer from the same candidate
+    list is the only way the two can be kept in step.
+    """
+    return _resolve_companion(vault_root, rel_path)[1]
 
 
 #: Non-artefact directories that do NOT announce themselves by prefix, so must be named.
@@ -280,14 +309,29 @@ def walk_artefacts(vault_root: str | None, *, limit: int = 20000) -> list[dict[s
     try:
         for folder, dirs, files in os.walk(root):
             dirs[:] = sorted(d for d in dirs if _is_artefact_dir(d))
-            for name in sorted(files):
-                if (
-                    name in _NON_ARTEFACT
-                    or name.startswith((".", "_"))
-                    or name.endswith(_COMPANION_SUFFIXES)
-                ):
+            kept = [
+                n
+                for n in sorted(files)
+                if n not in _NON_ARTEFACT
+                and not n.startswith((".", "_"))
+                and not n.endswith(_COMPANION_SUFFIXES)
+            ]
+            # A `.md` beside a non-md artefact of the same stem IS that artefact's companion
+            # (`companion_candidates` form 2) — a fact `_COMPANION_SUFFIXES` cannot express,
+            # because it depends on a SIBLING rather than on the filename. Measured live: 49
+            # companions were being enumerated as artefacts in their own right. Claimed paths are
+            # derived from the same candidate list the resolver uses, never restated.
+            claimed = {
+                resolve_companion_path(root, os.path.relpath(os.path.join(folder, n), root))
+                for n in kept
+                if not n.lower().endswith(".md")
+            }
+            claimed.discard(None)
+            for name in kept:
+                full = os.path.join(folder, name)
+                if os.path.normpath(full) in claimed:
                     continue
-                rel = os.path.relpath(os.path.join(folder, name), root)
+                rel = os.path.relpath(full, root)
                 out.append(
                     {"path": rel.replace(os.sep, "/"), "meta": resolve_companion_meta(root, rel)}
                 )

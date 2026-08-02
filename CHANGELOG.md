@@ -1,5 +1,46 @@
 # Changelog
 
+## v6.5.2 — a companion was also counted as an artefact
+
+Bug fix. **No fingerprint churn** (only `generated_at` / `source_version` move), no schema change,
+no new `ErrorCode`, no new tag.
+
+### Found by asking whether the v6.5.1 lesson generalised
+
+v6.5.1 replaced a hand-maintained directory list with a derived rule. The obvious follow-up —
+*are there other hand-maintained lists in this module with the same failure mode?* — turned up
+one immediately, and it was live.
+
+`companion_candidates` knows **five** companion forms. `_COMPANION_SUFFIXES`, which
+`walk_artefacts` uses to keep companions out of the artefact census, knows **three**. The gap is
+form 2: for a non-`.md` artefact `X.pdf`, the companion may be `X.md`.
+
+That form **cannot be expressed as a suffix at all** — it depends on a SIBLING's existence rather
+than on the filename — which is why it was missing rather than merely forgotten. A list was the
+wrong shape for the fact, exactly as it was for `is_legacy_unfiled` and `is_bare_path`.
+
+**Measured live: 49 companion files were enumerated as artefacts in their own right** — booking
+PDFs' metadata under `personal/dad-stuff/…/reference/`, skill-package descriptors under
+`general/output/`, a library book's companion. All 49 carry file-store companion frontmatter
+(`schema_version: "1.0.0"`); none is a standalone artefact. They inflated
+`untracked_unlinked_count` and would have entered `filed_unlinked` had any ever gained a
+companion of its own.
+
+### What changed
+
+`resolve_companion_path` returns the file acting as an artefact's companion; `walk_artefacts`
+skips paths claimed that way. Both it and `resolve_companion_meta` delegate to one private core,
+so "which file is the companion?" and "what does it say?" cannot disagree — they previously could
+not disagree only because one of them did not exist.
+
+Candidate order is honoured, so `X.meta.md` still outranks `X.md`: where both exist the `.md` is
+NOT the companion and keeps being enumerated. Asserted.
+
+**Live effect:** 1,273 → **1,224** enumerated; `untracked_unlinked_count` 1,113 → **1,064**;
+tracked unchanged at **160** (the companions were untracked, so `filed_unlinked` does not move).
+
+To go live: restart on v6.5.2. Rollback is a revert.
+
 ## v6.5.1 — the last two noise sources in `gtd_note_filing_gaps`
 
 Two unrelated bug fixes, both narrow. **One fingerprint** (`gtd_note_report`, whose description
