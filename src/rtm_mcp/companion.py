@@ -206,6 +206,37 @@ def resolve_companion_meta(vault_root: str | None, rel_path: str) -> dict[str, A
 #: of machine output as the root one.
 _SKIP_DIRS = {"node_modules", "system"}
 
+# ── Sync-tool artefacts: what was surveyed, and why NO filename rule follows ────────────────
+#
+# The `.stversions` defect prompted the obvious next question — what else do iCloud, Syncthing
+# and Dropbox leave lying about? Surveyed against the live vault 2026-08-02. The answer is that
+# the dot-prefix rule above is sufficient, and the reason is structural rather than lucky:
+#
+#   DIRECTORY-level versioning duplicates the tree VERBATIM, so `X.md` and `X.meta.md` stay
+#   paired and the copy resolves a companion — it is TRACKED, passes the v6.4.1 tracked-ness
+#   filter, and reads as an orphan that can never be journalled. That is `.stversions`, and it
+#   is the dangerous shape. Every such convention is dot-prefixed and already pruned.
+#
+#   FILE-level conflict copies mangle the STEM, so the duplicate's companion candidates never
+#   match its own duplicated companion. iCloud writes `X.md` → `X 2.md` and `X.meta.md` →
+#   `X.meta 2.md`; the duplicate then looks for `X 2.meta.md`, which does not exist. Syncthing's
+#   `X.sync-conflict-<date>-<time>-<id>.md` behaves identically. They are therefore UNTRACKED by
+#   construction, already excluded from `filed_unlinked`, and counted only in the separate
+#   `untracked_unlinked_count`. Verified on the live pair at
+#   `general/test-fixtures/mcp-write-smoke/2026-07-17/output/`.
+#
+# Live census: 6 `.sync-conflict-` files, all inside `.auto-memory` / `.obsidian` / `system`
+# (already pruned); 1 iCloud ` 2` duplicate (untracked); 0 `~syncthing~` temps, 0 `.icloud`
+# placeholders, 0 Dropbox `(conflicted copy)`. Dot-directories present: `.companion`, `.obsidian`,
+# `.claude-plugin`, `.trash`, `.stversions`, `.stfolder`, `.auto-memory` — note `.claude-plugin`
+# was not in the old hand-maintained list either, and the derived rule covers it for free.
+#
+# ⚠ DO NOT add a ` <n>.<ext>` exclusion. It reads as the obvious iCloud-duplicate rule and it is
+# wrong: it matches three real tracked artefacts on this vault today —
+# `AI Daily Briefing - 4 April 2026.md`, `AI Daily Briefing — 5 April 2026.md` and
+# `Daily AI Briefing - March 28, 2026.md`. Same trap as "a path has no spaces" (see
+# `gtd_chat.is_bare_path`): a rule that rejects real artefacts is worse than the noise it removes.
+
 #: Extensions that are companions rather than artefacts in their own right.
 _COMPANION_SUFFIXES = (".meta.md", ".companion.md", ".metadata.yaml")
 
