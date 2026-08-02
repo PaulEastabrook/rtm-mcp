@@ -1346,6 +1346,9 @@ class FilingGapsFindings(BaseModel):
     join_unpopulated: FilingFindingClass
     prose_path: FilingFindingClass
     register_defect: FilingFindingClass
+    #: v6.5.0 — the pre-v6.4.0 `FILING: <path> (unfiled)` form. RTM-only, so it keeps answering
+    #: on a vault-less run.
+    legacy_unfiled: FilingFindingClass
 
 
 class FilingGapsResult(BaseModel):

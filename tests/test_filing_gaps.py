@@ -45,7 +45,7 @@ def _artefact(path, meta=None):
 
 @pytest.fixture
 def estate():
-    """One fixture that trips ALL SIX classes at once — the guard-the-guard depends on it."""
+    """One fixture that trips ALL SEVEN classes at once — the guard-the-guard depends on it."""
     return [
         # linked_missing: the FILING path resolves to nothing.
         _task(
@@ -70,6 +70,18 @@ def estate():
             "4",
             "Prose",
             [_note("n4", "2026-07-20 — OUTPUT — prose", "I filed it under output/notes.md")],
+        ),
+        # legacy_unfiled: the pre-v6.4.0 declaration of absence, on a real FILING line.
+        _task(
+            "5",
+            "Never filed",
+            [
+                _note(
+                    "n5",
+                    "2026-07-20 — OUTPUT — runbook",
+                    "x\n\nFILING: work/gtd-eval/output/staging-rollback-runbook.md (unfiled)",
+                )
+            ],
         ),
         # register_defect: two registers on one project (the live Claude Coworking shape).
         _task(
@@ -164,6 +176,60 @@ class TestEveryClassFires:
     def test_register_defect_reports_both_duplicates(self, estate, artefacts):
         rows = build_filing_gaps(estate, artefacts=artefacts)["findings"]["register_defect"]["rows"]
         assert {r["note_id"] for r in rows} >= {"r1", "r2"}
+
+
+class TestTheLegacyUnfiledClass:
+    """v6.5.0. A pre-v6.4.0 `FILING: <path> (unfiled)` is a DECLARATION OF ABSENCE, not a broken
+    link — nothing is missing, because nothing was ever filed. It is also not `prose_path`: the
+    note does carry a FILING line. Its own class, because it is a migration backlog with a
+    natural end state, and because filing it under a description that does not fit is how
+    vocabularies rot."""
+
+    def test_it_is_reported_in_its_own_class(self, estate, artefacts):
+        rows = build_filing_gaps(estate, artefacts=artefacts)["findings"]["legacy_unfiled"]["rows"]
+        assert [r["note_id"] for r in rows] == ["n5"]
+        assert rows[0]["path"] == "work/gtd-eval/output/staging-rollback-runbook.md"
+        assert "(unfiled)" in rows[0]["detail"]
+
+    def test_it_is_NOT_reported_as_a_broken_link(self, estate, artefacts):
+        """The reported symptom. Counting it `linked_missing` sends a reader hunting a file
+        that was never meant to exist."""
+        out = build_filing_gaps(estate, artefacts=artefacts)
+        assert [r["path"] for r in out["findings"]["linked_missing"]["rows"]] == ["work/gone.md"]
+
+    def test_it_is_NOT_double_reported_as_prose(self, estate, artefacts):
+        """A note carrying ONLY a legacy-unfiled line has no valid FILING path, so it would fall
+        through to the prose fallback — and its body trips every prose hint."""
+        out = build_filing_gaps(estate, artefacts=artefacts)
+        assert [r["note_id"] for r in out["findings"]["prose_path"]["rows"]] == ["n4"]
+
+    def test_it_is_RTM_ONLY_so_it_survives_a_vault_less_run(self, estate):
+        """No vault is needed to spot the marker, so unlike the four vault-dependent classes it
+        keeps answering — and must NOT appear in gaps[]."""
+        out = build_filing_gaps(estate, artefacts=None)
+        assert out["findings"]["legacy_unfiled"]["count"] == 1
+        assert "legacy_unfiled" not in out["gaps"]
+        assert "legacy_unfiled" not in VAULT_DEPENDENT
+
+    def test_a_genuine_filing_alongside_it_is_still_reconciled(self):
+        """The load-bearing regression: one note may carry both forms, and the real one must
+        still be joined against the vault."""
+        task = _task(
+            "7",
+            "Both",
+            [
+                _note(
+                    "n7",
+                    "2026-07-20 — OUTPUT — both",
+                    "x\n\nFILING: work/real.md (+ .meta.md)\nFILING: work/never.md (unfiled)",
+                )
+            ],
+        )
+        out = build_filing_gaps([task], artefacts=[_artefact("work/real.md", {"title": "R"})])
+        assert out["findings"]["legacy_unfiled"]["count"] == 1
+        assert out["findings"]["linked_missing"]["count"] == 0
+        # `work/real.md` resolved and is tracked, so it is referenced — not an orphan.
+        assert out["findings"]["filed_unlinked"]["count"] == 0
 
 
 class TestAnAbsentVaultIsPartialNeverClean:

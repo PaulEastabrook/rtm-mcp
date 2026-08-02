@@ -9,6 +9,8 @@ from rtm_mcp.gtd_chat import (
     build_inflight,
     build_thread,
     format_chat_title,
+    is_legacy_unfiled,
+    legacy_unfiled_paths,
     local_stamp,
     parse_body,
     parse_chat_title,
@@ -272,6 +274,78 @@ class TestParseFilings:
     def test_empty_and_no_filing(self):
         assert parse_filings("") == []
         assert parse_filings("just prose\nno filing here") == []
+
+
+class TestTheLegacyUnfiledMarker:
+    """v6.5.0 — the pre-v6.4.0 `FILING: <path> (unfiled)` declaration of absence.
+
+    The reported symptom was cosmetic (mis-classified by the audit). The consequence that
+    matters is here: `_clean_filing_path` strips only the companion marker, so
+    `work/…/x.md (unfiled)` is non-empty, relative and backslash-free — it passed every check
+    and was returned as a real path, so `gtd_chat_thread` rendered an attachment for an artefact
+    that was never filed. **That is exactly what v6.4.0's `UNFILED:` marker was designed to
+    prevent**; the reasoning simply was not applied backwards to the notes already in RTM.
+    """
+
+    LEGACY = f"FILING: {VAULT_PATH} (unfiled)"
+
+    def test_the_predicate_recognises_the_live_form(self):
+        assert is_legacy_unfiled(f"{VAULT_PATH} (unfiled)")
+
+    def test_it_is_case_and_whitespace_tolerant(self):
+        for raw in (
+            f"{VAULT_PATH} (Unfiled)",
+            f"{VAULT_PATH} (UNFILED)",
+            f"{VAULT_PATH}  (  unfiled  )  ",
+        ):
+            assert is_legacy_unfiled(raw), raw
+
+    def test_a_path_CONTAINING_the_word_is_untouched(self):
+        """Anchored at end-of-payload. A substring test would silently drop real filings."""
+        assert not is_legacy_unfiled("work/notes/unfiled-drafts/x.md")
+        assert not is_legacy_unfiled("work/(unfiled)/x.md")
+        assert parse_filings("FILING: work/notes/unfiled-drafts/x.md") == [
+            "work/notes/unfiled-drafts/x.md"
+        ]
+
+    def test_parse_filings_SKIPS_it(self):
+        """No attachment for an artefact that does not exist — the correctness half."""
+        assert parse_filings(self.LEGACY) == []
+
+    def test_it_never_reaches_a_chat_turn(self):
+        """The consumer that made this a correctness issue rather than a cosmetic one."""
+        note = {
+            "id": "o9",
+            "title": "",
+            "$t": f"2026-07-25 09:00 — OUTPUT — runbook\nnarrative\n\n{self.LEGACY}",
+            "created": "2026-07-25T09:00:00Z",
+        }
+        # No valid FILING path, so this is not a filing OUTPUT note at all.
+        assert parse_output_note(note) is None
+
+    def test_the_audit_view_returns_it_with_the_marker_stripped(self):
+        """`gtd_note_filing_gaps` must SEE these — dropping a legacy form silently makes a
+        migration backlog invisible. The marker is stripped because the row names the artefact;
+        the verbatim-path rule exists for the board's FILED: echo, which these never reach."""
+        assert legacy_unfiled_paths(self.LEGACY) == [VAULT_PATH]
+
+    def test_a_genuine_filing_is_BYTE_UNCHANGED_through_both_views(self):
+        """The load-bearing regression: this touches the parser every filing goes through."""
+        genuine = f"FILING: {VAULT_PATH} (+ .meta.md)"
+        assert parse_filings(genuine) == [VAULT_PATH]
+        assert legacy_unfiled_paths(genuine) == []
+
+    def test_one_note_can_carry_both_forms(self):
+        body = f"FILING: {VAULT_PATH} (+ .meta.md)\nFILING: personal/other/report.md (unfiled)"
+        assert parse_filings(body) == [VAULT_PATH]
+        assert legacy_unfiled_paths(body) == ["personal/other/report.md"]
+
+    def test_the_continuation_form_is_handled_by_both_views(self):
+        """Both views consume the SAME line-walker, so the two-line form cannot work in one and
+        not the other — asserted rather than assumed, since that is the point of sharing it."""
+        body = f"FILING: filed in the output folder —\n{VAULT_PATH} (unfiled)"
+        assert parse_filings(body) == []
+        assert legacy_unfiled_paths(body) == [VAULT_PATH]
 
 
 class TestParseOutputNote:

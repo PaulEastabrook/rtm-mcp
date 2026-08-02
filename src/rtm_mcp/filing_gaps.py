@@ -6,11 +6,11 @@ here, and computing it in code rather than having an agent eye two tool outputs 
 point: a reconciliation an LLM performs by reading notes is a fresh error opportunity per run;
 computed identically every time, it is a fact.
 
-Six finding classes, each measured on 2026-08-01 across 104 OUTPUT notes and 171
-companion-tracked artefacts, and each reported with rows rather than only a count:
+Seven finding classes, each with rows rather than only a count. The baselines are the
+2026-08-01 reconciliation's, across 104 OUTPUT notes and 171 companion-tracked artefacts:
 
 ======================  ====================================================  ===============
-class                   what it is                                            2026-08-01
+class                   what it is                                            baseline
 ======================  ====================================================  ===============
 `linked_missing`        an OUTPUT note's `FILING:` path resolves to nothing    4
 `filed_unlinked`        a tracked artefact no OUTPUT note references           97 of 126
@@ -18,7 +18,13 @@ class                   what it is                                            20
 `join_unpopulated`      a companion with no / mismatched `source_action`       0 of 40 populated
 `prose_path`            an OUTPUT note with no machine-readable FILING line    67 of 104
 `register_defect`       duplicate registers, or a non-conformant title         1 dup, 4 titles
+`legacy_unfiled`        pre-v6.4.0 `FILING: <path> (unfiled)`                  3 (all fixtures)
 ======================  ====================================================  ===============
+
+`legacy_unfiled` (v6.5.0) is a **migration backlog with a natural end state**, which is why it
+is its own class rather than folded into a neighbour. It is not `linked_missing` — nothing is
+missing, nothing was ever filed — and it is not `prose_path`, because the note DOES carry a
+FILING line. Filing it under a description that does not fit is how vocabularies rot.
 
 The two root causes those numbers share are worth restating, because they explain why five of
 the six classes exist at all. **The join key is a location** — `FILING: work/…/x.md` records
@@ -41,7 +47,7 @@ from __future__ import annotations
 from typing import Any
 
 from .filing_gate import SOURCE_ACTION_FIELD
-from .gtd_chat import parse_output_note
+from .gtd_chat import legacy_unfiled_paths, parse_output_note
 from .gtd_reads import parse_note_type
 from .gtd_writes import LEGACY_OUTPUTS_PREFIX, is_outputs_register
 from .note_shape import effective_title
@@ -62,10 +68,11 @@ FINDING_CLASSES = (
     "join_unpopulated",
     "prose_path",
     "register_defect",
+    "legacy_unfiled",
 )
 
-#: The classes that need the vault. `prose_path` and `register_defect` are RTM-only, which is
-#: why a vault-less run still returns something useful rather than nothing at all.
+#: The classes that need the vault. `prose_path`, `register_defect` and `legacy_unfiled` are
+#: RTM-only, which is why a vault-less run still returns something useful rather than nothing.
 VAULT_DEPENDENT = ("linked_missing", "filed_unlinked", "companion_missing", "join_unpopulated")
 
 #: A note that mentions a path in prose rather than on a `FILING:` line. Ten mutually
@@ -109,6 +116,7 @@ def build_filing_gaps(
     companion_missing: list[dict[str, Any]] = []
     join_gaps: list[dict[str, Any]] = []
     register_defects: list[dict[str, Any]] = []
+    legacy_unfiled: list[dict[str, Any]] = []
     referenced: set[str] = set()
 
     for task in parsed:
@@ -116,10 +124,30 @@ def build_filing_gaps(
         for note, title, rest in _rows_for(task.get("notes")):
             _, note_type, _ = parse_note_type(title)
             if note_type == "OUTPUT":
+                # The pre-v6.4.0 declaration of absence, reported BEFORE the prose fallback:
+                # nothing is missing, nothing was ever filed. Classifying it `linked_missing`
+                # sends a reader hunting a file that was never meant to exist — and it is not
+                # `prose_path` either, since the note DOES carry a FILING line.
+                for stale in legacy_unfiled_paths(rest):
+                    legacy_unfiled.append(
+                        _note_row(
+                            task,
+                            note,
+                            title,
+                            timezone,
+                            by_id,
+                            path=stale,
+                            detail="pre-v6.4.0 `FILING: <path> (unfiled)` — a declaration that "
+                            "nothing was filed, written before `unfiled=True` existed. Re-file "
+                            "the artefact and journal it, or re-journal with unfiled=True.",
+                        )
+                    )
                 rec = parse_output_note(note)
                 paths = rec["paths"] if rec else []
                 if not paths:
-                    if _looks_like_prose_path(rest):
+                    # A note carrying ONLY a legacy-unfiled line has been classified already;
+                    # falling through would double-report it as prose.
+                    if not legacy_unfiled_paths(rest) and _looks_like_prose_path(rest):
                         prose.append(_note_row(task, note, title, timezone, by_id))
                     continue
                 for path in paths:
@@ -186,6 +214,7 @@ def build_filing_gaps(
         "join_unpopulated": join_gaps,
         "prose_path": prose,
         "register_defect": register_defects,
+        "legacy_unfiled": legacy_unfiled,
     }
     out: dict[str, Any] = {
         "vault_present": have_vault,
