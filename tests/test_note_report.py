@@ -86,6 +86,30 @@ class TestFilingPathShape:
         out = _report(_note("n8", "2026-07-20 — OUTPUT — x", "n\n\nFILING: /abs/a.md"))
         assert out["findings"]["filing_path"]["count"] == 1
 
+    def test_a_sentence_on_a_filing_line_is_reported(self):
+        """v6.5.1 — this class's whole purpose, and it reported ZERO on the live estate while
+        `gtd_note_filing_gaps.linked_missing` was reporting the same sentence as a missing
+        artefact. The boundary was drawn correctly; the check was not strict enough to fire."""
+        observed = (
+            "work/…/principal-engineer-role-rr-draft-v0.1.md (companion metadata: "
+            "principal-engineer-role-rr-draft-v0.1.meta.md) — filed alongside the sibling docs."
+        )
+        out = _report(_note("n11", "2026-07-20 — OUTPUT — x", f"n\n\nFILING: {observed}"))
+        rows = out["findings"]["filing_path"]["rows"]
+        assert len(rows) == 1 and "sentence, not a bare vault-relative path" in rows[0]["reason"]
+
+    def test_a_real_path_with_spaces_is_NOT_reported(self):
+        """The load-bearing regression, quoting a real live filename."""
+        real = "work/hiring/Simon Meek - Flexible working application form (signed).docx"
+        out = _report(_note("n12", "2026-07-20 — OUTPUT — x", f"n\n\nFILING: {real}"))
+        assert out["findings"]["filing_path"]["count"] == 0
+
+    def test_the_legacy_unfiled_form_is_left_to_its_own_class(self):
+        """`gtd_note_filing_gaps.legacy_unfiled` owns it; duplicating a known migration backlog
+        across two reports is noise, not coverage."""
+        out = _report(_note("n13", "2026-07-20 — OUTPUT — x", "n\n\nFILING: work/a.md (unfiled)"))
+        assert out["findings"]["filing_path"]["count"] == 0
+
     def test_the_companion_marker_and_the_continuation_form_are_tolerated(self):
         """The two-line labelled form is a legal catalogue § 3 shape, not a malformed path — a
         dangling FILING line belongs to the two-line parser, not to this check."""

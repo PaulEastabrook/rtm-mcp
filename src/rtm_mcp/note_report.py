@@ -30,6 +30,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from .gtd_chat import (
+    _COMPANION_MARKER_RE,
+    _filing_payloads,
+    is_bare_path,
+    is_legacy_unfiled,
+)
 from .gtd_writes import check_filing_path
 from .note_shape import check_contract, check_title, check_type
 from .parsers import extract_note_body
@@ -47,21 +53,33 @@ def _filing_findings(body: str) -> str | None:
     machine-readable claim, and a malformed path breaks the same readers wherever it sits.
     Whether the *artefact* exists is `gtd_note_filing_gaps`' question, not this one's — this
     read is RTM-only and must stay answerable with no vault.
+
+    **This is the class that owns "the payload is a sentence, not a path"** (the eleventh
+    dialect — see `gtd_chat.is_bare_path`). It reported `filing_path: 0` on the live estate while
+    `linked_missing` was reporting a whole sentence as a missing artefact: the boundary was drawn
+    correctly and the check was simply not strict enough to fire.
+
+    Consumes `gtd_chat._filing_payloads` — the same line-walker `parse_filings` uses — rather
+    than a second walk, so the two-line labelled-continuation form is handled identically here
+    and there. A third parser is what this programme keeps refusing to write.
+
+    The legacy `(unfiled)` form is skipped: `gtd_note_filing_gaps.legacy_unfiled` owns it, and
+    duplicating a known migration backlog across two reports is noise, not coverage.
     """
     bad: list[str] = []
-    for line in (body or "").split("\n"):
-        stripped = line.strip()
-        if not stripped.startswith("FILING:"):
+    for raw in _filing_payloads(body):
+        if not raw or is_legacy_unfiled(raw):
             continue
-        path = stripped[len("FILING:") :].strip()
-        # The labelled-continuation form puts the path on the next line; a dangling FILING line
-        # is that form, not a malformed path, so it is left to the two-line parser.
-        if not path or path.endswith(("—", "–", "-")):  # noqa: RUF001 — en-dash tolerated
-            continue
-        path = path.split(" (+")[0].strip()
+        path = _COMPANION_MARKER_RE.sub("", raw).strip()
         err = check_filing_path(path)
         if err:
             bad.append(f"'{path}': {err}")
+        elif not is_bare_path(path):
+            bad.append(
+                f"'{path}': the FILING payload is a sentence, not a bare vault-relative path "
+                "(it does not end in a file extension). Put the path alone on the line; any "
+                "commentary belongs in the note body."
+            )
     return "; ".join(bad) if bad else None
 
 

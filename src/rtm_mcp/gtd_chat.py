@@ -64,6 +64,9 @@ _COMPANION_MARKER_RE = re.compile(r"\s*\(\+\s*\.meta\.md\)\s*$")
 # so `work/notes/unfiled-drafts/x.md` cannot match — the live form is a trailing parenthesised
 # token, and a substring test would silently drop real filings.
 _UNFILED_MARKER_RE = re.compile(r"\s*\(\s*unfiled\s*\)\s*$", re.IGNORECASE)
+# A bare path ENDS in a file extension. See `is_bare_path` for why this is an extension test and
+# emphatically not a whitespace test — real filenames in this estate contain spaces.
+_PATH_TAIL_RE = re.compile(r"\.[A-Za-z0-9]{1,8}$")
 # "LINK: <url> — <label>" trailer lines in a turn's own text. The value—label separator is an
 # em/en-dash or hyphen with surrounding whitespace — the same split the board's chatParseTrailer
 # uses, so server- and client-parsed values compare equal.
@@ -157,15 +160,44 @@ def parse_turn(note: dict[str, Any]) -> dict[str, Any] | None:
     return turn
 
 
+def is_bare_path(payload: str) -> bool:
+    """Whether a FILING payload is a bare vault-relative path rather than a sentence about one.
+
+    **The eleventh dialect, and the one the model did not cover.** Ten prose dialects were
+    counted at the 2026-08-01 census, all of them *instead of* a `FILING:` line — which is what
+    `filing_gaps.prose_path` reports. This one sits **on** the FILING line::
+
+        FILING: work/…/principal-engineer-role-rr-draft-v0.1.md (companion metadata:
+        principal-engineer-role-rr-draft-v0.1.meta.md) — filed alongside the sibling Lead SWE
+        and reference docs in the engineering-roles project folder.
+
+    After the companion marker is stripped that remainder is non-empty, relative and
+    backslash-free, so it passed every check and the reconciliation reported the artefact
+    MISSING. It is not missing; the parser could not say *"that isn't a path"*.
+
+    **The test is a trailing file extension — deliberately NOT a test for spaces.** The live
+    estate holds legitimately-spaced filenames (`Job Spec - Delivery Leader - 24-Mar-2026.pdf`,
+    `Simon Meek - Flexible working application form (signed).docx`), and a rule that rejects
+    real paths is worse than the defect it fixes. Requiring the payload to END in
+    ``.<1-8 alphanumerics>`` covers every observed malformation in one rule: a trailing clause
+    ends in prose, an unsanctioned parenthetical ends in ``)``, and a sentence ends in ``.``
+    with nothing after it. It also needs no separate parenthetical or trailer heuristic, because
+    both fail it by construction.
+    """
+    return bool(_PATH_TAIL_RE.search(payload or ""))
+
+
 def _clean_filing_path(raw: str) -> str | None:
     """Normalise one FILING payload → the vault-relative path, or ``None`` when malformed.
 
-    Strips the ``(+ .meta.md)`` companion marker. An absolute (leading ``/``) or backslashed path
-    is malformed per the catalogue — skipped, never "repaired" (the gtd notes-audit owns flagging
-    those); the path must reach the client verbatim so it compares equal to a ``FILED:`` echo.
+    Strips the ``(+ .meta.md)`` companion marker. An absolute (leading ``/``) or backslashed
+    path, or one that is a sentence rather than a path (:func:`is_bare_path`), is malformed per
+    the catalogue — skipped, never "repaired" (`gtd_note_report`'s `filing_path` class owns
+    flagging those); the path must reach the client verbatim so it compares equal to a
+    ``FILED:`` echo.
     """
     path = _COMPANION_MARKER_RE.sub("", raw).strip()
-    if not path or path.startswith("/") or "\\" in path:
+    if not path or path.startswith("/") or "\\" in path or not is_bare_path(path):
         return None
     return path
 

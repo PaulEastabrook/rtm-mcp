@@ -190,11 +190,40 @@ def resolve_companion_meta(vault_root: str | None, rel_path: str) -> dict[str, A
     return None
 
 
-#: Directories never walked when enumerating artefacts — VCS/OS noise and Obsidian's own state.
-_SKIP_DIRS = {".git", ".obsidian", ".trash", "node_modules", "__pycache__", ".DS_Store"}
+#: Non-artefact directories that do NOT announce themselves by prefix, so must be named.
+#:
+#: Kept as short as possible on purpose. The list this replaced —
+#: ``{".git", ".obsidian", ".trash", "node_modules", "__pycache__", ".DS_Store"}`` — was
+#: hand-maintained and drifted from what it was meant to describe: it never learned about
+#: ``.stversions`` (Syncthing's version history), so a versioned COPY of a real artefact was
+#: enumerated as an artefact, and because the whole folder is versioned it carries a companion
+#: too — passing the v6.4.1 tracked-ness filter and appearing in `filed_unlinked` as an orphan
+#: that can never be journalled. Everything else is now derived from the prefix rule below, so
+#: the next `.something` cache directory needs no edit here.
+#:
+#: `system/` is scheduled-task run logs and the agent-memory write-log (1,256 files at the root,
+#: 3 more under `general/`); pruned by NAME at any depth, because the nested one is the same kind
+#: of machine output as the root one.
+_SKIP_DIRS = {"node_modules", "system"}
 
 #: Extensions that are companions rather than artefacts in their own right.
 _COMPANION_SUFFIXES = (".meta.md", ".companion.md", ".metadata.yaml")
+
+
+def _is_artefact_dir(name: str) -> bool:
+    """Whether a directory holds artefacts and should be walked.
+
+    **Derived, not enumerated.** A directory beginning ``.`` or ``_`` is tooling state, not
+    artefact space — which subsumes ``.git`` / ``.obsidian`` / ``.trash`` / ``.stversions`` /
+    ``.stfolder`` / ``.auto-memory`` / ``.companion`` / ``__pycache__`` / ``_dev`` in one rule,
+    and resolves an inconsistency in the process: ``_``-prefixed *files* were already skipped
+    while ``_``-prefixed *directories* were walked.
+
+    ``.companion/`` is pruned from the WALK (a companion is metadata, not an artefact) but is
+    still READ by :func:`resolve_companion_meta`, which resolves it by path rather than by
+    discovery. The two are independent and `test_companion.py` pins that.
+    """
+    return not name.startswith((".", "_")) and name not in _SKIP_DIRS
 
 
 def walk_artefacts(vault_root: str | None, *, limit: int = 20000) -> list[dict[str, Any]] | None:
@@ -219,7 +248,7 @@ def walk_artefacts(vault_root: str | None, *, limit: int = 20000) -> list[dict[s
     out: list[dict[str, Any]] = []
     try:
         for folder, dirs, files in os.walk(root):
-            dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".comp"))
+            dirs[:] = sorted(d for d in dirs if _is_artefact_dir(d))
             for name in sorted(files):
                 if (
                     name in _NON_ARTEFACT
