@@ -1,5 +1,68 @@
 # Changelog
 
+## v6.5.0 — the legacy `(unfiled)` marker was scraped as a real attachment
+
+One predicate, two consumers. **One fingerprint** (`gtd_note_filing_gaps` — its description
+enumerates its classes). No new `ErrorCode`, no new tag, no vault interaction, no schema-version
+bump. Also fixes a version drift: `src/rtm_mcp/__init__.py` was left at `6.4.0` by the v6.4.1 bump.
+
+### The reported symptom, which was cosmetic
+
+`gtd_note_filing_gaps` counted pre-v6.4.0 notes of the form
+
+```
+FILING: work/…/staging-rollback-runbook.md (unfiled)
+```
+
+under **`linked_missing`** — *"a path that resolves to nothing"*. Wrong on the merits: nothing is
+missing, because nothing was ever filed. The note is a **declaration of absence**, hand-written
+before `unfiled=True` existed. Live population: **3, all eval fixtures** — genuinely low-noise.
+
+### The consequence that was not reported, and mattered more
+
+`_clean_filing_path` strips the `(+ .meta.md)` companion marker and rejects absolute or
+backslashed paths. It did **not** recognise `(unfiled)` — so the payload
+`work/…/x.md (unfiled)` was non-empty, relative and backslash-free, passed every check, and was
+returned by `parse_filings` as a real path.
+
+`parse_filings` backs `gtd_chat_thread`, which builds each turn's `files[]`. **The board was
+rendering a file attachment for an artefact that was never filed**, with a path carrying a
+`(unfiled)` suffix that resolves to nothing.
+
+That is precisely the failure v6.4.0's `UNFILED:`-on-its-own-line design prevents. The design
+reasoning was correct and complete; it simply was not applied backwards to the notes already in
+RTM.
+
+### What changed
+
+**`gtd_chat.is_legacy_unfiled`** — a predicate, anchored at end-of-payload (so
+`work/notes/unfiled-drafts/x.md` cannot match), case- and whitespace-tolerant.
+
+A predicate rather than a change to `_clean_filing_path`'s return, because the two consumers want
+**opposite** behaviour:
+
+| Consumer | Behaviour |
+|---|---|
+| `parse_filings` → `gtd_chat_thread.files[]` | **Skips it.** No attachment for an artefact that does not exist. |
+| `gtd_note_filing_gaps` | **Keeps it**, in its own class. Silently dropping a legacy form makes a migration backlog invisible. |
+
+`parse_filings` and the new `legacy_unfiled_paths` are two typed **views over one line-walker**
+(`_filing_payloads`), so the two-line labelled-continuation form cannot work in one and not the
+other — asserted, not assumed.
+
+**New finding class `legacy_unfiled`** (`FINDING_CLASSES` 6 → 7). Not folded into `prose_path`,
+which means "no FILING line at all" and would be a description that does not fit — filing a
+finding under the wrong name is how vocabularies rot. **RTM-only**, so it does *not* join
+`VAULT_DEPENDENT` and keeps answering on a vault-less run.
+
+### Not done
+
+The three live notes are **not** rewritten. They are eval fixtures; fixtures are regenerated, not
+edited, and RTM note edits are not undoable. A real instance appearing later joins the backlog the
+new class counts.
+
+To go live: restart on v6.5.0. Rollback is a revert.
+
 ## v6.4.1 — `filed_unlinked` counted every file in the vault, so its findings were 96% noise
 
 Bug fix. No schema change, **no fingerprint churn**, no new `ErrorCode`. One predicate.

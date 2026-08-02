@@ -59,6 +59,11 @@ _OUTPUT_TITLE_RE = re.compile(
 # labelled continuation form ends the FILING line with a dash and puts the path on the NEXT line.
 _FILING_LINE_RE = re.compile(r"^FILING:\s*(.*)$")
 _COMPANION_MARKER_RE = re.compile(r"\s*\(\+\s*\.meta\.md\)\s*$")
+# The PRE-v6.4.0 declaration of absence: `FILING: <path> (unfiled)`. A hand-written marker from
+# before `unfiled=True` existed, saying the artefact was never filed. **Anchored at end-of-payload**
+# so `work/notes/unfiled-drafts/x.md` cannot match — the live form is a trailing parenthesised
+# token, and a substring test would silently drop real filings.
+_UNFILED_MARKER_RE = re.compile(r"\s*\(\s*unfiled\s*\)\s*$", re.IGNORECASE)
 # "LINK: <url> — <label>" trailer lines in a turn's own text. The value—label separator is an
 # em/en-dash or hyphen with surrounding whitespace — the same split the board's chatParseTrailer
 # uses, so server- and client-parsed values compare equal.
@@ -165,15 +170,32 @@ def _clean_filing_path(raw: str) -> str | None:
     return path
 
 
-def parse_filings(body: str) -> list[str]:
-    """Vault-relative paths from the ``FILING:`` lines of one OUTPUT note body.
+def is_legacy_unfiled(raw: str) -> bool:
+    """Whether a FILING payload is the PRE-v6.4.0 ``<path> (unfiled)`` declaration of absence.
+
+    v6.4.0 gave "there is no artefact" its own marker (``UNFILED:``, never a ``FILING:`` line)
+    precisely so nothing would scrape it. The notes written before that carry the claim on a
+    real FILING line instead — and `_clean_filing_path` strips only the companion marker, so
+    ``work/…/x.md (unfiled)`` is non-empty, relative and backslash-free, passes every check, and
+    was returned as a path. **The legacy form has exactly the defect the new form exists to
+    avoid.** The design reasoning was right; it just was not applied backwards.
+    """
+    return bool(_UNFILED_MARKER_RE.search(raw or ""))
+
+
+def _filing_payloads(body: str) -> list[str]:
+    """The raw payload of every ``FILING:`` line in *body*, in order — the ONE line-walker.
 
     Handles both catalogue § 3 forms: the single-line ``FILING: <path> (+ .meta.md)`` and the
-    labelled continuation (a FILING line ending with a dash, the path on the next line). One path
-    per FILING line; malformed paths are skipped.
+    labelled continuation (a FILING line ending with a dash, the path on the next line).
+
+    Split out so `parse_filings` and `legacy_unfiled_paths` are two typed VIEWS over one walk
+    rather than two walkers — the same "never a second parser" discipline that keeps
+    `filing_gaps` and the register derivation reusing these functions instead of re-deriving
+    the grammar.
     """
     lines = (body or "").split("\n")
-    paths: list[str] = []
+    out: list[str] = []
     i = 0
     while i < len(lines):
         m = _FILING_LINE_RE.match(lines[i].strip())
@@ -182,11 +204,49 @@ def parse_filings(body: str) -> list[str]:
             if rest.endswith(("—", "–", "-")) and i + 1 < len(lines):  # noqa: RUF001 — en-dash tolerated
                 i += 1
                 rest = lines[i].strip()
-            path = _clean_filing_path(rest)
-            if path:
-                paths.append(path)
+            out.append(rest)
         i += 1
+    return out
+
+
+def parse_filings(body: str) -> list[str]:
+    """Vault-relative paths of the artefacts an OUTPUT note body actually FILED.
+
+    One path per FILING line; malformed paths are skipped, and so is the legacy
+    ``<path> (unfiled)`` form (:func:`is_legacy_unfiled`) — an artefact that was never filed must
+    not become an attachment on a `gtd_chat_thread` turn, which is the whole reason v6.4.0 emits
+    `UNFILED:` on its own line. Callers wanting to SEE those declarations ask for them by name
+    via :func:`legacy_unfiled_paths`; this function answers "what is actually there".
+    """
+    paths: list[str] = []
+    for raw in _filing_payloads(body):
+        if is_legacy_unfiled(raw):
+            continue
+        path = _clean_filing_path(raw)
+        if path:
+            paths.append(path)
     return paths
+
+
+def legacy_unfiled_paths(body: str) -> list[str]:
+    """The paths declared UNFILED by the pre-v6.4.0 ``FILING: <path> (unfiled)`` form.
+
+    The audit's view — `gtd_note_filing_gaps` reports these as their own class rather than
+    dropping them, because silently discarding a legacy form makes a migration backlog
+    invisible, which is the failure mode this whole programme keeps finding.
+
+    The `(unfiled)` marker is stripped so the row names the artefact plainly. That is safe here
+    and would NOT be in `parse_filings`: the verbatim-path rule exists so a filed path compares
+    equal to the board's `FILED:` echo, and these never reach the board at all.
+    """
+    out: list[str] = []
+    for raw in _filing_payloads(body):
+        if not is_legacy_unfiled(raw):
+            continue
+        path = _clean_filing_path(_UNFILED_MARKER_RE.sub("", raw))
+        if path:
+            out.append(path)
+    return out
 
 
 def parse_output_note(note: dict[str, Any]) -> dict[str, Any] | None:

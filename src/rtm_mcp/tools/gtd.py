@@ -7379,15 +7379,19 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         cached timezone read; no write, no timeline. The vault is walked ONCE, client-side
         (the `gtd_tag_report` precedent) — filesystem only, never an API call.
 
-        SIX FINDING CLASSES, each with a count and rows: `linked_missing` (a FILING: path that
+        SEVEN FINDING CLASSES, each with a count and rows: `linked_missing` (a FILING: path that
         resolves to nothing — the 18 July vault reorganisation broke four, and nothing noticed
-        for a fortnight), `filed_unlinked` (a tracked artefact no OUTPUT note references — 97 of
-        126 at baseline), `companion_missing` (resolves, but untracked), `join_unpopulated` (the
-        companion's `source_action` is absent or names another task — 0 of 40 populated at
-        baseline, so expect this to be large until agent-memory's backfill lands), `prose_path`
-        (an OUTPUT note describing a path instead of carrying a FILING: line — 67 of 104, in ten
-        mutually incompatible dialects, which is why they are reported and not parsed), and
-        `register_defect` (duplicate or non-conformant OUTPUTS registers).
+        for a fortnight), `filed_unlinked` (a COMPANION-TRACKED artefact no OUTPUT note
+        references — 97 of 126 at baseline; an untracked file is not a filed artefact and is
+        counted separately as `untracked_unlinked_count`), `companion_missing` (resolves, but
+        untracked), `join_unpopulated` (the companion's `source_action` is absent or names
+        another task — 0 of 40 populated at baseline, so expect this to be large until
+        agent-memory's backfill lands), `prose_path` (an OUTPUT note describing a path instead of
+        carrying a FILING: line — 67 of 104, in ten mutually incompatible dialects, which is why
+        they are reported and not parsed), `register_defect` (duplicate or non-conformant OUTPUTS
+        registers), and `legacy_unfiled` (the pre-v6.4.0 `FILING: <path> (unfiled)` form — a
+        declaration that nothing was filed, NOT a broken link; a migration backlog whose end
+        state is zero).
 
         AN ABSENT VAULT PRODUCES A PARTIAL RESULT, NEVER A CLEAN ONE. The four vault-dependent
         classes are NAMED in `gaps[]` and their `count` is **null, not 0** — a reconciliation

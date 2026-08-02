@@ -533,8 +533,10 @@ owning module's docstring and pinned by a test.
 - `gtd_focus_index` - every active Area of Focus grouped by life context, with project and direct-item
   counts: the **Horizon-2 view**, a new capability. Pairs with `gtd_project_index` one horizon down.
 - `gtd_note_filing_gaps` (v6.4.0) - reconciles the OUTPUT notes in RTM against the filed artefacts
-  in the AI Memory vault: journalled-but-missing, filed-but-never-journalled, untracked, unjoined,
-  prose-path, and duplicate/non-conformant registers. One `getList` + one client-side vault walk.
+  in the AI Memory vault across **seven** finding classes: journalled-but-missing,
+  filed-but-never-journalled, untracked, unjoined, prose-path, duplicate/non-conformant registers,
+  and (v6.5.0) `legacy_unfiled` — the pre-v6.4.0 `FILING: <path> (unfiled)` form, a declaration
+  that nothing was filed rather than a broken link. One `getList` + one client-side vault walk.
   **With no vault the vault-dependent classes are `null` and named in `gaps[]`, never `0`.**
 - `gtd_note_report` (v6.4.0) - note-shape hygiene estate-wide, using the write gate's own
   `check_title` / `check_type` / `check_contract`, so audit and gate cannot drift. Replaces one
