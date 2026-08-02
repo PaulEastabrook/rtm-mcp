@@ -3495,6 +3495,117 @@ class TestGtdCreateItem:
         assert not (set(_methods(client)) & WRITE_METHODS)
 
 
+class TestNameLengthAdvisoryIsWiredIn:
+    """v6.6.0 — the name-length hygiene advisory, driven through the REAL registration path.
+
+    `tests/test_receipt.py` covers the producer as a pure function and asserts the advertised
+    descriptions; every one of those tests passes against a server where `name_of` was never
+    handed to `_with_receipt` at either site. These are the tests that would not.
+    """
+
+    _LONG = "Realign the contractor HRIS line management model (ensure this is data backed)"
+
+    @pytest.mark.asyncio
+    async def test_item_create_fires_on_a_long_name(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_item_create"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="action",
+            name=self._LONG,
+            life_context="work",
+            priority="must",
+            energy="low_energy",
+            estimate="30 minutes",
+        )
+        data = res["data"]
+        assert f"Name is {len(self._LONG)} characters" in (data["advisory"] or "")
+        # ADVISORY, NEVER A GATE — the item was still created, in full.
+        assert data["task_id"] == "new1" and "rejected" not in data
+
+    @pytest.mark.asyncio
+    async def test_item_create_is_silent_on_a_short_name(self, gtd_tools):
+        """Guards the guard: without this the test above passes against a producer that fires
+        on every name, which would be worse than none."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_item_create"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="action",
+            name="Write the thing",
+            life_context="work",
+            priority="must",
+            energy="low_energy",
+            estimate="30 minutes",
+        )
+        assert "Name is" not in (res["data"]["advisory"] or "")
+
+    @pytest.mark.asyncio
+    async def test_project_create_fires_on_a_long_frame_name(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+        res = await tools["gtd_project_create"](
+            FakeContext(),
+            frame={
+                "life": "personal",
+                "focus": "Personal",
+                "name": self._LONG,
+                "outcome": "Win",
+            },
+            items=[{"id": "a", "type": "action", "text": "Do it"}],
+        )
+        data = res["data"]
+        assert f"Name is {len(self._LONG)} characters" in (data["advisory"] or "")
+        assert data["project_id"] == "new1" and "rejected" not in data
+
+    @pytest.mark.asyncio
+    async def test_project_create_is_silent_on_a_short_frame_name(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+        res = await tools["gtd_project_create"](
+            FakeContext(),
+            frame={"life": "personal", "focus": "Personal", "name": "New Project"},
+            items=[{"id": "a", "type": "action", "text": "Do it"}],
+        )
+        assert "Name is" not in (res["data"]["advisory"] or "")
+
+    @pytest.mark.asyncio
+    async def test_project_create_reads_a_json_string_frame(self, gtd_tools):
+        """`frame` may arrive as a JSON string (the Cowork serialisation) — the body's own
+        belt-and-braces `coerce_json` allows for it, so the extractor must too, or the advisory
+        goes silent for exactly one caller population and nothing says so."""
+        import json
+
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_create_dispatch(_create_account()))
+        res = await tools["gtd_project_create"](
+            FakeContext(),
+            frame=json.dumps(
+                {"life": "personal", "focus": "Personal", "name": self._LONG, "outcome": "Win"}
+            ),
+            items=[{"id": "a", "type": "action", "text": "Do it"}],
+        )
+        assert f"Name is {len(self._LONG)} characters" in (res["data"]["advisory"] or "")
+
+    @pytest.mark.asyncio
+    async def test_a_sibling_governed_write_gains_nothing(self, gtd_tools):
+        """`item_name` is None for every tool that does not register an extractor, so the
+        producer is silent by construction rather than by exemption."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_note_add"](
+            FakeContext(),
+            task_ref="1001",
+            note_type="PROGRESS",
+            summary="x" * 200,
+            narrative="x" * 500,
+            sources=["a source"],
+        )
+        assert "Name is" not in (res["data"]["advisory"] or "")
+
+
 class TestGtdAddNote:
     @pytest.mark.asyncio
     async def test_writes_conforming_title(self, gtd_tools):

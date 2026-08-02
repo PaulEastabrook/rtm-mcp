@@ -27,6 +27,7 @@ import pytest
 from rtm_mcp import receipt
 from rtm_mcp.error_codes import ErrorCode
 from rtm_mcp.receipt import (
+    NAME_ADVISORY_LIMIT,
     RECEIPT_DOC,
     RECEIPT_FIELDS,
     RECEIPT_REASONS,
@@ -34,6 +35,7 @@ from rtm_mcp.receipt import (
     build_advisory,
     build_guidance,
     build_markup_advisory,
+    build_name_advisory,
     detect_leaked_markup,
     is_facet,
     not_applied_entry,
@@ -872,3 +874,163 @@ class TestOutOfScopeOfEmptyRejection:
             schema = tools[tool].to_mcp_tool().inputSchema or {}
             assert flag in (schema.get("properties") or {})
             assert flag not in set(schema.get("required") or []), f"{tool}.{flag} became required"
+
+
+class TestNameAdvisory:
+    """The name-length hygiene advisory (v6.6.0).
+
+    Note what is NOT asserted anywhere in this class: any statement about vault folders, slugs
+    or paths. That is the membrane (`TestTheMembraneIsIntact` below) — this server owns one
+    integer and a comparison, and the message it produces speaks of length only.
+    """
+
+    def test_it_fires_above_the_threshold_and_names_the_length(self):
+        name = "x" * (NAME_ADVISORY_LIMIT + 1)
+        msg = build_name_advisory(name)
+        assert msg and str(NAME_ADVISORY_LIMIT + 1) in msg
+        assert "belongs in another field" in msg
+
+    def test_it_is_silent_at_and_below_the_threshold(self):
+        # AT the threshold, not merely below it: an off-by-one here is the difference between
+        # a documented cut-off and an undocumented one.
+        assert build_name_advisory("x" * NAME_ADVISORY_LIMIT) is None
+        assert build_name_advisory("x" * (NAME_ADVISORY_LIMIT - 1)) is None
+        assert build_name_advisory("") is None
+
+    def test_it_is_silent_when_there_is_no_name(self):
+        # Every governed write other than the two passes None, so this is the common case and
+        # must never produce prose.
+        assert build_name_advisory(None) is None
+        assert build_name_advisory({"name": "x" * 200}) is None
+        assert build_name_advisory(["x" * 200]) is None
+
+    def test_it_never_names_a_path_or_a_folder(self):
+        """The membrane, asserted on the OUTPUT rather than only on the imports.
+
+        A message mentioning a folder would be this server making a filesystem claim it has no
+        basis for — and, being a one-sided proxy, one that is sometimes false."""
+        msg = build_name_advisory("x" * 200) or ""
+        for banned in ("folder", "path", "slug", "directory", "vault", "truncat", "filename"):
+            assert banned not in msg.lower(), f"the advisory leaked a filesystem claim: {banned}"
+
+
+class TestNameAdvisoryIsAppendedNotRanked:
+    """Name length is independent of the two loss advisories, so it must not displace them.
+
+    Markup and bare-call are mutually exclusive because one *explains* the other. Name length
+    explains neither, so ranking it against them would silently drop a true signal."""
+
+    def test_a_long_name_on_a_bare_call_carries_both(self):
+        data = attach(
+            {"applied": [1]},
+            tool_name="gtd_item_create",
+            absent_optional=["due", "energy"],
+            declared_optional=["due", "energy"],
+            item_name="x" * 90,
+        )
+        advisory = data["advisory"]
+        assert "No optional parameter reached" in advisory
+        assert "Name is 90 characters" in advisory
+
+    def test_a_long_name_alongside_leaked_markup_carries_both(self):
+        data = attach(
+            {"applied": [1]},
+            tool_name="gtd_item_create",
+            absent_optional=[],
+            declared_optional=["due"],
+            leaked=[{"param": "name", "closed": ["name"], "lost": ["due"]}],
+            item_name="x" * 90,
+        )
+        advisory = data["advisory"]
+        assert "Tool-call markup arrived" in advisory
+        assert "Name is 90 characters" in advisory
+
+    def test_a_short_name_leaves_the_loss_advisories_byte_identical(self):
+        """The parameter must be invisible to every call that does not trip it."""
+        kwargs: dict[str, Any] = {
+            "tool_name": "gtd_item_create",
+            "absent_optional": ["due"],
+            "declared_optional": ["due"],
+        }
+        without = attach({"applied": [1]}, **kwargs)["advisory"]
+        with_short = attach({"applied": [1]}, **kwargs, item_name="Short name")["advisory"]
+        assert with_short == without
+
+    def test_a_clean_call_with_a_short_name_still_has_no_advisory(self):
+        data = attach(
+            {"applied": [1]},
+            tool_name="gtd_item_create",
+            absent_optional=[],
+            declared_optional=["due"],
+            item_name="Short name",
+        )
+        assert data["advisory"] is None
+
+
+class TestTheMembraneIsIntact:
+    """rtm-mcp must learn NOTHING about vault paths (designed change § 1a.1).
+
+    An earlier draft of that change gave this repo the slug function, the path template and the
+    length budget. This fails loudly if anyone widens it back."""
+
+    def test_no_module_imports_the_vault_naming_rule(self):
+        import ast
+        import pathlib
+
+        src = pathlib.Path(__file__).resolve().parents[1] / "src" / "rtm_mcp"
+        offenders = []
+        for path in sorted(src.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and "vault_naming" in (node.module or ""):
+                    offenders.append(f"{path.name}:{node.lineno}")
+                elif isinstance(node, ast.Import):
+                    offenders += [
+                        f"{path.name}:{node.lineno}" for a in node.names if "vault_naming" in a.name
+                    ]
+        assert offenders == [], f"the vault-naming rule was imported into rtm-mcp: {offenders}"
+
+    def test_no_module_carries_a_vault_path_template(self):
+        """A path template is the other half of the breach — the rule can be copied as well as
+        imported. `companion.py` is the ONE vault seam and is read-only by contract, so it is
+        the only file allowed to name the vault's own directories."""
+        import pathlib
+        import re
+
+        src = pathlib.Path(__file__).resolve().parents[1] / "src" / "rtm_mcp"
+        # A vault-relative path template: a life context followed by a separator and a slot.
+        template = re.compile(r"\b(work|personal|leanworking|client)/\{")
+        offenders = [
+            f"{p.name}:{i}"
+            for p in sorted(src.rglob("*.py"))
+            if p.name != "companion.py"
+            for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+            if template.search(line)
+        ]
+        assert offenders == [], f"a vault path template appeared in rtm-mcp: {offenders}"
+
+
+class TestNameAdvisoryOnTheRealServer:
+    """Anti-vacuity: every test above is a pure function and would pass against a server that
+    never wires the producer in. These assert the live advertised surface."""
+
+    @pytest.mark.asyncio
+    async def test_both_creation_tools_document_the_threshold(self):
+        """The limit is hard-coded in two docstrings (a docstring cannot interpolate), so this
+        is the only thing keeping them in step with the constant."""
+        tools = await _tools()
+        for name in ("gtd_item_create", "gtd_project_create"):
+            description = tools[name].to_mcp_tool().description or ""
+            assert str(NAME_ADVISORY_LIMIT) in description, f"{name} does not state the threshold"
+            assert "ONE-SIDED proxy" in description, f"{name} does not state the caveat"
+
+    @pytest.mark.asyncio
+    async def test_no_read_tool_gained_an_advisory(self):
+        """A read writes nothing, so it has no name to judge and no receipt at all. This is the
+        guard the brief asks for, and it also re-pins the read/write split the wrapper draws."""
+        tools = await _tools()
+        reads = [n for n, t in tools.items() if not _is_governed_write(n, t)]
+        assert reads, "no read tools found — the guard would pass vacuously"
+        for name in reads:
+            description = tools[name].to_mcp_tool().description or ""
+            assert RECEIPT_DOC not in description, f"{name} is a read carrying a receipt"
