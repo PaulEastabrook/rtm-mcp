@@ -6,6 +6,7 @@ from rtm_mcp.companion import (
     parse_frontmatter,
     parse_yaml_body,
     resolve_companion_meta,
+    resolve_companion_path,
     resolve_vault_root,
     walk_artefacts,
 )
@@ -251,6 +252,65 @@ class TestTheWalkPrunesNonArtefactDirectories:
         paths = {a["path"] for a in walk_artefacts(root)}
         assert "work/thunder/output/deck.pptx" in paths
         assert not [p for p in paths if ".companion/" in p]
+
+
+class TestACompanionIsNotAlsoAnArtefact:
+    """v6.5.2 — the same two-lists-must-agree defect as `.stversions`, one layer down.
+
+    `companion_candidates` knows FIVE companion forms; `_COMPANION_SUFFIXES` (which
+    `walk_artefacts` uses to exclude companions) knows THREE. The gap is form 2: for a non-md
+    artefact `X.pdf`, the companion may be `X.md` — which cannot be expressed as a suffix
+    because it depends on a SIBLING's existence rather than on the filename. Measured live: 49
+    companions were enumerated as artefacts in their own right.
+    """
+
+    @staticmethod
+    def _vault(tmp_path):
+        (tmp_path / "memory").mkdir()
+        (tmp_path / "memory" / "_index.md").write_text("# index")
+        out = tmp_path / "work" / "out"
+        out.mkdir(parents=True)
+        # form 2: the .md IS the .pdf's companion (no .meta.md exists to outrank it)
+        (out / "booking.pdf").write_text("%PDF")
+        (out / "booking.md").write_text('---\ntitle: Booking\nformat: "pdf"\n---\n')
+        # a standalone .md artefact with its OWN .meta.md — must survive
+        (out / "brief.md").write_text("the brief")
+        (out / "brief.meta.md").write_text("---\ntitle: Brief\n---\n")
+        return str(tmp_path)
+
+    def test_the_sibling_md_companion_is_not_enumerated(self, tmp_path):
+        paths = {a["path"] for a in walk_artefacts(self._vault(tmp_path))}
+        assert "work/out/booking.md" not in paths
+
+    def test_the_artefact_it_belongs_to_still_is_and_is_tracked(self, tmp_path):
+        """Guard-the-guard: excluding too much would pass the test above trivially."""
+        found = {a["path"]: a for a in walk_artefacts(self._vault(tmp_path))}
+        assert found["work/out/booking.pdf"]["meta"] == {"title": "Booking", "format": "pdf"}
+
+    def test_a_standalone_md_with_its_own_companion_survives(self, tmp_path):
+        """`brief.md` has `brief.meta.md`, so it is an artefact, not a companion. The rule must
+        turn on being CLAIMED by a sibling, not on being a `.md` next to other files."""
+        found = {a["path"]: a for a in walk_artefacts(self._vault(tmp_path))}
+        assert found["work/out/brief.md"]["meta"] == {"title": "Brief"}
+
+    def test_an_md_beside_a_pdf_that_has_its_OWN_meta_is_still_an_artefact(self, tmp_path):
+        """Candidate order matters: `X.meta.md` outranks `X.md`, so when both exist the `.md` is
+        NOT the companion and must keep being enumerated."""
+        root = self._vault(tmp_path)
+        out = tmp_path / "work" / "out"
+        (out / "report.pdf").write_text("%PDF")
+        (out / "report.meta.md").write_text("---\ntitle: Report\n---\n")
+        (out / "report.md").write_text("a genuinely separate write-up")
+        paths = {a["path"] for a in walk_artefacts(root)}
+        assert "work/out/report.md" in paths and "work/out/report.pdf" in paths
+
+    def test_the_two_resolvers_agree_by_construction(self, tmp_path):
+        """`resolve_companion_meta` and `resolve_companion_path` share one core, so "which file
+        is the companion?" and "what does it say?" cannot disagree."""
+        root = self._vault(tmp_path)
+        assert resolve_companion_path(root, "work/out/booking.pdf").endswith("booking.md")
+        assert resolve_companion_meta(root, "work/out/booking.pdf")["title"] == "Booking"
+        assert resolve_companion_path(root, "work/out/nothing-here.pdf") is None
 
 
 class TestEnrichFiles:
