@@ -1,5 +1,84 @@
 # Changelog
 
+## v6.5.1 — the last two noise sources in `gtd_note_filing_gaps`
+
+Two unrelated bug fixes, both narrow. **One fingerprint** (`gtd_note_report`, whose description
+now states what its `filing_path` class actually catches). No new class, no new `ErrorCode`, no
+new tag, vault-free in the write direction.
+
+Neither is a regression. Both were **masked by the `filed_unlinked` noise v6.4.1 removed** —
+which is the argument for re-running the report after every fix to it, rather than assuming the
+last fix was the last defect.
+
+### A — `.stversions/` ghosts were counted as filed artefacts
+
+The top row of `filed_unlinked` after v6.5.0 was a **Syncthing version-history copy** of a real,
+already-journalled artefact. Because the whole folder is versioned it carried a companion too, so
+v6.4.1's tracked-ness filter passed it — and the ghost could never be journalled, so it would
+have been reported as an orphan forever.
+
+`_SKIP_DIRS` was a hand-maintained list (`.git`, `.obsidian`, `.trash`, `node_modules`,
+`__pycache__`, `.DS_Store`) that never learned about `.stversions`. Same root cause as three
+other defects this programme has fixed.
+
+The rule is now **derived**: `companion._is_artefact_dir` prunes any `.`- or `_`-prefixed
+directory — subsuming `.git`, `.obsidian`, `.trash`, `.stversions`, `.stfolder`, `.auto-memory`,
+`.companion`, `__pycache__` and `_dev` in one rule — plus the two named non-dot exceptions
+`node_modules` and `system` (scheduled-task run logs and the agent-memory write-log; pruned at
+any depth, since the nested `general/system/` holds the same kind of machine output). It also
+resolves an inconsistency: `_`-prefixed *files* were skipped while `_`-prefixed *directories*
+were walked.
+
+**Measured against the live vault:** 2,731 → **1,273** files enumerated; 184 → **160** tracked
+artefacts. Pruned: `system` 1,251, `_dev` 83, `_archive` (test fixtures) 68, `.stversions` 47,
+`.auto-memory` 7, `_master` 1, `.stfolder` 1. **Zero real artefacts lost** — every pruned path
+was verified to sit under one of those.
+
+`.companion/` is pruned from the *walk* but still *read* by `resolve_companion_meta`, which
+resolves by path rather than by discovery. Asserted, not assumed.
+
+### B — a whole sentence was accepted as a filing path
+
+An **eleventh** prose dialect, and the one the model did not cover. The ten counted at the
+2026-08-01 census sit *instead of* a `FILING:` line — which is what `prose_path` reports. This one
+sits **on** one:
+
+```
+FILING: work/…/principal-engineer-role-rr-draft-v0.1.md (companion metadata:
+principal-engineer-role-rr-draft-v0.1.meta.md) — filed alongside the sibling Lead SWE and
+reference docs in the engineering-roles project folder.
+```
+
+After the companion marker is stripped that remainder is non-empty, relative and backslash-free,
+so it passed every check and the reconciliation reported the artefact **missing**. It is not
+missing — the parser could not say *"that isn't a path"*.
+
+`gtd_chat.is_bare_path` tests for a **trailing file extension** (`.` + 1–8 alphanumerics at end of
+payload), and **emphatically not for whitespace**: the live estate holds legitimately-spaced
+filenames — `Job Spec - Delivery Leader - 24-Mar-2026.pdf`, `Simon Meek - Flexible working
+application form (signed).docx` — and a rule that rejects real paths is worse than the defect it
+fixes. One rule covers every observed malformation: a trailing clause ends in prose, an
+unsanctioned parenthetical ends in `)`, a sentence ends in `.` with nothing after it.
+
+Three consumers, one predicate:
+
+| Consumer | Behaviour |
+|---|---|
+| `_clean_filing_path` | returns `None` — malformed, skipped, **never repaired** |
+| `gtd_note_report.filing_path` | **reports it.** The class existed with the boundary drawn correctly and reported `0` live; the check was simply not strict enough to fire |
+| `gtd_note_filing_gaps` | no change needed — the row drops out of `linked_missing` and lands in `prose_path`, which is now the honest classification (the note genuinely carries no machine-readable FILING line) |
+
+`note_report._filing_findings` now consumes `gtd_chat._filing_payloads` rather than walking the
+lines itself, so the two-line labelled-continuation form is handled identically in both. A third
+parser is what this programme keeps refusing to write.
+
+### Not done
+
+Repairing the malformed notes. Detection first; remediation is a separate Paul-approved pass, and
+RTM note edits are not undoable.
+
+To go live: restart on v6.5.1. Rollback is a revert.
+
 ## v6.5.0 — the legacy `(unfiled)` marker was scraped as a real attachment
 
 One predicate, two consumers. **One fingerprint** (`gtd_note_filing_gaps` — its description

@@ -232,6 +232,39 @@ class TestTheLegacyUnfiledClass:
         assert out["findings"]["filed_unlinked"]["count"] == 0
 
 
+class TestASentenceIsNoLongerAMissingArtefact:
+    """v6.5.1 — Defect B, seen from the reconciliation. The sentence-on-a-FILING-line drops out
+    of `linked_missing` as a consequence of the parser fix, with no change here."""
+
+    OBSERVED = (
+        "work/…/principal-engineer-role-rr-draft-v0.1.md (companion metadata: "
+        "principal-engineer-role-rr-draft-v0.1.meta.md) — filed alongside the sibling docs."
+    )
+
+    def _out(self):
+        task = _task(
+            "9",
+            "Sentence",
+            [_note("n9", "2026-07-20 — OUTPUT — draft", f"x\n\nFILING: {self.OBSERVED}")],
+        )
+        return build_filing_gaps([task], artefacts=[])
+
+    def test_it_is_NOT_reported_as_a_missing_artefact(self):
+        """The defect: the report said "this artefact is missing". It is not missing — the
+        parser could not say "that isn't a path"."""
+        assert self._out()["findings"]["linked_missing"]["count"] == 0
+
+    def test_it_lands_in_prose_path_which_is_now_the_honest_class(self):
+        """Not a leftover: after the fix the note genuinely carries NO machine-readable FILING
+        line, which is exactly what `prose_path` means. The SHAPE defect is reported separately
+        by `gtd_note_report.filing_path` — two tools, two honest views, neither guessing."""
+        rows = self._out()["findings"]["prose_path"]["rows"]
+        assert [r["note_id"] for r in rows] == ["n9"]
+        # Detect, do not parse: the real path is obviously the leading token, and it is still
+        # not extracted (`prose_path`'s standing posture).
+        assert "path" not in rows[0]
+
+
 class TestAnAbsentVaultIsPartialNeverClean:
     """The load-bearing test for the whole tool. A reconciliation reporting zero drift because
     nothing was mounted is the silent-control failure this programme keeps finding."""

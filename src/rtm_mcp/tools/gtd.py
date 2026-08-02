@@ -7452,8 +7452,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         `check_type` / `check_contract`, the same functions that gate `add_note`. Audit and gate
         therefore cannot disagree about what conformant means. Five classes: `shape` (the title
         does not parse), `vocabulary` (parses, but the TYPE is unregistered), `chat_title` and
-        `order_contract` (the per-TYPE contracts), and `filing_path` (a malformed FILING: path —
-        shape only; whether the artefact EXISTS is `gtd_note_filing_gaps`' question).
+        `order_contract` (the per-TYPE contracts), and `filing_path` (a malformed FILING: payload —
+        an absolute or backslashed path, or one that is a SENTENCE rather than a bare path, i.e.
+        does not end in a file extension; shape only — whether the artefact EXISTS is
+        `gtd_note_filing_gaps`' question).
 
         THE FREE-TEXT RULE IS NORMATIVE AND LOAD-BEARING. A note with **no date prefix** was
         typed by Paul in the RTM app and is NEVER a finding — it is counted in `free_text_count`

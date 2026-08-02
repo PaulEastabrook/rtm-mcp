@@ -7,6 +7,7 @@ from rtm_mcp.companion import (
     parse_yaml_body,
     resolve_companion_meta,
     resolve_vault_root,
+    walk_artefacts,
 )
 
 FM = (
@@ -186,6 +187,70 @@ class TestResolveCompanionMeta:
 
     def test_no_vault_root(self, tmp_path):
         assert resolve_companion_meta(None, "work/p/output/r.md") is None
+
+
+class TestTheWalkPrunesNonArtefactDirectories:
+    """v6.5.1 — Defect A. The pruning rule is DERIVED (any dot- or underscore-prefixed
+    directory) rather than a hand-maintained list, because the hand-maintained one drifted:
+    it never learned about `.stversions`, Syncthing's version history."""
+
+    @staticmethod
+    def _vault(tmp_path):
+        (tmp_path / "memory").mkdir()
+        (tmp_path / "memory" / "_index.md").write_text("# index")
+        real = tmp_path / "work" / "thunder" / "output"
+        real.mkdir(parents=True)
+        (real / "brief.md").write_text("the artefact")
+        (real / "brief.meta.md").write_text("---\ntitle: Brief\n---\n")
+        # The Syncthing ghost: a versioned COPY of the real artefact, companion and all — so
+        # v6.4.1's tracked-ness filter passes it and it is reported as an orphan forever.
+        ghost = tmp_path / ".stversions" / "work" / "thunder" / "output"
+        ghost.mkdir(parents=True)
+        (ghost / "brief.md").write_text("the artefact")
+        (ghost / "brief.meta.md").write_text("---\ntitle: Brief\n---\n")
+        for d, f in (("system", "run-log.md"), ("_dev", "scratch.md"), (".auto-memory", "c.json")):
+            (tmp_path / d).mkdir()
+            (tmp_path / d / f).write_text("x")
+        # A NESTED `system/` — live, under general/, holding the same kind of machine output.
+        (tmp_path / "general" / "system").mkdir(parents=True)
+        (tmp_path / "general" / "system" / "audit.json").write_text("{}")
+        return str(tmp_path)
+
+    def test_the_real_artefact_is_still_found(self, tmp_path):
+        """Guard-the-guard: a pruning rule that pruned everything would pass every test below."""
+        paths = {a["path"] for a in walk_artefacts(self._vault(tmp_path))}
+        assert "work/thunder/output/brief.md" in paths
+
+    def test_the_stversions_ghost_is_not_an_artefact(self, tmp_path):
+        paths = {a["path"] for a in walk_artefacts(self._vault(tmp_path))}
+        assert not [p for p in paths if p.startswith(".stversions/")]
+
+    def test_system_and_dev_contribute_nothing(self, tmp_path):
+        paths = {a["path"] for a in walk_artefacts(self._vault(tmp_path))}
+        assert not [p for p in paths if p.startswith(("system/", "_dev/", "general/system/"))]
+
+    def test_a_dot_directory_needs_no_named_entry(self, tmp_path):
+        """The point of deriving: `.auto-memory` was never in the old list either."""
+        paths = {a["path"] for a in walk_artefacts(self._vault(tmp_path))}
+        assert not [p for p in paths if p.startswith(".")]
+
+    def test_companion_resolution_still_works_after_the_walk_change(self, tmp_path):
+        """`.companion/` is pruned from the WALK but still READ by resolve_companion_meta,
+        which resolves by path rather than by discovery. The brief flags this pairing as the
+        easy thing to break, so it is asserted rather than assumed."""
+        root = self._vault(tmp_path)
+        side = tmp_path / "work" / "thunder" / "output" / ".companion"
+        side.mkdir()
+        (tmp_path / "work" / "thunder" / "output" / "deck.pptx").write_text("x")
+        (side / "deck.yaml").write_text("title: Deck\ntype: deck\n")
+        assert resolve_companion_meta(root, "work/thunder/output/deck.pptx") == {
+            "title": "Deck",
+            "type": "deck",
+        }
+        # …and the companion file itself is not enumerated as an artefact.
+        paths = {a["path"] for a in walk_artefacts(root)}
+        assert "work/thunder/output/deck.pptx" in paths
+        assert not [p for p in paths if ".companion/" in p]
 
 
 class TestEnrichFiles:

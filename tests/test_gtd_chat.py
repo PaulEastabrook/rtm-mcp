@@ -9,6 +9,7 @@ from rtm_mcp.gtd_chat import (
     build_inflight,
     build_thread,
     format_chat_title,
+    is_bare_path,
     is_legacy_unfiled,
     legacy_unfiled_paths,
     local_stamp,
@@ -346,6 +347,52 @@ class TestTheLegacyUnfiledMarker:
         body = f"FILING: filed in the output folder —\n{VAULT_PATH} (unfiled)"
         assert parse_filings(body) == []
         assert legacy_unfiled_paths(body) == [VAULT_PATH]
+
+
+class TestTheSentenceOnAFilingLine:
+    """v6.5.1 — Defect B. The ELEVENTH prose dialect, and the one the model did not cover: the
+    ten counted at the census sit *instead of* a FILING line (which `prose_path` reports); this
+    one sits **on** one. After the companion marker is stripped it is non-empty, relative and
+    backslash-free, so it passed every check and the reconciliation reported the artefact
+    MISSING. It is not missing — the parser could not say "that isn't a path"."""
+
+    # The live payload, verbatim.
+    OBSERVED = (
+        "work/turner-and-townsend/tech-strategy-steering/engineering-roles/reference/"
+        "principal-engineer-role-rr-draft-v0.1.md (companion metadata: "
+        "principal-engineer-role-rr-draft-v0.1.meta.md) — filed alongside the sibling Lead SWE "
+        "and reference docs in the engineering-roles project folder."
+    )
+
+    def test_the_observed_payload_is_not_a_bare_path(self):
+        assert not is_bare_path(self.OBSERVED)
+
+    def test_it_yields_nothing_from_parse_filings(self):
+        assert parse_filings(f"FILING: {self.OBSERVED}") == []
+
+    def test_a_real_path_with_SPACES_in_the_filename_is_unaffected(self):
+        """THE load-bearing regression. The live estate holds legitimately-spaced filenames, so
+        the predicate tests for a trailing EXTENSION and emphatically not for whitespace — a
+        rule that rejects real paths is worse than the defect it fixes."""
+        for real in (
+            "work/turner-and-townsend/hiring/Job Spec - Delivery Leader - 24-Mar-2026.pdf",
+            "work/hiring/meek/Simon Meek - Flexible working application form (signed).docx",
+        ):
+            assert is_bare_path(real), real
+            assert parse_filings(f"FILING: {real}") == [real]
+
+    def test_each_malformation_shape_is_caught_by_the_one_rule(self):
+        for bad in (
+            "work/x.md — filed alongside the others",  # a prose trailer
+            "work/x.md (companion metadata: x.meta.md)",  # an unsanctioned parenthetical
+            "work/notes/the engineering-roles project folder.",  # a sentence, trailing full stop
+            "work/notes/no extension at all",
+        ):
+            assert not is_bare_path(bad), bad
+
+    def test_a_genuine_filing_is_BYTE_UNCHANGED(self):
+        assert parse_filings(f"FILING: {VAULT_PATH} (+ .meta.md)") == [VAULT_PATH]
+        assert is_bare_path(VAULT_PATH)
 
 
 class TestParseOutputNote:
