@@ -151,7 +151,11 @@ REQUIRED_AXES: dict[str, tuple[str, ...]] = {
     "calendar_entry": ("life_context", "priority", "due"),
 }
 
-#: Advisory-only axes surfaced in the response but never gated.
+#: Advisory-only axes surfaced in the response but never gated. Reported on the payload's OWN
+#: `advisory_axes` key (v6.7.0) — NOT on the receipt's `advisory`, which belongs to `receipt.py`
+#: and is a `str | None` on all 25 governed writes. These are a constant lookup by kind, so
+#: folding them into the receipt's prose would have appended a fixed sentence to 100% of action
+#: creates — the noise rule `receipt.is_facet` already exists to enforce.
 ADVISORY_AXES: dict[str, tuple[str, ...]] = {
     "action": ("relational",),
     "waiting_for": (),
@@ -455,7 +459,7 @@ def validate_create_item(
     return {
         "rejections": rejections,
         "missing": missing,
-        "advisory": list(ADVISORY_AXES.get(kind, ())),
+        "advisory_axes": list(ADVISORY_AXES.get(kind, ())),
     }
 
 

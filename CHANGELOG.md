@@ -1,5 +1,76 @@
 # Changelog
 
+## v6.7.0 — the Definition-of-Ready axes get their own key (`advisory_axes`)
+
+Minor. **One fingerprint churns** (`gtd_item_create`). No new tag, no new `ErrorCode`, no
+strict-tag interaction, no gate, vault-free. Found during the v6.6.0 work and deliberately
+deferred there, because the fix changes an advertised output schema.
+
+### The defect: a field the receipt and the tool both owned
+
+`gtd_item_create` set `data["advisory"]` on all three of its return paths to
+`gtd_writes.ADVISORY_AXES[kind]` — the Definition-of-Ready `relational` axis, a `list[str]`. Its
+docstring promised that axis was "REPORTED in `advisory`, not gated". Then `receipt.attach`,
+applied centrally by `tools/gtd.py::_tool`, assigned `data["advisory"]` **unconditionally** with
+the receipt's `str | None`.
+
+**So the DoR advisory reached a caller zero times between v4.0.0 and v6.6.0.**
+
+The advertised schema was wrong in the other direction at the same time.
+`models._write_envelope_schema` mixes `Receipt` in BEHIND the result model, so
+`CreateItemResult.advisory: list[str]` won the MRO and `data.advisory` advertised
+`array of string` — while a string was what actually arrived.
+
+**Neither half could fail a test.** The schema tests read the schema, the tool tests read the
+runtime, and nothing had ever compared the two. Both surfaces worked perfectly and disagreed.
+
+### The decision: a separate key, not a merged prose advisory
+
+Both options were on the table. `advisory_axes: list[str]` wins on three counts:
+
+1. **The receipt's `advisory` must be one type across all 25 governed writes.** The collision
+   *is* the defect; making one tool's `advisory` a different shape from the other 24 keeps it.
+2. **`ADVISORY_AXES` carries no per-call information** — it is a constant lookup by `kind`
+   (`("relational",)` for an action, `()` for the other two kinds). Merging it into the receipt's
+   prose would append a fixed sentence to **100% of action creates**. This repo has already
+   measured that rule and acted on it: `receipt.is_facet` exists because two tools fired their
+   advisory on 100% of legitimate calls, and the fix was to stop firing, not to reword.
+3. **It has a natural home.** `ready: bool` / `missing: list[str]` are the first two members of
+   the DoR triple; `advisory_axes` is the third — same type as `missing`, opposite gate. A
+   consumer iterates a list instead of searching a substring.
+
+It also stays coherent with v6.6.0's third advisory producer: `build_name_advisory` is APPENDED
+to the loss advisories because it explains neither and is explained by neither. The DoR axes are
+not a fourth producer at all — they were never about the call, only about the item.
+
+### The durable half: the collision class is now unrepresentable
+
+`_write_envelope_schema` **raises `TypeError`** when a success model declares any name in
+`receipt.RECEIPT_FIELDS`. Not a report — the v6.0.0 posture, where a wrong block order stopped
+being *rejected* and became impossible to express. A collision is a developer error with no
+legitimate form (the receipt's three fields are the receipt's by definition), it is silent by
+construction, and failing at import means it can never reach a caller. The message names the fix,
+not just the fault.
+
+Beside it, the assertion that was missing all along: **every governed write's advertised
+`data.advisory` is `string | null`**, checked over the real server, which is the direct
+comparison of the two surfaces nobody had made.
+
+### Compatibility
+
+The runtime `data["advisory"]` on `gtd_item_create` is unchanged — it has carried the receipt's
+string since v4.0.0, and the list it advertised has never once been sent. So no consumer can have
+been reading the DoR axes from it, which is why this is a minor rather than a major: the
+advertised schema is corrected to match three releases of runtime reality, and `advisory_axes` is
+additive.
+
+### Still open, and unchanged by this release
+
+`tool_help.RECEIPT_FIELD_DOC["advisory"]` describes the bare-call and leaked-markup causes but
+not v6.6.0's name-length producer. A tier-2 documentation gap, not a contract one.
+
+To go live: restart the server on v6.7.0. Rollback is a revert.
+
 ## v6.6.0 — a name-length advisory on the two governed item-creation writes
 
 Additive. **Two fingerprints churn** (`gtd_item_create`, `gtd_project_create` — description

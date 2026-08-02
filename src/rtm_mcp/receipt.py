@@ -404,6 +404,14 @@ def attach(
     A `not_applied[]` a tool body has already populated is preserved; this only guarantees the
     key exists. `guidance` is derived last, so it sees those entries.
 
+    **`advisory` and `guidance` are assigned UNCONDITIONALLY, so those two names are the
+    receipt's and a tool body may not also use them.** `gtd_item_create` did, from v4.0.0 to
+    v6.6.0: it wrote the Definition-of-Ready axes to `advisory` and this line silently replaced
+    them, while the advertised schema — where the result model wins the MRO — promised the list
+    that never arrived. Both sides worked and disagreed, which no test could see. Since v6.7.0
+    `models._write_envelope_schema` refuses the collision at import, and the axes have their own
+    `advisory_axes` key. If a tool needs to report something structured, give it a name.
+
     **`leaked` OUTRANKS the bare-call advisory, because it explains it.** When markup is found,
     the absence of the optionals is not a separate fact to report — it is the same fact, and the
     markup advisory names the lost parameter where the bare-call one can only list what is

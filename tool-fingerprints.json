@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "server": "rtm",
-  "generated_at": "2026-08-02T21:55:48Z",
-  "source_version": "6.6.0",
+  "generated_at": "2026-08-02T22:13:48Z",
+  "source_version": "6.7.0",
   "tools": {
     "mcp__rtm__add_list": "84a661c720e67f3d1eae9bfc221b6eb510a610419380086e680bb1c770fa5365",
     "mcp__rtm__add_note": "15cb54d08d042ef0aba5fe6bdb97c3269f81a3cf8d214ea442008314a2a47ba0",
@@ -54,7 +54,7 @@
     "mcp__rtm__gtd_inbox_state": "bb5effc0bd563d238429370382241050b4e51effcfa800c9d65c2f853f19790e",
     "mcp__rtm__gtd_item_complete": "75d88b27d3ce3dea136c80c8791959093f6a80135c54c0993dfd0f48cda53d92",
     "mcp__rtm__gtd_item_context": "53563ac1ee6c8d4c988fb92db24c042f7cc66f9710a0c81dba06812eabd28dc1",
-    "mcp__rtm__gtd_item_create": "761f3bf089f328a761e011a84782a2faa5001aa985c82c15affcc075c26fdcba",
+    "mcp__rtm__gtd_item_create": "087ed762316e6346b7a4072594197a16f327c420a7b9725447c95e7bbcb08d77",
     "mcp__rtm__gtd_item_set_properties": "37405ecc2c22d7e048f5a4446b78d5f8e82bee00a7304c69e121a195f33a120d",
     "mcp__rtm__gtd_item_set_redaction": "b4f2340e02f25c849f651c6781c74487f528bcfed57a82c5061ad65735259213",
     "mcp__rtm__gtd_item_shape": "330884d66c33f6b8d35803b539172a5f454f8602e3509a8e9ae4c3c909dff4d9",

@@ -3495,6 +3495,96 @@ class TestGtdCreateItem:
         assert not (set(_methods(client)) & WRITE_METHODS)
 
 
+class TestDorAxesReachTheCaller:
+    """v6.7.0 — the DoR `relational` axis lands on `advisory_axes`, not the receipt's `advisory`.
+
+    From v4.0.0 to v6.6.0 `gtd_item_create` wrote the axes to `data["advisory"]` and
+    `receipt.attach` then overwrote that key unconditionally, so the axis the tool's own
+    docstring promised was "REPORTED in `advisory`" reached a caller zero times. Nothing failed:
+    the schema tests read the advertised `array of string` and the tool tests never looked at
+    the key at all.
+
+    So these assert the two fields TOGETHER on one payload. Asserting either alone is what let
+    the defect live for three releases.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_action_reports_the_relational_axis_on_success(self, gtd_tools):
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_item_create"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="action",
+            name="Write the thing",
+            life_context="work",
+            priority="must",
+            energy="low_energy",
+            estimate="30 minutes",
+        )
+        data = res["data"]
+        assert data["advisory_axes"] == ["relational"]
+        # …and the receipt still owns `advisory`, on the same payload. A string, never a list.
+        assert data["advisory"] is None or isinstance(data["advisory"], str)
+
+    @pytest.mark.asyncio
+    async def test_a_kind_with_no_advisory_axis_reports_an_empty_list(self, gtd_tools):
+        """Zero-not-absent, matching `missing` beside it: a consumer branches unconditionally."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_item_create"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="waiting_for",
+            name="Waiting for Bob",
+            life_context="work",
+            priority="must",
+            due="next friday",
+        )
+        assert res["data"]["advisory_axes"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_rejection_path_carries_the_axes_too(self, gtd_tools):
+        """A rejected create is where a caller most needs the DoR picture — `missing` says what
+        was gated, `advisory_axes` what was not, and both survive `receipt.attach`."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        res = await tools["gtd_item_create"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="action",
+            name="X",
+            life_context="work",
+            priority="must",  # no estimate, no energy
+        )
+        data = res["data"]
+        assert "dor_not_met" in {r["reason"] for r in data["rejected"]}
+        assert set(data["missing"]) == {"estimate", "energy"}
+        assert data["advisory_axes"] == ["relational"]
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+    @pytest.mark.asyncio
+    async def test_a_long_name_advisory_does_not_displace_the_axes(self, gtd_tools):
+        """The coupling the v6.6.0 section flags: the name advisory writes `advisory`, and the
+        axes must not be the thing it lands on top of. Both present, neither clobbered."""
+        tools, client = gtd_tools
+        client.call = AsyncMock(side_effect=_write_dispatch(_write_account()))
+        long_name = "Realign the contractor HRIS line management model (ensure this is data backed)"
+        res = await tools["gtd_item_create"](
+            FakeContext(),
+            parent_ref=PROJECT_ID,
+            kind="action",
+            name=long_name,
+            life_context="work",
+            priority="must",
+            energy="low_energy",
+            estimate="30 minutes",
+        )
+        data = res["data"]
+        assert f"Name is {len(long_name)} characters" in data["advisory"]
+        assert data["advisory_axes"] == ["relational"]
+
+
 class TestNameLengthAdvisoryIsWiredIn:
     """v6.6.0 — the name-length hygiene advisory, driven through the REAL registration path.
 

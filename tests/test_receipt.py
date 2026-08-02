@@ -52,6 +52,24 @@ def _is_governed_write(name: str, mcp_tool: Any) -> bool:
     return name.startswith("gtd_") and not getattr(mcp_tool.annotations, "readOnlyHint", False)
 
 
+def _walk_models(node: Any) -> list[dict[str, Any]]:
+    """Every object-with-properties in an advertised outputSchema, at any depth.
+
+    FastMCP 3.x dereferences `$defs`, so a success model is inlined wherever it is used rather
+    than sitting in one table — the same reason `tests/test_tool_schemas.py::_find_model` walks
+    instead of indexing."""
+    found: list[dict[str, Any]] = []
+    if isinstance(node, dict):
+        if isinstance(node.get("properties"), dict):
+            found.append(node)
+        for value in node.values():
+            found += _walk_models(value)
+    elif isinstance(node, list):
+        for value in node:
+            found += _walk_models(value)
+    return found
+
+
 class TestReceiptReasonVocabulary:
     """`not_applied[].reason` is the fourth scoped view of the ONE `ErrorCode` registry."""
 
@@ -1034,3 +1052,103 @@ class TestNameAdvisoryOnTheRealServer:
         for name in reads:
             description = tools[name].to_mcp_tool().description or ""
             assert RECEIPT_DOC not in description, f"{name} is a read carrying a receipt"
+
+
+class TestNoSuccessModelShadowsTheReceipt:
+    """The receipt owns three field names, and a success model may not also declare one (v6.7.0).
+
+    **This is the one failure a green suite cannot see.** `models._write_envelope_schema` mixes
+    `Receipt` in BEHIND the result model, so on a collision the tool's field wins in the
+    ADVERTISED schema while `receipt.attach` — which assigns unconditionally — wins at RUNTIME.
+    Both halves then work perfectly and disagree with each other, and every existing test passes:
+    the schema tests read the schema, the tool tests read the runtime, and nothing compares them.
+
+    `CreateItemResult.advisory` was exactly that from v4.0.0 to v6.6.0. It advertised
+    `array of string`, a string was written, and the Definition-of-Ready `relational` axis its
+    own docstring promised was "REPORTED in `advisory`" reached a caller zero times in three
+    releases. The field is `advisory_axes` from v6.7.0.
+    """
+
+    def test_the_schema_builder_refuses_a_collision(self):
+        """Guard-the-guard, and the load-bearing test in this class. Every assertion below is
+        satisfied by today's models and would keep passing if the check were deleted."""
+        from pydantic import BaseModel
+
+        from rtm_mcp.models import _write_envelope_schema
+
+        class Shadowing(BaseModel):
+            advisory: list[str] = []
+            message: str = ""
+
+        with pytest.raises(TypeError) as exc:
+            _write_envelope_schema("ShadowEnvelope", Shadowing)
+        assert "advisory" in str(exc.value)
+        # It must name the fix, not merely the fault — this is a developer's error message.
+        assert "advisory_axes" in str(exc.value)
+
+    def test_it_refuses_every_receipt_field_not_just_advisory(self):
+        """`advisory` is the one that happened; the rule is the three names, sourced from
+        `RECEIPT_FIELDS` so a fourth field added later is covered by construction."""
+        from pydantic import BaseModel, create_model
+
+        from rtm_mcp.models import _write_envelope_schema
+
+        assert RECEIPT_FIELDS, "the field list emptied — every check here would pass vacuously"
+        for field in RECEIPT_FIELDS:
+            model = create_model(  # type: ignore[call-overload]
+                "Probe", __base__=BaseModel, **{field: (list[str], [])}
+            )
+            with pytest.raises(TypeError, match=field):
+                _write_envelope_schema("ProbeEnvelope", model)
+
+    def test_a_clean_model_still_builds(self):
+        """The counterfactual: a check that refused everything would pass the two above."""
+        from pydantic import BaseModel
+
+        from rtm_mcp.models import _write_envelope_schema
+
+        class Clean(BaseModel):
+            advisory_axes: list[str] = []
+            message: str = ""
+
+        schema = _write_envelope_schema("CleanEnvelope", Clean)
+        assert schema["properties"]["data"]
+
+    @pytest.mark.asyncio
+    async def test_every_governed_write_advertises_advisory_as_a_nullable_string(self):
+        """The direct assertion of the defect, over the REAL server.
+
+        The runtime writes `str | None` on all 25 governed writes (`receipt.attach`), so any tool
+        advertising `data.advisory` as anything else is lying to a caller reading the schema.
+        This is what was missing: nothing had ever compared the two surfaces."""
+        tools = await _tools()
+        checked, offenders = 0, []
+        for name, tool in tools.items():
+            mcp_tool = tool.to_mcp_tool()
+            if not _is_governed_write(name, mcp_tool):
+                continue
+            for node in _walk_models(mcp_tool.outputSchema or {}):
+                advisory = (node.get("properties") or {}).get("advisory")
+                if advisory is None:
+                    continue
+                checked += 1
+                types = {v.get("type") for v in advisory.get("anyOf") or []}
+                if types != {"string", "null"}:
+                    offenders.append(f"{name}.{node.get('title')}: {advisory}")
+        assert checked >= 20, f"only {checked} advisory fields inspected — the walk went blind"
+        assert not offenders, f"advertised advisory disagrees with receipt.attach: {offenders}"
+
+    @pytest.mark.asyncio
+    async def test_the_dor_axes_are_advertised_on_their_own_key(self):
+        """The other half: the DoR axes did not merely move out of `advisory`, they landed
+        somewhere a consumer can branch on — a list, beside `missing`, its same-typed sibling."""
+        tools = await _tools()
+        schema = tools["gtd_item_create"].to_mcp_tool().outputSchema or {}
+        result = next(
+            node for node in _walk_models(schema) if node.get("title") == "CreateItemResult"
+        )
+        props = result["properties"]
+        # Same shape as `missing` — a caller iterates a list, it never searches a substring.
+        assert props["advisory_axes"] == {**props["missing"], "title": "Advisory Axes"}
+        # And `advisory` is still there, still the receipt's, on the same payload.
+        assert {v.get("type") for v in props["advisory"]["anyOf"]} == {"string", "null"}

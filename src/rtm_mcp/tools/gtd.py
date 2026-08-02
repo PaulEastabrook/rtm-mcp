@@ -3756,8 +3756,9 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         report-and-resolve). Required per kind — action: life_context + estimate + energy +
         priority; waiting_for: life_context + priority + due; calendar_entry: life_context +
         priority + due. `action_context` is satisfied by the documented 'using_device' default.
-        The `relational` axis is REPORTED in `advisory`, not gated (DEPENDS-ON authoring is a
-        later phase).
+        The `relational` axis is REPORTED in `advisory_axes`, not gated (DEPENDS-ON authoring is
+        a later phase). `advisory_axes` is `missing`'s sibling — same `list[str]`, opposite gate
+        — and is NOT the receipt's `advisory`, a separate string about the call itself.
 
         Args:
             parent_ref: the parent project/task (id preferred; a name resolves, ambiguous →
@@ -3773,7 +3774,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         Returns (on success): the TRUE post-state — {"task_id", "taskseries_id", "list_id",
             "name", "kind", "tags", "priority", "due", "deep_link", "ready", "missing",
-            "advisory", "applied", "errors", "message"} — the real id triple RTM returned,
+            "advisory_axes", "applied", "errors", "message"} — the real id triple RTM returned,
             never an echo of the request.
         Returns (on ambiguity): {"candidates": [{id, name, list_id}]} — call again with an id.
         Returns (on rejection — nothing written): {"rejected": [{reason, detail, …}], …} where
@@ -3863,7 +3864,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     "errors": [],
                     "ready": not val["missing"],
                     "missing": val["missing"],
-                    "advisory": val["advisory"],
+                    "advisory_axes": val["advisory_axes"],
                     "message": "Create rejected; nothing was written.",
                 }
             )
@@ -3890,7 +3891,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     "errors": errors or [{"op": "create", "error": "no id returned"}],
                     "ready": False,
                     "missing": val["missing"],
-                    "advisory": val["advisory"],
+                    "advisory_axes": val["advisory_axes"],
                     "message": "Create failed; no task id returned.",
                 },
                 timeline_id=client.timeline_id,
@@ -3951,7 +3952,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 ),
                 "ready": True,
                 "missing": [],
-                "advisory": val["advisory"],
+                "advisory_axes": val["advisory_axes"],
                 "applied": applied,
                 "errors": errors,
                 "message": f"Created {kind} '{name}' with {len(applied)} write(s).",
