@@ -3867,6 +3867,79 @@ class TestGtdPhase2Writes:
         assert "task_not_found" in {r["reason"] for r in res["data"]["rejected"]}
         assert not (set(_methods(client)) & WRITE_METHODS)
 
+    async def _close(self, tools, client, **kw):
+        tree = _getlist(
+            [
+                _ts("tsI", "5001", "raw capture", tags=["ai_conversation"]),
+                _ts("tsD", "5002", "Derived action", tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_inbox_item_close"](
+            FakeContext(), inbox_item_ref="5001", derived_refs=["5002"], **kw
+        )
+        return res, _kw_for(client, "rtm.tasks.notes.add")[0]["note_text"]
+
+    @pytest.mark.asyncio
+    async def test_close_inbox_narrative_lands_above_the_derived_list(self, gtd_tools):
+        """One note, not two: the handler's reasoning now rides in the COMPLETION note itself.
+
+        The workaround it replaces wrote a preceding CONTEXT note, whose causal link to the
+        closure was positional — and the note-reading protocol orders notes STATE-first, so
+        "the one above" was never a stable pointer."""
+        tools, client = gtd_tools
+        res, text = await self._close(tools, client, narrative="Routed to pmgo. Reflect 1w/4w.")
+        assert text.startswith("Routed to pmgo. Reflect 1w/4w.\n\nDERIVED ITEMS CREATED:")
+        assert (
+            text.index("Routed to pmgo")
+            < text.index("DERIVED ITEMS CREATED:")
+            < text.index("SOURCE:")
+        )
+        assert res["data"]["completed"] is True and res["data"]["not_applied"] == []
+
+    @pytest.mark.asyncio
+    async def test_close_inbox_without_narrative_writes_the_pre_parameter_body(self, gtd_tools):
+        """The load-bearing test — the new parameter must be invisible to every existing caller."""
+        tools, client = gtd_tools
+        _, text = await self._close(tools, client)
+        assert text.startswith("DERIVED ITEMS CREATED:")
+        assert "Derived action" in text and "SOURCE:" in text
+
+    @pytest.mark.asyncio
+    async def test_close_inbox_blank_narrative_writes_no_block_and_reports_no_change(
+        self, gtd_tools
+    ):
+        tools, client = gtd_tools
+        res, text = await self._close(tools, client, narrative="   ")
+        assert text.startswith("DERIVED ITEMS CREATED:")  # no block, no bare blank line
+        entry = res["data"]["not_applied"][0]
+        assert entry["op"] == "close-inbox:narrative" and entry["reason"] == "no_change"
+        # The close itself still lands — a blank facet is reported, never a rejection.
+        assert res["data"]["completed"] is True
+
+    @pytest.mark.asyncio
+    async def test_close_inbox_narrative_is_a_receipt_facet(self, gtd_tools):
+        """`narrative` carries a value, so the receipt must reason about its ABSENCE.
+
+        Consequence, accepted deliberately: it is this tool's only optional, so the bare-call
+        advisory — silent here until now, because the tool declared no optionals at all — fires
+        on a close that supplies none. That is the v6.0.0 `gtd_note_add` precedent (the modal
+        journal note trips it too): a caller who misspells `narative=` has it stripped
+        client-side and reads "none of: narrative", which is exactly the silent partial write
+        the receipt exists for."""
+        import inspect
+
+        from rtm_mcp.receipt import is_facet
+
+        tools, client = gtd_tools
+        sig = inspect.signature(tools["gtd_inbox_item_close"])
+        assert is_facet(sig.parameters["narrative"].default)
+
+        res, _ = await self._close(tools, client)
+        assert "narrative" in (res["data"]["advisory"] or "")
+        res2, _ = await self._close(tools, client, narrative="something")
+        assert res2["data"]["advisory"] is None
+
     @pytest.mark.asyncio
     async def test_set_properties_series_guard_redirects(self, gtd_tools):
         """priority/estimate are taskseries-level — the write redirects to nearest-active."""
@@ -4367,16 +4440,22 @@ class TestGtdPhase4aNotes:
         data = res["data"]
         assert data["register_updated"] is True
         note = next(
-            k for k in _kw_for(client, "rtm.tasks.notes.add") if "OUTPUT" in k.get("note_title", "")
+            k
+            for k in _kw_for(client, "rtm.tasks.notes.add")
+            if " — OUTPUT — " in k.get("note_title", "")
         )
         assert "FILING: work/p/spec.md" in note["note_text"]
-        # register created on the project (no existing OUTPUTS note)
+        # register created on the project (no existing OUTPUTS note), in the CATALOGUE form
         reg = next(
             k
             for k in _kw_for(client, "rtm.tasks.notes.add")
-            if k.get("note_title", "").startswith("OUTPUTS:")
+            if " — OUTPUTS — " in k.get("note_title", "")
         )
         assert reg["task_id"] == PROJECT_ID and "| filed |" in reg["note_text"]
+        assert reg["note_title"].endswith(" — OUTPUTS — Proj")
+        # The stored body is `title\ntext`, so the header must appear exactly once ACROSS the
+        # pair — the pre-v6.4.0 writer put it in both, and all four live registers carry it.
+        assert (reg["note_title"] + "\n" + reg["note_text"]).count("OUTPUTS") == 1
 
     @pytest.mark.asyncio
     async def test_attach_output_bad_path_writes_nothing(self, gtd_tools):
@@ -4394,10 +4473,14 @@ class TestGtdPhase4aNotes:
         assert not (set(_methods(client)) & WRITE_METHODS)
 
     @pytest.mark.asyncio
-    async def test_attach_output_appends_to_existing_register(self, gtd_tools):
+    async def test_attach_output_rebuilds_the_legacy_register_in_place(self, gtd_tools):
+        """The legacy `OUTPUTS: <name>` form must still be FOUND — without that, the release
+        that lands the canonical title orphans every existing register and mints a duplicate
+        beside it, which is exactly how Claude Coworking came to hold two. It is then rebuilt
+        into the catalogue form, and the derived row from a live OUTPUT note is carried."""
         tools, client = gtd_tools
         reg_body = (
-            "OUTPUTS: Proj\n\n| Date | Action | Output | Type | Status | Path |\n"
+            "\n| Date | Action | Output | Type | Status | Path |\n"
             "|------|--------|--------|------|--------|------|\n"
             "| 2026-07-20 | Old | T | doc | filed | p/old.md |\n\nLast updated: 2026-07-20"
         )
@@ -4409,13 +4492,26 @@ class TestGtdPhase4aNotes:
                     "Proj",
                     parent=AREA_ID,
                     tags=["work", "project"],
-                    notes=[_note_dict("nreg", "OUTPUTS: Proj", reg_body.split("\n", 1)[1])],
+                    notes=[_note_dict("nreg", "OUTPUTS: Proj", reg_body)],
                 ),
-                _ts("a1", "1001", "A", parent=PROJECT_ID, tags=["work", "action"]),
+                _ts(
+                    "a1",
+                    "1001",
+                    "A",
+                    parent=PROJECT_ID,
+                    tags=["work", "action"],
+                    notes=[
+                        _note_dict(
+                            "nout",
+                            "2026-07-20 — OUTPUT — the old one",
+                            "narrative\n\nFILING: p/old.md",
+                        )
+                    ],
+                ),
             ]
         )
         client.call = AsyncMock(side_effect=_write_dispatch(tree))
-        await tools["gtd_note_attach_output"](
+        res = await tools["gtd_note_attach_output"](
             FakeContext(),
             task_ref="1001",
             filing_path="p/new.md",
@@ -4424,7 +4520,111 @@ class TestGtdPhase4aNotes:
         edit = next(
             k for k in _kw_for(client, "rtm.tasks.notes.edit") if k.get("note_id") == "nreg"
         )
-        assert "p/new.md" in edit["note_text"] and edit["note_text"].count("Last updated:") == 1
+        assert edit["note_title"].endswith(" — OUTPUTS — Proj")
+        assert "p/new.md" in edit["note_text"] and "p/old.md" in edit["note_text"]
+        assert edit["note_text"].count("Last updated:") == 1
+        assert (edit["note_title"] + "\n" + edit["note_text"]).count("OUTPUTS") == 1
+        assert res["data"]["register_note_id"] == "nreg"
+        # Every row re-derived, so nothing was dropped.
+        assert not [
+            e for e in res["data"]["not_applied"] if e["op"] == "output:register-row-dropped"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_rebuild_is_idempotent(self, gtd_tools):
+        """Two attaches of the SAME artefact produce ONE row. If they do not, the register is
+        accumulating rather than deriving, whatever the code says."""
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts(
+                    "a1",
+                    "1001",
+                    "A",
+                    parent=PROJECT_ID,
+                    tags=["work", "action"],
+                    notes=[
+                        _note_dict(
+                            "nout", "2026-07-20 — OUTPUT — Same out", "n\n\nFILING: p/same.md"
+                        )
+                    ],
+                ),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        await tools["gtd_note_attach_output"](
+            FakeContext(), task_ref="1001", filing_path="p/same.md", output_summary="Same out"
+        )
+        reg = next(
+            k
+            for k in _kw_for(client, "rtm.tasks.notes.add")
+            if " — OUTPUTS — " in k.get("note_title", "")
+        )
+        assert reg["note_text"].count("p/same.md") == 1
+
+    @pytest.mark.asyncio
+    async def test_a_row_with_no_live_output_note_is_dropped_but_REPORTED(self, gtd_tools):
+        """Rebuilding drops what it cannot re-derive. Correct for a projection — and never
+        silent, or the register would quietly shrink."""
+        tools, client = gtd_tools
+        reg_body = (
+            "\n| Date | Action | Output | Type | Status | Path |\n"
+            "|------|--------|--------|------|--------|------|\n"
+            "| 2026-07-20 | Old | T | doc | filed | p/orphan.md |\n\nLast updated: 2026-07-20"
+        )
+        tree = _getlist(
+            [
+                _ts(
+                    "tsP",
+                    PROJECT_ID,
+                    "Proj",
+                    parent=AREA_ID,
+                    tags=["work", "project"],
+                    notes=[_note_dict("nreg", "2026-07-20 — OUTPUTS — Proj", reg_body)],
+                ),
+                _ts("a1", "1001", "A", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_note_attach_output"](
+            FakeContext(), task_ref="1001", filing_path="p/new.md", output_summary="New"
+        )
+        dropped = next(
+            e for e in res["data"]["not_applied"] if e["op"] == "output:register-row-dropped"
+        )
+        assert dropped["requested"] == ["p/orphan.md"]
+
+    @pytest.mark.asyncio
+    async def test_a_second_register_is_reported_and_never_deleted(self, gtd_tools):
+        tools, client = gtd_tools
+        tree = _getlist(
+            [
+                _ts(
+                    "tsP",
+                    PROJECT_ID,
+                    "Proj",
+                    parent=AREA_ID,
+                    tags=["work", "project"],
+                    notes=[
+                        _note_dict("116750518", "2026-04-06 — OUTPUTS — Project output register"),
+                        _note_dict("116751124", "OUTPUTS: Proj"),
+                    ],
+                ),
+                _ts("a1", "1001", "A", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+        client.call = AsyncMock(side_effect=_write_dispatch(tree))
+        res = await tools["gtd_note_attach_output"](
+            FakeContext(), task_ref="1001", filing_path="p/new.md", output_summary="New"
+        )
+        # Both `_note_dict` fixtures carry the same `created`, so the legacy one's title-date
+        # fallback ties with the dated one and the id tie-break decides — which is the live
+        # Claude Coworking shape, where the buggy-titled note is the one still in use.
+        assert res["data"]["register_note_id"] == "116751124"
+        assert res["data"]["duplicate_register_ids"] == ["116750518"]
+        assert "rtm.tasks.notes.delete" not in _methods(client)
+        assert any(e["op"] == "output:register-duplicate" for e in res["data"]["not_applied"])
 
     @pytest.mark.asyncio
     async def test_attach_contribution_variants(self, gtd_tools):
@@ -4653,6 +4853,183 @@ class TestGtdPhase4aNotes:
             why="",
             mode="resolve",
         )
+        assert "invalid_input" in {r["reason"] for r in res["data"]["rejected"]}
+        assert not (set(_methods(client)) & WRITE_METHODS)
+
+
+class TestTheFilingGate:
+    """v6.4.0 write gate 4. The degrade branch and the reject branch share NO code path, and
+    each has its own test — a single fixture that omits the vault would pass a gate that had
+    collapsed the two, which is how this defect would ship."""
+
+    @staticmethod
+    def _vault(tmp_path, *, artefact=True, companion=True):
+        (tmp_path / "memory").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "memory" / "_index.md").write_text("# index")
+        out = tmp_path / "work" / "p"
+        out.mkdir(parents=True, exist_ok=True)
+        if artefact:
+            (out / "spec.md").write_text("the artefact")
+        if companion:
+            (out / "spec.meta.md").write_text("---\ntitle: Spec\ntype: doc\n---\n")
+        return str(tmp_path)
+
+    @staticmethod
+    def _tree():
+        return _getlist(
+            [
+                _ts("tsP", PROJECT_ID, "Proj", parent=AREA_ID, tags=["work", "project"]),
+                _ts("a1", "1001", "Draft", parent=PROJECT_ID, tags=["work", "action"]),
+            ]
+        )
+
+    async def _attach(self, tools, client, **kw):
+        client.call = AsyncMock(side_effect=_write_dispatch(self._tree()))
+        return await tools["gtd_note_attach_output"](
+            FakeContext(),
+            task_ref="1001",
+            filing_path=kw.pop("filing_path", "work/p/spec.md"),
+            output_summary="Spec drafted",
+            **kw,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_resolvable_artefact_with_a_companion_passes(self, gtd_tools, tmp_path):
+        tools, client = gtd_tools
+        client.config = MagicMock(
+            strict_tags=False, strict_filing="reject", vault_root=self._vault(tmp_path)
+        )
+        res = await self._attach(tools, client)
+        assert "error" not in res["data"]
+        assert any(a["op"] == "output:note" for a in res["data"]["applied"])
+
+    @pytest.mark.asyncio
+    async def test_a_missing_artefact_rejects_and_writes_nothing(self, gtd_tools, tmp_path):
+        tools, client = gtd_tools
+        client.config = MagicMock(
+            strict_tags=False,
+            strict_filing="reject",
+            vault_root=self._vault(tmp_path, artefact=False, companion=False),
+        )
+        res = await self._attach(tools, client)
+        err = res["data"]["error"]
+        assert err["code"] == "filing_unresolved"
+        assert err["details"]["rejected_by"] == "artefact_missing"
+        # ZERO API calls: the gate runs before the resolver, so a refusal costs nothing.
+        assert client.call.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_missing_companion_rejects_with_its_own_verdict(self, gtd_tools, tmp_path):
+        tools, client = gtd_tools
+        client.config = MagicMock(
+            strict_tags=False,
+            strict_filing="reject",
+            vault_root=self._vault(tmp_path, companion=False),
+        )
+        res = await self._attach(tools, client)
+        err = res["data"]["error"]
+        # ONE code, TWO verdicts — the v5.2.0 precedent. A synonym would churn 100 fingerprints.
+        assert err["code"] == "filing_unresolved"
+        assert err["details"]["rejected_by"] == "companion_missing"
+        assert client.call.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_no_vault_DEGRADES_and_the_write_lands(self, gtd_tools, tmp_path):
+        """The sharpest constraint in the pack: absence of a mount is absence of evidence.
+        Driven through a real marker-less directory, not a stubbed resolver — the marker check
+        IS the behaviour."""
+        tools, client = gtd_tools
+        bare = tmp_path / "not-a-vault"
+        bare.mkdir()
+        client.config = MagicMock(strict_tags=False, strict_filing="reject", vault_root=str(bare))
+        res = await self._attach(tools, client, filing_path="work/p/nowhere.md")
+        assert "error" not in res["data"]
+        assert any(a["op"] == "output:note" for a in res["data"]["applied"])
+        # …and the caller is told the write went unverified.
+        assert any(e["op"] == "output:filing-check" for e in res["data"]["not_applied"])
+
+    @pytest.mark.asyncio
+    async def test_strict_filing_off_reproduces_pre_gate_behaviour(self, gtd_tools, tmp_path):
+        """The whole rollback plan is one env var, so it is asserted rather than assumed."""
+        tools, client = gtd_tools
+        client.config = MagicMock(
+            strict_tags=False,
+            strict_filing="off",
+            vault_root=self._vault(tmp_path, artefact=False, companion=False),
+        )
+        res = await self._attach(tools, client)
+        assert "error" not in res["data"]
+        assert any(a["op"] == "output:note" for a in res["data"]["applied"])
+
+    @pytest.mark.asyncio
+    async def test_warn_logs_AND_allows(self, gtd_tools, tmp_path, caplog):
+        """Both halves — fixing one leaves the mode useless (the RTM_STRICT_NOTES=warn lesson,
+        where a record that reached no handler made the whole middle step a no-op)."""
+        tools, client = gtd_tools
+        client.config = MagicMock(
+            strict_tags=False,
+            strict_filing="warn",
+            vault_root=self._vault(tmp_path, artefact=False, companion=False),
+        )
+        res = await self._attach(tools, client)
+        assert any(a["op"] == "output:note" for a in res["data"]["applied"])
+        assert any(
+            r.levelname == "WARNING" and "strict_filing(warn)" in r.getMessage()
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_source_action_absent_is_ADVISORY_not_a_rejection(self, gtd_tools, tmp_path):
+        """0 of 40 companions carry it, so requiring it today would refuse every legitimate
+        call. It is reported and counted until agent-memory's backfill lands."""
+        tools, client = gtd_tools
+        client.config = MagicMock(
+            strict_tags=False, strict_filing="reject", vault_root=self._vault(tmp_path)
+        )
+        res = await self._attach(tools, client)
+        assert "error" not in res["data"]
+        assert any(e["op"] == "output:source_action_absent" for e in res["data"]["not_applied"])
+
+    @pytest.mark.asyncio
+    async def test_a_matching_source_action_is_silent(self, gtd_tools, tmp_path):
+        tools, client = gtd_tools
+        root = self._vault(tmp_path)
+        (tmp_path / "work" / "p" / "spec.meta.md").write_text(
+            "---\ntitle: Spec\nsource_action: rtm:1001\n---\n"
+        )
+        client.config = MagicMock(strict_tags=False, strict_filing="reject", vault_root=root)
+        res = await self._attach(tools, client)
+        assert not [
+            e for e in res["data"]["not_applied"] if e["op"].startswith("output:source_action")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unfiled_writes_the_note_with_no_filing_line(self, gtd_tools, tmp_path):
+        """The gate is skipped AND no FILING: line is emitted — a placeholder path would be
+        scraped by gtd_chat_thread as a real artefact."""
+        from rtm_mcp.gtd_chat import parse_filings
+
+        tools, client = gtd_tools
+        client.config = MagicMock(
+            strict_tags=False, strict_filing="reject", vault_root=self._vault(tmp_path)
+        )
+        res = await self._attach(tools, client, filing_path="", unfiled=True)
+        assert res["data"]["unfiled"] is True
+        note = next(
+            k
+            for k in _kw_for(client, "rtm.tasks.notes.add")
+            if " — OUTPUT — " in k.get("note_title", "")
+        )
+        assert "FILING:" not in note["note_text"] and "UNFILED:" in note["note_text"]
+        assert parse_filings(note["note_text"]) == []
+
+    @pytest.mark.asyncio
+    async def test_unfiled_with_a_filing_path_rejects_without_writing(self, gtd_tools, tmp_path):
+        tools, client = gtd_tools
+        client.config = MagicMock(
+            strict_tags=False, strict_filing="reject", vault_root=self._vault(tmp_path)
+        )
+        res = await self._attach(tools, client, unfiled=True)
         assert "invalid_input" in {r["reason"] for r in res["data"]["rejected"]}
         assert not (set(_methods(client)) & WRITE_METHODS)
 
@@ -5638,6 +6015,122 @@ def _contrib_note_dict(note_id="n1", state="drafted", created="2026-07-20T09:00:
         f"State: {state}\n"
     )
     return {"id": note_id, "$t": body, "created": created}
+
+
+def _no_vault(tmp_path):
+    """An explicit-but-marker-less override — the ONLY hermetic way to say "no vault".
+
+    `vault_root=None` is NOT that: the resolver falls through to the host default
+    `~/Documents/AI Memory`, which on the development machine is Paul's real vault, so the test
+    would walk it. An explicit invalid override deliberately does not fall through (an honest
+    no-op), which is exactly the property needed here.
+    """
+    bare = tmp_path / "not-a-vault"
+    bare.mkdir(exist_ok=True)
+    return str(bare)
+
+
+class TestV640FilingReads:
+    """The two v6.4.0 reads — call surface and the partial-vs-clean distinction end to end."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name", ["gtd_note_filing_gaps", "gtd_note_report"])
+    async def test_read_only_call_surface(self, gtd_tools, tool_name, tmp_path):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=False, vault_root=_no_vault(tmp_path))
+        client.call = AsyncMock(return_value=_getlist([_ts("s", "10", "Alpha", tags=["action"])]))
+        await tools[tool_name](FakeContext())
+        methods = {c.args[0] for c in client.call.call_args_list if c.args}
+        assert methods == {"rtm.tasks.getList"}  # no write, no timeline; the vault is not an API
+        assert client.record_transaction.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_filing_gaps_with_no_vault_names_its_gaps(self, gtd_tools, tmp_path):
+        """End to end, not just in the builder: a vault-less run must be PARTIAL, never clean."""
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=False, vault_root=_no_vault(tmp_path))
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts(
+                        "s",
+                        "10",
+                        "A",
+                        tags=["action"],
+                        notes=[
+                            _note_dict("n1", "2026-07-20 — OUTPUT — x", "n\n\nFILING: work/gone.md")
+                        ],
+                    )
+                ]
+            )
+        )
+        data = (await tools["gtd_note_filing_gaps"](FakeContext()))["data"]
+        assert data["vault_present"] is False
+        assert "linked_missing" in data["gaps"]
+        assert data["findings"]["linked_missing"]["count"] is None
+
+    @pytest.mark.asyncio
+    async def test_filing_gaps_with_a_vault_resolves_and_reports(self, gtd_tools, tmp_path):
+        tools, client = gtd_tools
+        (tmp_path / "memory").mkdir()
+        (tmp_path / "memory" / "_index.md").write_text("# index")
+        (tmp_path / "there.md").write_text("x")
+        (tmp_path / "there.meta.md").write_text("---\ntitle: T\n---\n")
+        client.config = MagicMock(strict_tags=False, vault_root=str(tmp_path))
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts(
+                        "s",
+                        "10",
+                        "A",
+                        tags=["action"],
+                        notes=[_note_dict("n1", "2026-07-20 — OUTPUT — x", "n\n\nFILING: gone.md")],
+                    )
+                ]
+            )
+        )
+        data = (await tools["gtd_note_filing_gaps"](FakeContext()))["data"]
+        assert data["vault_present"] is True and data["gaps"] == []
+        assert data["findings"]["linked_missing"]["count"] == 1
+        assert data["findings"]["filed_unlinked"]["rows"][0]["path"] == "there.md"
+
+    @pytest.mark.asyncio
+    async def test_note_report_excludes_pauls_free_text(self, gtd_tools, tmp_path):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=False, vault_root=_no_vault(tmp_path))
+        client.call = AsyncMock(
+            return_value=_getlist(
+                [
+                    _ts(
+                        "s",
+                        "10",
+                        "A",
+                        tags=["action"],
+                        notes=[
+                            _note_dict("n1", "Paul typed this in the app"),
+                            _note_dict("n2", "2026-07-20 — WIDGET — invented"),
+                        ],
+                    )
+                ]
+            )
+        )
+        data = (await tools["gtd_note_report"](FakeContext()))["data"]
+        assert data["free_text_count"] == 1
+        assert data["findings"]["vocabulary"]["count"] == 1
+        assert data["finding_count"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("tool_name", ["gtd_note_filing_gaps", "gtd_note_report"])
+    async def test_an_out_of_range_cap_is_rejected_without_a_read(
+        self, gtd_tools, tool_name, tmp_path
+    ):
+        tools, client = gtd_tools
+        client.config = MagicMock(strict_tags=False, vault_root=_no_vault(tmp_path))
+        client.call = AsyncMock()
+        res = await tools[tool_name](FakeContext(), max_rows=99999)
+        assert res["data"]["error"]["code"] == "invalid_input"
+        assert client.call.call_count == 0
 
 
 class TestWave1bItemClassify:

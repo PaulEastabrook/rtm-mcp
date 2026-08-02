@@ -287,3 +287,25 @@ class TestWriteGateFlags:
     def test_strict_list_targets_env_toggle(self, monkeypatch, raw, expected):
         monkeypatch.setenv("RTM_STRICT_LIST_TARGETS", raw)
         assert RTMConfig().strict_list_targets is expected
+
+    def test_strict_filing_defaults_to_reject(self, monkeypatch):
+        """v6.4.0's gate ships ON, which is a stated deviation from § 6's default-off rule: the
+        design of record approved `reject` and Paul chose it, so the flag and its enabled default
+        ship together rather than the decision being deferred to a second release."""
+        monkeypatch.delenv("RTM_STRICT_FILING", raising=False)
+        assert RTMConfig().strict_filing == "reject"
+
+    @pytest.mark.parametrize("mode", ["off", "warn", "reject"])
+    def test_valid_strict_filing_modes_accepted(self, monkeypatch, mode):
+        monkeypatch.setenv("RTM_STRICT_FILING", mode)
+        assert RTMConfig().strict_filing == mode
+
+    def test_strict_filing_is_switchable_off(self, monkeypatch):
+        """The whole rollback plan for the filing gate is this one env var."""
+        monkeypatch.setenv("RTM_STRICT_FILING", "OFF")
+        assert RTMConfig().strict_filing == "off"
+
+    def test_typo_in_strict_filing_fails_loudly(self, monkeypatch):
+        monkeypatch.setenv("RTM_STRICT_FILING", "rejct")
+        with pytest.raises(ValidationError):
+            RTMConfig()

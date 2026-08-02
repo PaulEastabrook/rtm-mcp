@@ -98,6 +98,10 @@ READ_ONLY_TOOLS = {
     "gtd_item_today",
     "gtd_next_actions",
     "gtd_focus_projects",
+    # v6.4.0 — output-filing integrity. Both read RTM once; gtd_note_filing_gaps also WALKS the
+    # vault, which is filesystem-only and so does not make it a write.
+    "gtd_note_filing_gaps",
+    "gtd_note_report",
 }
 DESTRUCTIVE_TOOLS = {
     "delete_task",
@@ -649,10 +653,11 @@ class TestDeprecatedSurfacesAreGone:
         missing = [n for n in replacements if n not in tools]
         assert missing == [], f"replacements missing: {missing}"
 
-    async def test_the_gtd_tool_count_is_pinned_at_55(self):
+    async def test_the_gtd_tool_count_is_pinned_at_57(self):
+        """55 at v3.1.0; +2 at v6.4.0 (`gtd_note_filing_gaps`, `gtd_note_report`)."""
         tools = await _tools()
         gtd = {n for n in tools if n.startswith("gtd_")}
-        assert len(gtd) == 55, sorted(gtd)
+        assert len(gtd) == 57, sorted(gtd)
 
     async def test_no_fingerprint_records_a_deprecated_surface(self):
         import json
@@ -747,6 +752,14 @@ OVER_BUDGET_EXEMPTIONS = {
     "it. The receipt earns its place — it is what tells a caller to read not_applied[].",
     "gtd_dependency_link": "Over by the shared receipt block only; was 124 bytes under before "
     "it. Same reasoning as gtd_surface_resolve.",
+    # v6.4.0 — output-filing integrity.
+    "gtd_note_attach_output": "Now carries a write gate whose degrade-vs-reject split a caller "
+    "MUST know (no vault = inert, vault + missing artefact = refusal), the unfiled escape, and "
+    "the derived-register contract. Cutting any of the three would leave a caller unable to "
+    "predict whether the call writes.",
+    "gtd_note_filing_gaps": "Six finding classes, each needing its name, its meaning and its "
+    "measured baseline to be readable — plus the null-not-zero rule, which is the one thing "
+    "that stops a vault-less run being misread as clean.",
 }
 
 #: Cues that show a description's front block states the tool's posture. Presence of any one

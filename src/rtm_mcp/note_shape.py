@@ -12,6 +12,13 @@ or scheduled engine can forget.
 non-empty summary (:func:`check_title`) — **and** that TYPE is a registered type
 (:func:`check_type`).
 
+**Since v6.4.0 there is a third tier: the per-TYPE contract** (:func:`check_contract`), for the
+two TYPEs whose grammar the server *already parses* — `CHAT` and `ORDER`. It runs in
+`vocabulary` mode only, so `shape` stays a byte-for-byte v5.1.0 rollback step. It retires the
+equivalent checks from gtd's `validate-note.py`: a ten-line reuse of a proven parser replaces a
+pre-flight the caller had to remember to run. The verdict rides in `error.details.rejected_by`
+(`chat_title` / `order_contract`) with **no new `ErrorCode`** — same ladder as v5.2.0.
+
 **The vocabulary check is a reversal, and the reasoning is worth keeping.** Through v5.1.x this
 module enforced shape only, on the CONTRIBUTING § 6 membrane: the server gates mechanics, the
 plugin gates vocabulary, exactly as the server gates tag *existence* while gtd gates tag
@@ -134,6 +141,59 @@ def check_type(title: str) -> str | None:
     return f"note type '{note_type}' is not in the registered vocabulary"
 
 
+def check_contract(title: str, note_text: str) -> tuple[str, str] | None:
+    """Judge a note against the per-TYPE contract the server already owns code for.
+
+    The third tier, after shape and vocabulary. Returns ``(rejected_by, reason)`` or None.
+
+    **Only two TYPEs are judged, and that is a scoping decision rather than a starting point.**
+    A tier-3 check earns its place when the server *already holds the parser* — so the check is
+    ten lines over code proven by other tests, not a second grammar to keep in step. `CHAT`
+    (:func:`gtd_chat.parse_chat_title`) and `ORDER` (:func:`order_note.parse`) qualify; nothing
+    else currently does. Every other registered TYPE passes untouched, by design.
+
+    **Why this exists at all, given the gtd writers cannot produce a malformed one.** A CHAT
+    title written through ``gtd_chat_post`` is *constructed*, so it is conformant by
+    construction — and that is exactly the point: this gate governs the generic ``add_note`` /
+    ``edit_note`` escape hatch, which is where drift enters. It retires the equivalent checks
+    from gtd's ``validate-note.py``, a pre-flight a caller had to remember to run.
+
+    **The ORDER check is body-dependent, so a title-only edit is NOT judged.** ``edit_note``
+    passes an empty body on its title-changing path (a body-only edit is never gated at all —
+    the legacy-safety invariant), and judging an absent body would reject every legitimate
+    ORDER title correction. Same reasoning, one tier down: judge what you were actually given.
+    """
+    match = _TITLE_RE.match(title or "")
+    if not match:
+        return None  # `check_title` owns the shape verdict
+    note_type = match.group("type").strip()
+
+    if note_type == "CHAT":
+        from .gtd_chat import parse_chat_title
+
+        if parse_chat_title(title) is None:
+            return (
+                "chat_title",
+                "a CHAT note title must be "
+                "'YYYY-MM-DD HH:MM — CHAT — <me|ai> — <scope>' (the wall-clock time and "
+                "the role are both required)",
+            )
+        return None
+
+    if note_type == "ORDER":
+        if not (note_text or "").strip():
+            return None  # body-dependent — see the docstring
+        from .order_note import parse as parse_order
+
+        verdict = parse_order(title, note_text)
+        if not verdict["valid"]:
+            return (
+                "order_contract",
+                "the ORDER note does not satisfy order-note/1: " + "; ".join(verdict["errors"]),
+            )
+    return None
+
+
 def effective_title(note_title: str, note_text: str) -> str:
     """The title the gate judges.
 
@@ -182,12 +242,33 @@ def check_title(title: str) -> str | None:
 def guided_error(title: str, reason: str, *, kind: str = "shape") -> dict[str, Any]:
     """Build the self-documenting rejection (teaches recovery, like the strict-tag gate).
 
-    `kind` is `"shape"` or `"vocabulary"`. It rides in `error.details`, NOT as a second
-    `ErrorCode`: `note_shape_rejected` already ships, and minting a `note_vocabulary_rejected`
-    synonym would recreate exactly the drift the unified registry removed in v2.0.0 — and would
-    churn all 100 tool fingerprints for a distinction the details already carry.
+    `kind` is `"shape"`, `"vocabulary"`, or a tier-3 contract verdict (`"chat_title"` /
+    `"order_contract"`). It rides in `error.details`, NOT as a second `ErrorCode`:
+    `note_shape_rejected` already ships, and minting a `note_vocabulary_rejected` synonym would
+    recreate exactly the drift the unified registry removed in v2.0.0 — and would churn all 100
+    tool fingerprints for a distinction the details already carry. The tier-3 verdicts follow
+    the same ladder: a details key churns nothing.
     """
-    if kind == "vocabulary":
+    if kind == "chat_title":
+        how = (
+            "The title's shape and TYPE are fine; the CHAT grammar is not satisfied. A turn "
+            "is 'YYYY-MM-DD HH:MM — CHAT — <role> — <scope>' with role ∈ me | ai. Prefer "
+            "gtd_chat_post, which constructs the title (and manages the drain-signal tags) "
+            "for you — this check governs the generic add_note escape hatch, where a "
+            "hand-typed title can drift. To disable: RTM_STRICT_NOTES=shape keeps the "
+            "grammar check without the per-TYPE contracts; RTM_STRICT_NOTES=off disables all."
+        )
+    elif kind == "order_contract":
+        how = (
+            "The title parses as an ORDER note but the body fails the order-note/1 "
+            "self-check, so every consumer would ignore it (the contract fails closed). The "
+            "body is one strict JSON object carrying schema/order/count/sha256/source/at, "
+            "and count + sha256 must agree with `order`. Prefer gtd_canvas_commit's `order` "
+            "parameter, which builds and signs the note for you. To disable: "
+            "RTM_STRICT_NOTES=shape keeps the grammar check without the per-TYPE contracts; "
+            "RTM_STRICT_NOTES=off disables all."
+        )
+    elif kind == "vocabulary":
         from .note_types import WRITE_AUTHORISED_NOTE_TYPES
 
         how = (
@@ -251,8 +332,15 @@ def enforce_note_shape(
             return None
         reason = check_type(title)
         if reason is None:
-            return None
-        kind = "vocabulary"
+            # Tier 3 — the per-TYPE contract, `vocabulary` mode ONLY. Keeping it out of `shape`
+            # is what preserves that mode as a byte-for-byte v5.1.0 rollback step rather than
+            # something merely close to it (CONTRIBUTING § 6, asserted per gate).
+            contract = check_contract(title, note_text)
+            if contract is None:
+                return None
+            kind, reason = contract
+        else:
+            kind = "vocabulary"
 
     # WARNING, not INFO — see the v3.0.1 note in `server.configure_logging`. In `warn` mode this
     # record is the ONLY effect the gate has, so a level that needs configuration to emit made

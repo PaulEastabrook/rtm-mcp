@@ -866,7 +866,12 @@ class AttachOutputResult(BaseModel):
     task_id: str = ""
     output_note_title: str = ""
     filing_path: str = ""
+    unfiled: bool = False
     register_updated: bool = False
+    register_note_id: str = ""
+    #: Registers left in place, never deleted — a divergence is a finding, not a merge.
+    duplicate_register_ids: list[str] = []
+    register_rows: int = 0
     applied: list[AppliedOp] = []
     errors: list[dict[str, Any]] = []
     rejected: list[GtdWriteRejection] | None = None
@@ -1306,6 +1311,89 @@ class DependencyGapsResult(BaseModel):
     vault_filter_pending: str
 
 
+class FilingFindingRow(BaseModel):
+    """One reconciliation finding. `path`/`detail` are present only where they say something."""
+
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    task_name: str = ""
+    note_id: str = ""
+    note_title: str = ""
+    created: str = ""
+    deep_link: str = ""
+    path: str | None = None
+    detail: str | None = None
+
+
+class FilingFindingClass(BaseModel):
+    """One finding class. `count` is **null, never 0**, when the class was underivable — a zero
+    would read as "clean", which is the failure mode `gaps[]` exists to prevent."""
+
+    count: int | None = None
+    rows: list[FilingFindingRow] = []
+    truncated: bool = False
+
+
+class FilingUnlinkedRow(BaseModel):
+    path: str
+    companion: bool = False
+
+
+class FilingGapsFindings(BaseModel):
+    linked_missing: FilingFindingClass
+    filed_unlinked: FilingFindingClass
+    companion_missing: FilingFindingClass
+    join_unpopulated: FilingFindingClass
+    prose_path: FilingFindingClass
+    register_defect: FilingFindingClass
+
+
+class FilingGapsResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    vault_present: bool
+    artefacts_scanned: int | None = None
+    output_notes_scanned: int = 0
+    untracked_unlinked_count: int | None = None
+    findings: FilingGapsFindings
+    #: Underivable classes, NAMED rather than zeroed (the `gtd_engine_report` precedent).
+    gaps: list[str] = []
+
+
+class NoteFindingRow(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    task_id: str = ""
+    task_name: str = ""
+    note_id: str = ""
+    note_title: str = ""
+    reason: str = ""
+    created: str = ""
+    deep_link: str = ""
+
+
+class NoteFindingClass(BaseModel):
+    count: int = 0
+    rows: list[NoteFindingRow] = []
+    truncated: bool = False
+
+
+class NoteReportFindings(BaseModel):
+    shape: NoteFindingClass
+    vocabulary: NoteFindingClass
+    chat_title: NoteFindingClass
+    order_contract: NoteFindingClass
+    filing_path: NoteFindingClass
+
+
+class NoteReportResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    notes_scanned: int = 0
+    #: Notes with no date prefix — Paul's own, counted and NEVER reported as findings.
+    free_text_count: int = 0
+    finding_count: int = 0
+    findings: NoteReportFindings
+    free_text_rule: str
+
+
 class TagUsage(BaseModel):
     model_config = ConfigDict(extra="allow")
     name: str
@@ -1720,6 +1808,8 @@ GTD_CONTEXT_OUTPUT = _envelope_schema("GtdContextEnvelope", ContextResult, Candi
 SURFACE_QUEUE_OUTPUT = _envelope_schema("SurfaceQueueEnvelope", SurfaceQueueResult)
 ENGINE_REPORT_OUTPUT = _envelope_schema("EngineReportEnvelope", EngineReportResult)
 DEPENDENCY_GAPS_OUTPUT = _envelope_schema("DependencyGapsEnvelope", DependencyGapsResult)
+FILING_GAPS_OUTPUT = _envelope_schema("FilingGapsEnvelope", FilingGapsResult)
+NOTE_REPORT_OUTPUT = _envelope_schema("NoteReportEnvelope", NoteReportResult)
 TAG_REPORT_OUTPUT = _envelope_schema("TagReportEnvelope", TagReportResult)
 REVIEW_REPORT_OUTPUT = _envelope_schema("ReviewReportEnvelope", ReviewReportResult)
 ITEM_STALE_OUTPUT = _envelope_schema("ItemStaleEnvelope", ItemStaleResult)
