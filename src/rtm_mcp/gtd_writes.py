@@ -26,6 +26,9 @@ from .canvas_commit import (
     OVERLAY_REFRESH,
 )
 from .error_codes import ErrorCode
+from .gtd_reads import parse_note_type
+from .note_shape import effective_title
+from .parsers import extract_note_body
 
 # --------------------------------------------------------------------------- #
 # Tier-1 canonical vocabularies (D1) — sourced from gtd's tag-taxonomy.md § headings
@@ -681,10 +684,32 @@ def validate_complete(*, kind_tags: list[str], completion: str, outcome: str) ->
     return rejections
 
 
-def inbox_close_body(derived: list[dict[str, str]], *, source_name: str, source_url: str) -> str:
-    """The Inbox_Stuff COMPLETION body: every derived item with type/name/url, then the SOURCE
-    back-pointer carrying the ORIGINAL name (the Processor may have renamed the item)."""
-    lines = ["DERIVED ITEMS CREATED:"]
+def inbox_close_body(
+    derived: list[dict[str, str]],
+    *,
+    source_name: str,
+    source_url: str,
+    narrative: str | None = None,
+) -> str:
+    """The Inbox_Stuff COMPLETION body: the caller's optional narrative, then every derived item
+    with type/name/url, then the SOURCE back-pointer carrying the ORIGINAL name (the Processor
+    may have renamed the item).
+
+    **The narrative goes ABOVE the list, deliberately.** The derived items and the SOURCE line
+    are what close the audit loop and are read mechanically; appending free prose after them
+    would put unstructured text between a reader and the structured tail. Prose first, structure
+    last — the same order `assemble_note_body` emits.
+
+    A blank (or absent) narrative writes **no block and no bare blank line**, so a close without
+    one is byte-identical to every close written before the parameter existed. The v6.0.0
+    precedent: a block asked for but carrying nothing renderable is reported in the receipt's
+    `not_applied[]`, never written as an empty delimiter.
+    """
+    lines: list[str] = []
+    prose = (narrative or "").strip()
+    if prose:
+        lines.extend([prose, ""])
+    lines.append("DERIVED ITEMS CREATED:")
     for i, d in enumerate(derived, 1):
         lines.append(
             f'{i}. [{d.get("type", "item")}] "{d.get("name", "")}" — RTM URL: {d.get("url", "")}'
@@ -958,6 +983,10 @@ AI_CONTRIB_DRAFTED = "ai_contrib_drafted"
 AI_PREP_DRAFTED = "ai_prep_drafted"
 OUTPUTS_REGISTER_HEADER = "| Date | Action | Output | Type | Status | Path |"
 OUTPUTS_REGISTER_SEP = "|------|--------|--------|------|--------|------|"
+#: Cap on the OUTPUT note's own title summary — the one surviving cap of the three `[:60]`
+#: slices this path used to carry, and the only one where a bound is defensible (a title is a
+#: label). Applied through :func:`elide`, so it cuts on a word boundary and says that it cut.
+OUTPUT_TITLE_CAP = 60
 
 
 def check_filing_path(path: str) -> str | None:
@@ -979,52 +1008,204 @@ def output_note_body(filing_path: str, output_summary: str, *, companion: bool =
     return f"{output_summary.strip()}\n\nFILING: {filing_path.strip()}{marker}"
 
 
+def unfiled_note_body(output_summary: str) -> str:
+    """OUTPUT note body for a deliverable with no artefact — an `UNFILED:` marker, no `FILING:`.
+
+    **The absent FILING line is the whole design, not a cosmetic difference.**
+    `gtd_chat.parse_filings` scrapes `FILING:` lines to build a turn's `files[]`, so a
+    placeholder path would be scraped as a real artefact and re-enter the reconciliation as a
+    broken link — manufacturing exactly the defect class this release exists to remove. The
+    marker records the decision; nothing points anywhere.
+    """
+    summary = (output_summary or "").strip()
+    return f"{summary}\n\nUNFILED: no artefact — {summary}"
+
+
+def elide(text: str, limit: int) -> str:
+    """Cap *text* at *limit* characters on a WORD boundary, marking the cut with an ellipsis.
+
+    The one shared cap. Three separate `[:60]` slices used to sit on this path (the register
+    title, the register table's Output cell, the OUTPUT note's own title) and all three were
+    measured cutting live text mid-word — three registers in the 2026-08-01 census, one of them
+    on a human-read table. Two of the three are gone (a project name is bounded in practice and
+    a table cell must not be truncated at all); the survivor cuts honestly.
+    """
+    s = (text or "").strip()
+    if len(s) <= limit or limit <= 1:
+        return s
+    head = s[: limit - 1]
+    # A head that stops exactly ON a word boundary is already whole — rsplit would drop a
+    # complete final word for no reason (and did, on the first pass).
+    if s[limit - 1] != " ":
+        spaced = head.rsplit(" ", 1)[0]
+        # Fall back to the hard cut only when there is no space to break on (one long token) —
+        # otherwise a word-boundary cap would collapse to the empty string.
+        head = spaced if spaced else head
+    return head.rstrip(" ,;:.—-") + "…"
+
+
 def outputs_register_row(
     *, date: str, action_name: str, output_title: str, output_type: str, status: str, path: str
 ) -> str:
+    """One register table row. Cell values are NOT truncated — this is a human-read table."""
     return f"| {date} | {action_name} | {output_title} | {output_type} | {status} | {path} |"
 
 
-def new_outputs_register(project_name: str, row: str, *, date: str) -> str:
-    """A fresh OUTPUTS register note body (used when the project has none yet)."""
+def outputs_register_title(project_name: str, *, date: str) -> str:
+    """The canonical register title — `note-shape-catalogue.md` § 3a.
+
+    `OUTPUTS` is a registered catalogue TYPE, so this passes the server's own note-shape and
+    vocabulary gates. **Zero live registers carried this form** before v6.4.0: all four wrote
+    `OUTPUTS: <name>`, which the catalogue does not describe and which a rename orphans.
+    """
+    return format_note_title("OUTPUTS", project_name, date=date)
+
+
+def build_outputs_register(rows: list[str], *, date: str) -> str:
+    """The register body, DERIVED from *rows* — the stored note is `title\\n<this>`.
+
+    **No header line.** RTM stores a note as `note_title\\n note_text`, so the title IS line 1 of
+    the stored body; the pre-v6.4.0 writer passed `note_title="OUTPUTS: …"` *and* opened
+    `note_text` with the same string, and both landed. All 4 live registers carry the duplicate.
+
+    **Derived, not accumulated.** Regenerating from the project's OUTPUT notes on every attach
+    is what makes the duplicated header, both mid-word truncations and the non-conformant title
+    a single fix rather than three repairs plus a careful migration — a wrong register is simply
+    rebuilt. It also makes the writer idempotent: two attaches of one artefact produce one row.
+    """
     return "\n".join(
-        [
-            f"OUTPUTS: {project_name}",
-            "",
-            OUTPUTS_REGISTER_HEADER,
-            OUTPUTS_REGISTER_SEP,
-            row,
-            "",
-            f"Last updated: {date}",
-        ]
+        ["", OUTPUTS_REGISTER_HEADER, OUTPUTS_REGISTER_SEP, *rows, "", f"Last updated: {date}"]
     )
 
 
-def append_outputs_row(existing_body: str, row: str, *, date: str) -> str:
-    """Append a row to an existing OUTPUTS register, refreshing `Last updated:` (append-only rows)."""
-    lines = existing_body.split("\n")
+def register_paths(body: str) -> list[str]:
+    """The filing paths already listed in an existing register body — the last table column.
+
+    **Rebuilding is not free, and this is what makes the cost visible.** A derived register
+    carries only rows it can re-derive from a live OUTPUT note, so a row whose note was deleted,
+    or which was hand-typed into the table, disappears on the next attach. That is correct —
+    the register is a projection, and a projection that preserves unsourceable rows is an
+    accumulator wearing a projection's name — but it must not be silent. The tool diffs these
+    against the derived set and reports the difference in the receipt's `not_applied[]`.
+    """
     out: list[str] = []
-    inserted = False
-    for ln in lines:
-        if ln.startswith("Last updated:") and not inserted:
-            out.append(row)
-            out.append("")
-            out.append(f"Last updated: {date}")
-            inserted = True
+    for line in (body or "").split("\n"):
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 6 or cells[0] in ("Date", "------") or set(cells[0]) <= {"-"}:
             continue
-        if ln.startswith("Last updated:"):
-            continue
-        out.append(ln)
-    if not inserted:  # no Last-updated line — append at the end
-        out.append(row)
-        out.append(f"Last updated: {date}")
-    return "\n".join(out).rstrip() + "\n"
+        if cells[-1]:
+            out.append(cells[-1])
+    return out
 
 
-def validate_attach_output(*, filing_path: str, output_summary: str) -> list[dict[str, Any]]:
+def sort_register_rows(entries: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Dedupe by filing path (earliest date wins) and order deterministically.
+
+    Sort: date ascending, then action name, then note id. **A derived artefact that reorders
+    itself between runs is not derived** — every tie has to break on something stable, and the
+    note id is the only identifier RTM guarantees.
+    """
+    best: dict[str, dict[str, str]] = {}
+    for e in entries:
+        key = (e.get("path") or "").strip()
+        prior = best.get(key)
+        if prior is None or (e.get("date") or "") < (prior.get("date") or ""):
+            best[key] = e
+    return sorted(
+        best.values(),
+        key=lambda e: (e.get("date") or "", e.get("action_name") or "", _idkey(e.get("note_id"))),
+    )
+
+
+def _idkey(nid: Any) -> tuple[int, int, str]:
+    """Note-id sort key, int-normalised (mirrors `order_note._idkey` — one convention)."""
+    try:
+        return (0, int(nid), "")  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return (1, 0, str(nid or ""))
+
+
+#: The pre-v6.4.0 register title. Accepted by the finder for ONE release, then dropped.
+#:
+#: Without it, the release that lands the canonical title orphans every existing register and
+#: mints a duplicate beside it — which is not hypothetical: *Claude Coworking* already carries
+#: two registers 99 minutes apart, because the old `startswith("OUTPUTS:")` finder could not see
+#: the date-prefixed one and created its own.
+LEGACY_OUTPUTS_PREFIX = "OUTPUTS:"
+
+
+def is_outputs_register(title: str) -> bool:
+    """Whether a note title identifies an OUTPUTS register — canonical or one-release legacy.
+
+    **Matched on the parsed TYPE, never a string prefix.** A prefix embeds the project name, so
+    a rename orphans the register; that is exactly how the live duplicate was minted.
+    """
+    _, note_type, _ = parse_note_type(title)
+    return note_type == "OUTPUTS" or (title or "").strip().startswith(LEGACY_OUTPUTS_PREFIX)
+
+
+def resolve_outputs_register(
+    notes: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Pick the register to rebuild into → ``(winner, duplicate_ids)``.
+
+    More than one register can exist, so resolution has to be deterministic: **latest wins** by
+    date, tie-broken on note id descending — the `order_note.resolve` precedent.
+
+    **The date FALLS BACK to the note's own `created`, and that is not a nicety.** Keying on the
+    title date alone was measured wrong against the live *Claude Coworking* pair: `116750518`
+    carries the catalogue title `2026-04-06 — OUTPUTS — …` but was abandoned an hour after it was
+    written, while `116751124` carries the undated legacy `OUTPUTS: <name>` form and is the one
+    every subsequent filing updated (last modified three weeks later). Sorting a legacy title as
+    `""` hands the win to the dead register and rebuilds into it. With the fallback both resolve
+    to 2026-04-06 and the id tie-break picks the live one.
+
+    **The losers are reported, never deleted.** A duplicate is a finding for
+    `gtd_note_filing_gaps` to surface and a human to judge; silently merging two registers would
+    destroy the evidence that they diverged.
+    """
+    found: list[tuple[str, tuple[int, int, str], dict[str, Any]]] = []
+    for n in notes or []:
+        title = effective_title(n.get("title") or "", extract_note_body(n))
+        if not is_outputs_register(title):
+            continue
+        note_date, _, _ = parse_note_type(title)
+        # `created`, not `modified`: modified changes every time the register is rebuilt, so it
+        # would make the ordering a function of the last run rather than of the data.
+        found.append((note_date or str(n.get("created") or "")[:10], _idkey(n.get("id")), n))
+    if not found:
+        return None, []
+    found.sort(key=lambda f: (f[0], f[1]), reverse=True)
+    return found[0][2], [str(f[2].get("id")) for f in found[1:]]
+
+
+def validate_attach_output(
+    *, filing_path: str, output_summary: str, unfiled: bool = False
+) -> list[dict[str, Any]]:
+    """Validate an output-journalling call. `filing_path` is required **unless** `unfiled`.
+
+    That conditional is why `filing_path` is deliberately NOT in :func:`check_payload`'s eight
+    required-and-non-empty parameters: those eight are unconditionally the work, and a rule with
+    an exception does not belong in a list that has none.
+
+    `unfiled=True` alongside a non-empty `filing_path` is rejected — you cannot claim both a
+    filed artefact and no artefact, and silently preferring one would discard a stated intent.
+    JSON Schema cannot express that pairing, so it is also a `tool_help.COMBINATION_RULES` entry.
+    """
     rejections: list[dict[str, Any]] = []
     if not (output_summary or "").strip():
         rejections.append(_reject(ErrorCode.MISSING_PARAMETER, "output_summary is required"))
+    if unfiled:
+        if (filing_path or "").strip():
+            rejections.append(
+                _reject(
+                    ErrorCode.INVALID_INPUT,
+                    "unfiled=True means there is no artefact, so filing_path must be empty — "
+                    "drop one of the two",
+                    field="unfiled",
+                )
+            )
+        return rejections
     err = check_filing_path(filing_path)
     if err:
         rejections.append(_reject(ErrorCode.INVALID_INPUT, err, field="filing_path"))

@@ -6,6 +6,8 @@ Definition of Ready, the note title/block grammar, and every validator rejection
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from rtm_mcp import gtd_writes as w
 
 
@@ -434,6 +436,47 @@ def test_inbox_close_body_lists_derived_and_source():
     assert 'SOURCE: Inbox_Stuff item "raw capture"' in body
 
 
+def _close_body(**kw):
+    return w.inbox_close_body(
+        [{"type": "action", "name": "Do it", "url": "http://x"}],
+        source_name="raw capture",
+        source_url="http://s",
+        **kw,
+    )
+
+
+def test_inbox_close_narrative_is_rendered_above_the_derived_list():
+    """Prose first, structure last — the derived list and the SOURCE line are read mechanically,
+    so free prose must never sit between a reader and that tail."""
+    body = _close_body(narrative="Routed to pmgo; reflect at 1w/4w.")
+    assert body == (
+        "Routed to pmgo; reflect at 1w/4w.\n"
+        "\n"
+        "DERIVED ITEMS CREATED:\n"
+        '1. [action] "Do it" — RTM URL: http://x\n'
+        "\n"
+        'SOURCE: Inbox_Stuff item "raw capture" — RTM URL: http://s'
+    )
+
+
+def test_inbox_close_without_narrative_is_byte_identical_to_the_pre_parameter_body():
+    """THE load-bearing test: the parameter must be invisible to every existing caller."""
+    baseline = (
+        "DERIVED ITEMS CREATED:\n"
+        '1. [action] "Do it" — RTM URL: http://x\n'
+        "\n"
+        'SOURCE: Inbox_Stuff item "raw capture" — RTM URL: http://s'
+    )
+    assert _close_body() == baseline
+    assert _close_body(narrative=None) == baseline
+
+
+def test_inbox_close_blank_narrative_writes_no_block_and_no_bare_blank_line():
+    # v6.0.0 precedent: a block that carries nothing renderable emits nothing at all; the
+    # caller learns it from the receipt's not_applied[], never from a stray empty line.
+    assert _close_body(narrative="   \n\t ") == _close_body()
+
+
 # ---- series guard -------------------------------------------------------- #
 
 
@@ -606,25 +649,185 @@ def test_output_note_body_carries_filing_line():
     assert body.splitlines()[0] == "Drafted the spec"
 
 
-def test_outputs_register_append_keeps_one_last_updated():
-    reg = w.new_outputs_register(
-        "Proj",
-        w.outputs_register_row(
-            date="2026-07-24",
-            action_name="A",
-            output_title="T",
-            output_type="doc",
+def test_unfiled_note_body_carries_no_filing_line():
+    """The absent FILING line is the design: `gtd_chat.parse_filings` must find nothing, else a
+    placeholder would be scraped as a real artefact and re-enter the reconciliation as a break."""
+    from rtm_mcp.gtd_chat import parse_filings
+
+    body = w.unfiled_note_body("Answered inline in the thread")
+    assert "FILING:" not in body
+    assert "UNFILED: no artefact — Answered inline in the thread" in body
+    assert parse_filings(body) == []
+
+
+class TestTheDerivedOutputsRegister:
+    """v6.4.0 — the register is REBUILT from the project's OUTPUT notes, not appended to."""
+
+    ROW: ClassVar[dict[str, str]] = {
+        "date": "2026-07-24",
+        "action_name": "A",
+        "output_title": "T",
+        "output_type": "doc",
+        "path": "p/a.md",
+        "note_id": "1",
+    }
+
+    def _row(self, e):
+        return w.outputs_register_row(
+            date=e["date"],
+            action_name=e["action_name"],
+            output_title=e["output_title"],
+            output_type=e["output_type"],
             status="filed",
-            path="p/a.md",
-        ),
-        date="2026-07-24",
-    )
-    assert w.OUTPUTS_REGISTER_HEADER in reg and reg.count("Last updated:") == 1
-    app = w.append_outputs_row(
-        reg, "| 2026-07-25 | B | T2 | doc | filed | p/b.md |", date="2026-07-25"
-    )
-    assert app.count("| doc | filed |") == 2
-    assert app.count("Last updated:") == 1 and "Last updated: 2026-07-25" in app
+            path=e["path"],
+        )
+
+    def test_the_stored_body_carries_the_header_exactly_once(self):
+        """THE bug, asserted at byte level on the STORED body (`title\\n text`) — the duplication
+        lived in the concatenation, so an assertion on note_text alone would have missed it. All
+        four live registers carried it."""
+        title = w.outputs_register_title("Proj", date="2026-07-24")
+        stored = title + "\n" + w.build_outputs_register([self._row(self.ROW)], date="2026-07-24")
+        assert stored.count("OUTPUTS") == 1
+        assert stored.splitlines()[0] == "2026-07-24 — OUTPUTS — Proj"
+        assert stored.count("Last updated:") == 1
+
+    def test_the_emitted_title_passes_the_servers_own_gates(self):
+        """The Wave-1b ACTIVITY-REPORT precedent: the server must never write a title its own
+        validator would refuse. `OUTPUTS` is a registered catalogue TYPE, so both tiers pass."""
+        from rtm_mcp import note_shape
+
+        title = w.outputs_register_title("Programme Thunder / TSA exit", date="2026-08-02")
+        assert note_shape.check_title(title) is None
+        assert note_shape.check_type(title) is None
+
+    def test_rows_dedupe_by_path_keeping_the_earliest_date(self):
+        later = {**self.ROW, "date": "2026-07-30", "note_id": "9"}
+        out = w.sort_register_rows([later, self.ROW])
+        assert len(out) == 1 and out[0]["date"] == "2026-07-24"
+
+    def test_row_order_is_deterministic_across_input_orders(self):
+        a = {**self.ROW, "path": "p/a.md", "action_name": "A", "note_id": "2"}
+        b = {**self.ROW, "path": "p/b.md", "action_name": "B", "note_id": "1"}
+        c = {**self.ROW, "path": "p/c.md", "action_name": "A", "note_id": "1"}
+        assert w.sort_register_rows([a, b, c]) == w.sort_register_rows([c, b, a])
+        # date → action name → note id; c (A/1) precedes a (A/2) precedes b (B).
+        assert [e["path"] for e in w.sort_register_rows([a, b, c])] == [
+            "p/c.md",
+            "p/a.md",
+            "p/b.md",
+        ]
+
+    def test_no_cell_is_cut_mid_word(self):
+        """The register is a human-read table. Three `[:60]` slices used to sit on this path and
+        all three were measured cutting live text mid-word."""
+        long_title = "A very long output title that runs well past sixty characters in total"
+        row = self._row({**self.ROW, "output_title": long_title})
+        assert long_title in row
+        assert w.outputs_register_title("A" * 120, date="2026-07-24").endswith("A" * 120)
+
+
+class TestTheRegisterFinder:
+    """Matched on the parsed TYPE, never a string prefix — a prefix embeds the project name, so
+    a rename orphans the register, which is exactly how the live duplicate was minted."""
+
+    def _note(self, nid, title):
+        return {"id": nid, "title": "", "$t": title + "\nbody"}
+
+    def test_it_finds_every_form_the_census_found(self):
+        for title in (
+            "OUTPUTS: Claude Coworking Productivity Enhancements",  # the buggy live form
+            "2026-04-06 — OUTPUTS — Project output register",  # the date-prefixed live form
+            "2026-08-02 — OUTPUTS — Claude Coworking",  # the canonical form
+        ):
+            assert w.is_outputs_register(title), title
+
+    def test_a_non_register_note_is_not_matched(self):
+        assert not w.is_outputs_register("2026-08-02 — OUTPUT — a filed artefact")
+        assert not w.is_outputs_register("2026-08-02 — CONTEXT — outputs discussed")
+
+    def test_two_registers_resolve_to_the_latest_and_report_the_loser(self):
+        old = self._note("116750518", "2026-04-06 — OUTPUTS — Project output register")
+        new = self._note("116751124", "2026-07-30 — OUTPUTS — Claude Coworking")
+        winner, dups = w.resolve_outputs_register([old, new])
+        assert winner["id"] == "116751124"
+        assert dups == ["116750518"]
+
+    def test_the_canonical_form_outranks_the_undated_legacy_one(self):
+        legacy = self._note("1", "OUTPUTS: Claude Coworking")
+        canonical = self._note("2", "2026-04-06 — OUTPUTS — Claude Coworking")
+        winner, dups = w.resolve_outputs_register([legacy, canonical])
+        assert winner["id"] == "2" and dups == ["1"]
+
+    def test_THE_LIVE_CLAUDE_COWORKING_PAIR_resolves_to_the_one_still_in_use(self):
+        """Measured against the real notes, and it caught a defect in the first implementation.
+
+        `116750518` carries the CATALOGUE title but was abandoned 99 minutes after it was
+        written; `116751124` carries the buggy legacy title and is the register every later
+        filing actually updated. Keying on the title date alone sorts the legacy form as `""`,
+        hands the win to the dead register, and rebuilds into it — losing four live rows. The
+        `created` fallback is what makes the id tie-break reachable.
+        """
+        dead = {
+            "id": "116750518",
+            "title": "",
+            "$t": "2026-04-06 — OUTPUTS — Project output register\nThis note is a cumulative…",
+            "created": "2026-04-06T09:53:39Z",
+        }
+        live = {
+            "id": "116751124",
+            "title": "",
+            "$t": "OUTPUTS: Claude Coworking Productivity Enhancements\n| Date |…",
+            "created": "2026-04-06T11:32:10Z",
+        }
+        winner, dups = w.resolve_outputs_register([dead, live])
+        assert winner["id"] == "116751124"
+        assert dups == ["116750518"]
+
+    def test_no_register_returns_none_and_no_duplicates(self):
+        assert w.resolve_outputs_register([self._note("1", "2026-08-02 — CONTEXT — x")]) == (
+            None,
+            [],
+        )
+
+
+class TestElide:
+    def test_it_cuts_on_a_word_boundary_and_says_so(self):
+        out = w.elide("the quick brown fox jumps over the lazy dog", 20)
+        assert out.endswith("…") and " " not in out[-2:]
+        assert len(out) <= 20
+        assert out == "the quick brown fox…"
+
+    def test_short_text_is_untouched(self):
+        assert w.elide("short", 60) == "short"
+
+    def test_one_long_token_falls_back_to_a_hard_cut(self):
+        """A word-boundary cap with no space to break on must not collapse to nothing."""
+        assert w.elide("A" * 100, 10) == "A" * 9 + "…"
+
+
+class TestAttachOutputValidation:
+    def test_unfiled_with_a_filing_path_is_rejected(self):
+        rej = w.validate_attach_output(filing_path="p/a.md", output_summary="x", unfiled=True)
+        assert [r["reason"] for r in rej] == ["invalid_input"]
+
+    def test_unfiled_without_a_filing_path_is_accepted(self):
+        assert w.validate_attach_output(filing_path="", output_summary="x", unfiled=True) == []
+
+    def test_filing_path_is_still_required_when_not_unfiled(self):
+        rej = w.validate_attach_output(filing_path="", output_summary="x")
+        assert [r["reason"] for r in rej] == ["invalid_input"]
+
+    def test_filing_path_is_not_one_of_the_unconditional_payload_parameters(self):
+        """`check_payload`'s eight are unconditionally the work; `filing_path` is conditional on
+        `unfiled`, and a rule with an exception does not belong in a list that has none. Asserted
+        against the SOURCE, because the wrong wiring would be a silently-passing extra gate."""
+        import pathlib
+
+        import rtm_mcp.tools.gtd as gtd_tools
+
+        src = pathlib.Path(gtd_tools.__file__).read_text()
+        assert 'check_payload("filing_path"' not in src
 
 
 def test_attach_output_validation():

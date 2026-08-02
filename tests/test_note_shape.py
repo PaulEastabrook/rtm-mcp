@@ -379,3 +379,106 @@ class TestTheShippedVocabularyDefaultIsLive:
             enforce_note_shape(self._real(), "2026-08-01 — SCOPE — refocused", "", tool="add_note")
             is None
         )
+
+
+class TestTheContractTier:
+    """v6.4.0 tier 3 — the per-TYPE contract, for the two TYPEs whose grammar the server already
+    parses. It replaces the equivalent `validate-note.py` pre-flights: a check a caller has to
+    remember to run is not a check."""
+
+    def _mode(self, mode="vocabulary"):
+        return SimpleNamespace(config=SimpleNamespace(strict_notes=mode))
+
+    def test_a_malformed_chat_title_is_rejected(self):
+        err = enforce_note_shape(
+            self._mode(), "2026-08-02 — CHAT — just a summary", "", tool="add_note"
+        )
+        assert err is not None
+        assert err["error"]["code"] == "note_shape_rejected"
+        # ONE code, the verdict in the details — the v5.2.0 ladder. A new member churns 100
+        # fingerprints; a details key churns none.
+        assert err["error"]["details"]["rejected_by"] == "chat_title"
+
+    def test_a_conformant_chat_title_passes(self):
+        assert (
+            enforce_note_shape(
+                self._mode(), "2026-08-02 09:41 — CHAT — me — Proj", "hello", tool="add_note"
+            )
+            is None
+        )
+
+    def test_a_non_conformant_order_note_is_rejected(self):
+        err = enforce_note_shape(
+            self._mode(),
+            "2026-08-02 09:41 — ORDER — 2 items",
+            '{"schema": "wrong"}',
+            tool="add_note",
+        )
+        assert err is not None
+        assert err["error"]["details"]["rejected_by"] == "order_contract"
+        assert "order-note/1" in err["error"]["details"]["reason"]
+
+    def test_a_conformant_order_note_passes(self):
+        from rtm_mcp.order_note import make
+
+        title, body = make(["1", "2"], "board-commit", "2026-08-02T09:41:00Z", "2026-08-02 09:41")
+        assert enforce_note_shape(self._mode(), title, body, tool="add_note") is None
+
+    def test_a_title_only_order_edit_is_NOT_judged(self):
+        """`edit_note` passes an empty body on its title-changing path, and the ORDER check is
+        body-dependent. Judging an absent body would refuse every legitimate title correction —
+        the same 'judge what you were given' reasoning as the legacy body-only carve-out."""
+        assert (
+            enforce_note_shape(
+                self._mode(), "2026-08-02 09:41 — ORDER — 2 items", "", tool="edit_note"
+            )
+            is None
+        )
+
+    def test_shape_mode_does_NOT_run_the_contract_tier(self):
+        """`shape` must stay a byte-for-byte v5.1.0 rollback step, not merely close to it."""
+        assert (
+            enforce_note_shape(
+                self._mode("shape"), "2026-08-02 — CHAT — just a summary", "", tool="add_note"
+            )
+            is None
+        )
+
+    def test_off_mode_is_inert(self):
+        assert (
+            enforce_note_shape(
+                self._mode("off"), "2026-08-02 — CHAT — just a summary", "", tool="add_note"
+            )
+            is None
+        )
+
+    def test_an_unaffected_type_passes_untouched(self):
+        """Only CHAT and ORDER are judged — every other registered TYPE is untouched by design."""
+        assert (
+            enforce_note_shape(
+                self._mode(), "2026-08-02 — CONTEXT — anything at all", "body", tool="add_note"
+            )
+            is None
+        )
+
+    def test_the_guidance_names_the_constructing_tool_and_its_own_default(self):
+        err = enforce_note_shape(self._mode(), "2026-08-02 — CHAT — bad", "", tool="add_note")
+        how = err["error"]["details"]["how_to_proceed"]
+        assert "gtd_chat_post" in how
+        # A gate's recovery names its own SHIPPED default (CONTRIBUTING § 6) — two gates once
+        # told callers to unset the var, which after the flip is advice to leave it on.
+        assert "RTM_STRICT_NOTES=shape" in how and "RTM_STRICT_NOTES=off" in how
+
+
+class TestTheShippedContractTierIsLive:
+    """Against a REAL RTMConfig — every test above passes on a server whose default never
+    reaches the third tier."""
+
+    def _real(self):
+        from rtm_mcp.config import RTMConfig
+
+        return SimpleNamespace(config=RTMConfig(api_key="k", shared_secret="s", auth_token="t"))
+
+    def test_a_malformed_chat_title_is_rejected_with_no_env_set(self):
+        err = enforce_note_shape(self._real(), "2026-08-02 — CHAT — nope", "", tool="add_note")
+        assert err is not None and err["error"]["details"]["rejected_by"] == "chat_title"

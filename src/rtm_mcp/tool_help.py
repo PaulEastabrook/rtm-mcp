@@ -63,6 +63,22 @@ DESCRIPTION_BUDGET_BYTES = 2048
 #: tier-3 rejection. The `task_name`-XOR-ids and `confirm_destructive` rules are NOT here:
 #: they are derivable from the parameter set, and deriving beats authoring.
 COMBINATION_RULES: dict[str, tuple[str, ...]] = {
+    "gtd_note_attach_output": (
+        "`filing_path` is required UNLESS `unfiled=True`, and the two are mutually exclusive: "
+        "`unfiled=True` alongside a non-empty `filing_path` is rejected as `invalid_input`. "
+        "You cannot claim both a filed artefact and no artefact, and silently preferring one "
+        "would discard a stated intent.",
+        "With a vault mounted, `filing_path` must resolve to an artefact that carries "
+        "companion metadata, else the call is refused as `filing_unresolved` with NOTHING "
+        "written. With NO vault mounted the gate is inert and the write proceeds — the "
+        "receipt's `not_applied[]` says the filing went unverified.",
+        "`unfiled=True` is for a deliverable that genuinely has no artefact (inline message "
+        "text). It writes an `UNFILED:` marker and no `FILING:` line — deliberately, because a "
+        "placeholder path would be scraped by `gtd_chat_thread` as a real artefact.",
+        "`register=True` REBUILDS the project's OUTPUTS register from its OUTPUT notes rather "
+        "than appending, so repeat calls are idempotent. It is a no-op when the item IS the "
+        "project (a project cannot register against itself).",
+    ),
     "gtd_item_stamp_tokens": (
         "Pass `project_id` to stamp ONE project, or omit it entirely to sweep every active "
         "repeating templated project. There is no 'all projects' flag — absence IS the sweep.",
@@ -272,6 +288,15 @@ CHAIN: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "gtd_inbox_capture": {"produced_by": (), "feeds_into": ("gtd_inbox_state", "gtd_inbox_drain")},
     "gtd_surface_resolve": {"produced_by": ("gtd_surface_queue",), "feeds_into": ()},
+    "gtd_note_attach_output": {
+        "produced_by": ("gtd_note_filing_gaps",),
+        "feeds_into": ("gtd_note_filing_gaps", "batch_undo"),
+    },
+    "gtd_note_filing_gaps": {
+        "produced_by": (),
+        "feeds_into": ("gtd_note_attach_output", "gtd_note_edit"),
+    },
+    "gtd_note_report": {"produced_by": (), "feeds_into": ("gtd_note_edit",)},
     "gtd_contribution_transition": {
         "produced_by": ("gtd_engine_report",),
         "feeds_into": ("gtd_engine_report",),
@@ -396,6 +421,7 @@ RECOVERY: dict[str, str] = {
     ErrorCode.STRICT_TAG_REJECTED: "The tag does not exist in the account and strict-tag mode refuses to mint it — that is the gate working, not a fault. `get_tags` lists the real set; the near-miss is usually a spelling or plural variant of an existing tag. A genuinely new tag is a taxonomy decision (gtd's `tag-taxonomy`) and must be created in RTM out-of-band first.",
     ErrorCode.NOTE_SHAPE_REJECTED: "TWO checks return this code — read `error.details.rejected_by` first. `shape`: the title does not parse as `YYYY-MM-DD [HH:MM] — TYPE — summary` (the separator is an em-dash, and the TYPE token allows no underscore — the commonest two causes). `vocabulary` (since v5.2.0): the title parses but the TYPE is not registered; `how_to_proceed` lists every registered type, and a legacy AI-surface spelling (`Q`, `AR`, `ACTIVITY_REPORT`) is named as legacy rather than unknown. A genuinely new type goes in gtd's note-shape catalogue FIRST — never coined at the call site.",
     ErrorCode.DESTRUCTIVE_UNCONFIRMED: "Pass `confirm_destructive=True` to proceed.",
+    ErrorCode.FILING_UNRESOLVED: "The artefact you are journalling does not resolve in the AI Memory vault — read `error.details.rejected_by` first. `artefact_missing`: nothing is at that path; check it with `agent_memory_file_query` (a path broken by a vault reorganisation is the commonest cause, and it is why the fix is to re-resolve rather than retry). `companion_missing`: the file is there but untracked, so re-file it with `agent_memory_file_put`, which writes artefact and companion atomically. If the deliverable is genuinely inline message text with no artefact, `unfiled=True` is the designed escape — it is not a workaround. Note the gate is inert with no vault mounted, so this code means the server LOOKED and did not find it.",
     ErrorCode.COMMIT_REJECTED: "One or more ops failed validation; `rejected[]` names each reason. NOTHING was written.",
     ErrorCode.WRITE_FAILED: "The write reached RTM and failed. `errors[]` carries the per-op detail; earlier ops in the batch may have applied.",
     # Outcome reasons, not failures — these appear ONLY as `not_applied[].reason` on an

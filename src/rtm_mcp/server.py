@@ -78,7 +78,7 @@ Two tool families. Pick the family first, then the tool.
 (`add_task_tags`, `set_task_tags`), and utilities (`undo`, `batch_undo`, `parse_time`).
 Keywords: task, to-do, reminder, due date, priority, tag, list, note, recurrence, RTM.
 
-**GTD domain compositions** (55, `gtd_` prefix) speak Getting Things Done rather than
+**GTD domain compositions** (57, `gtd_` prefix) speak Getting Things Done rather than
 mapping 1:1 to an API method: inbox and capture (`gtd_inbox_*`), projects and plans
 (`gtd_project_*`, `gtd_canvas_commit`), items (`gtd_item_*`), next actions and today
 (`gtd_next_actions`, `gtd_item_today`), reviews and hygiene reports (`gtd_*_report`,

@@ -7,6 +7,7 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .filing_gate import VALID_STRICT_FILING_MODES
 from .note_shape import VALID_STRICT_NOTES_MODES
 
 
@@ -108,6 +109,30 @@ class RTMConfig(BaseSettings):
             "codification of gtd's note-shape catalogue — see note_types.py."
         ),
     )
+
+    # Filing mode (artefact-resolution gate on gtd_note_attach_output) — see filing_gate.py
+    strict_filing: str = Field(
+        default="reject",
+        description=(
+            "Gate a journalled artefact against the vault. Env var RTM_STRICT_FILING: "
+            "'reject' (default) refuses an OUTPUT note whose filing_path resolves to no "
+            "artefact, or to an artefact with no companion; 'warn' logs but allows; 'off' "
+            "inert (the pre-v6.4.0 behaviour, byte-for-byte). With no vault mounted the "
+            "gate is INERT in every mode — a missing mount degrades, it never rejects."
+        ),
+    )
+
+    @field_validator("strict_filing")
+    @classmethod
+    def _validate_strict_filing(cls, value: str) -> str:
+        """Fail loudly on a typo'd mode rather than silently running inert (see strict_notes)."""
+        normalized = (value or "off").strip().lower()
+        if normalized not in VALID_STRICT_FILING_MODES:
+            raise ValueError(
+                f"RTM_STRICT_FILING must be one of {', '.join(VALID_STRICT_FILING_MODES)}; "
+                f"got '{value}'"
+            )
+        return normalized
 
     # List-target mode (mechanical writability gate) — see list_targets.py
     strict_list_targets: bool = Field(

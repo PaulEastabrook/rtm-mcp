@@ -4,6 +4,162 @@ Notable changes to rtm-mcp. Started at v3.0.0 because that is the first release 
 to describe; the full history before it is in the dated `*-debrief.md` files at the repo root, and
 the architecture record is `CLAUDE.md`.
 
+## v6.4.0 — output-filing integrity: the gate, the derived register, the reconcile read
+
+**BREAKING on one tool** (`gtd_note_attach_output` gains a rejection path), additive elsewhere.
+One new `ErrorCode`, so **all 102 fingerprints churn** — structural, from the enum being inlined
+into every `ErrorBody.code`, not 102 tools changing behaviour. **No new tag**, no strict-tag
+interaction, no activation-ordering hazard. Two new tools (55 → 57 GTD tools).
+
+Implements the approved designed change `2026-08-02-output-filing-integrity.md`, Moves 2, 3, 4
+and 6a/6b. Moves 1 and 5 are agent-memory-mcp's; Move 6c (four pure push-downs) is a later slice.
+
+### Why
+
+A read-only reconciliation on 2026-08-01 across 104 OUTPUT notes and 171 companion-tracked
+artefacts: **97 of 126 filed artefacts carried no OUTPUT note (77%)**; only 37 of 104 OUTPUT notes
+carried a machine-readable `FILING:` line (the rest in ten incompatible prose dialects); four
+pointers were silently invalidated by the 18 July vault reorganisation; `source_action` — the
+RTM↔vault join field that already exists in the companion schema — was populated **0 of 40**.
+
+Two root causes. **The join key is a location**, so any reorganisation invalidates it. And
+**filing and journalling were two unbound acts**, so the second was forgettable.
+
+### `gtd_note_attach_output` — the filing gate (BREAKING)
+
+New `RTM_STRICT_FILING` (`off` | `warn` | `reject`, **default `reject`**). With a vault mounted,
+a `filing_path` that resolves to no artefact — or to one with no companion — is refused with
+nothing written: `filing_unresolved`, `error.details.rejected_by` ∈ `artefact_missing` |
+`companion_missing`. ONE code, two verdicts (the v5.2.0 precedent — a synonym would churn every
+fingerprint for a distinction the details carry). The gate runs before the resolver, so a refusal
+costs zero API calls.
+
+**With no vault mounted the gate is INERT and the write proceeds.** Absence of a mount is absence
+of evidence, not a missing artefact; the receipt's `not_applied[]` says the filing went unverified.
+
+**`unfiled: bool = False`** is the escape for a deliverable with no artefact (inline message text).
+`filing_path` therefore becomes conditionally optional — a **loosening**, non-breaking for every
+existing caller. `unfiled=True` with a non-empty `filing_path` is rejected (`invalid_input`). An
+unfiled note carries an `UNFILED:` marker and **no `FILING:` line**, because a placeholder path
+would be scraped by `gtd_chat_thread` as a real artefact.
+
+`source_action` is **checked but not required** — 0% populated live, so requiring it would refuse
+every legitimate call. Reported on the receipt and counted by `gtd_note_filing_gaps` until
+agent-memory's backfill lands.
+
+*Deviation from CONTRIBUTING § 6, stated rather than smuggled:* § 6 requires a new gate to ship
+default-off with the enable decision separate. The design of record approved `reject`, so the flag
+and its enabled default ship together. `RTM_STRICT_FILING=off` reproduces v6.3.0 byte-for-byte and
+is the whole rollback plan (asserted).
+
+### The OUTPUTS register is now DERIVED
+
+Rebuilt on every attach from the project's descendant OUTPUT notes, deduped by path, ordered
+date → action name → note id. Idempotent: two attaches of one artefact produce one row.
+
+That regeneration repairs four defects at once — the header line stored **twice** (all 4 live
+registers), and three `[:60]` slices measured cutting live text mid-word (the register title, the
+register table's **Output cell**, and the OUTPUT note's own title). Two caps are gone; the third
+is now `elide()`, word-boundary-safe with a visible ellipsis.
+
+The title is the catalogue form `YYYY-MM-DD — OUTPUTS — <project>`. The finder matches the
+**parsed TYPE, never a string prefix** — a prefix embeds the project name, and a rename orphaning
+the register is how one project came to hold two. The legacy `OUTPUTS: <name>` form is still
+*found* **for one release**; drop it at v6.5.0. With several registers present the latest wins
+(dated by title, falling back to the note's `created`) and the losers are reported in
+`duplicate_register_ids` — never deleted.
+
+A register row that cannot be re-derived from a live OUTPUT note is dropped and **reported** in
+`not_applied[]` (`output:register-row-dropped`). Correct for a projection; never silent.
+
+New response fields: `unfiled`, `register_note_id`, `duplicate_register_ids`, `register_rows`,
+`not_applied`.
+
+### New: `gtd_note_filing_gaps` (read)
+
+Reconciles RTM's OUTPUT notes against the vault — this server is the only process that can see
+both sides. One `rtm.tasks.getList` plus ONE client-side vault walk. Six finding classes:
+`linked_missing`, `filed_unlinked`, `companion_missing`, `join_unpopulated`, `prose_path`
+(detected, never parsed — ten dialects), `register_defect`.
+
+**An absent vault produces a PARTIAL result, never a clean one**: the four vault-dependent classes
+are named in `gaps[]` and their `count` is `null`, **never `0`**.
+
+### New: `gtd_note_report` (read)
+
+Note-shape hygiene estate-wide, using the write gate's **own functions** (asserted by object
+identity), retiring one `validate-note.py` subprocess per note. Five classes: `shape`,
+`vocabulary`, `chat_title`, `order_contract`, `filing_path`. A note with **no date prefix** is
+Paul's own and is never a finding — counted in `free_text_count`.
+
+### `note_shape` gains a third tier
+
+`CHAT` and `ORDER` notes are checked against their own contracts, reusing
+`gtd_chat.parse_chat_title` and `order_note.parse` — parsers the server already holds.
+`rejected_by: chat_title` | `order_contract`, **no new `ErrorCode`**. Runs in `vocabulary` mode
+only, so `shape` stays a byte-for-byte v5.1.0 rollback step. The ORDER check reads the body and so
+never fires on a title-only `edit_note`.
+
+### Migration
+
+None required for callers that pass a resolvable `filing_path`. A caller that journals without one
+must now either fix the path or pass `unfiled=True`. **The four live registers were not rewritten
+by this release** — each is regenerated on its project's next attach; the pre-change bodies are
+captured in `migration-capture/2026-08-02-outputs-register-pre-migration-capture.md` (RTM note
+edits are not undoable, so that capture IS the rollback).
+
+To go live: restart the server on v6.4.0.
+
+## v6.3.0 — a close note that can carry the handler's reasoning
+
+Additive. **One optional parameter, no signature break, no new `ErrorCode`, no new tag, no vault.**
+One fingerprint churns (`gtd_inbox_item_close`).
+
+### The gap
+
+`gtd_inbox_item_close` composed its COMPLETION body **entirely** from `derived_refs` — there was no
+parameter for caller-supplied content. A handler wanting to record *why* an item was routed the way
+it was, a reflection schedule, or a hand-off pointer had nowhere to put it in the note that closes
+the loop.
+
+The live workaround is on record: the `plugin-marketplace-architect` `improvement_candidate`
+executor handler writes a **preceding CONTEXT note** instead (claude-plugins `7f94464f1`). Correct,
+and worse in a specific way — two notes where one was intended, joined only *positionally*, and the
+note-reading protocol orders notes STATE-first, so "the note above" was never a stable pointer.
+
+### What changed
+
+`gtd_inbox_item_close` gains an optional `narrative`, threaded into `gtd_writes.inbox_close_body`:
+
+```
+<narrative>
+
+DERIVED ITEMS CREATED:
+1. [action] "…" — RTM URL: …
+
+SOURCE: Inbox_Stuff item "…" — RTM URL: …
+```
+
+**Above the list, deliberately.** The derived items and the SOURCE line close the audit loop and are
+read mechanically; prose appended after them would sit between a reader and the structured tail.
+Prose first, structure last — the order `assemble_note_body` already emits.
+
+**A facet, not a payload.** Absence is legitimate (most closes have nothing to add), so it is *not*
+added to the eight v5.0.0 required-and-non-empty payload parameters. `derived_refs` stays required
+and non-empty, unchanged. A blank narrative writes no block and no bare blank line, and reports
+`no_change` in the receipt's `not_applied[]` — the v6.0.0 precedent, not a new rule.
+
+**The bare-call advisory now fires on a close with no narrative.** This tool declared no optionals
+at all, so `build_advisory` was silent by construction; `narrative` is its only one. Accepted for
+the same reason as `gtd_note_add` at v6.0.0: it is the only signal that survives a client-side strip
+of `narative=`, and a caller reads *"none of: narrative"* rather than a confident success.
+
+### Compatibility
+
+A close without `narrative` writes a **byte-identical** body — asserted at both the pure-grammar and
+the tool level, and that is the load-bearing test. No migration, no live data touched. To go live:
+restart the server on v6.3.0. Rollback is a signature revert.
+
 ## v6.2.0 — three sibling create surfaces, two silently-dropped designations, one lost draft
 
 Additive. **No signature change, no removed behaviour, no new `ErrorCode`.** Two schema

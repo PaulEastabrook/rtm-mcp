@@ -190,6 +190,54 @@ def resolve_companion_meta(vault_root: str | None, rel_path: str) -> dict[str, A
     return None
 
 
+#: Directories never walked when enumerating artefacts — VCS/OS noise and Obsidian's own state.
+_SKIP_DIRS = {".git", ".obsidian", ".trash", "node_modules", "__pycache__", ".DS_Store"}
+
+#: Extensions that are companions rather than artefacts in their own right.
+_COMPANION_SUFFIXES = (".meta.md", ".companion.md", ".metadata.yaml")
+
+
+def walk_artefacts(vault_root: str | None, *, limit: int = 20000) -> list[dict[str, Any]] | None:
+    """Enumerate the vault's **companion-tracked** artefacts → ``[{path, meta}]``, or None.
+
+    Returns None — not ``[]`` — when there is no vault. The distinction is load-bearing for
+    `gtd_note_filing_gaps`: an empty list means "walked it, found nothing", while None means
+    "could not look", and a reconciliation that reported zero drift because nothing was mounted
+    would be the silent-control failure this whole programme keeps finding.
+
+    ONE walk, client-side, rather than a resolve per artefact — the `gtd_tag_report` precedent,
+    which replaced a per-tag N+1 with a single scan. Companion files and index/schema files are
+    excluded (they are metadata, not artefacts); an untracked artefact IS returned, with
+    ``meta`` None, because "filed but untracked" is itself a finding class.
+
+    Read-only and total: every OS error is skipped rather than raised (the module contract).
+    *limit* is a runaway guard — a truncated walk is reported by the caller, never silently.
+    """
+    if not vault_root:
+        return None
+    root = os.path.abspath(os.path.expanduser(vault_root))
+    out: list[dict[str, Any]] = []
+    try:
+        for folder, dirs, files in os.walk(root):
+            dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".comp"))
+            for name in sorted(files):
+                if (
+                    name in _NON_ARTEFACT
+                    or name.startswith((".", "_"))
+                    or name.endswith(_COMPANION_SUFFIXES)
+                ):
+                    continue
+                rel = os.path.relpath(os.path.join(folder, name), root)
+                out.append(
+                    {"path": rel.replace(os.sep, "/"), "meta": resolve_companion_meta(root, rel)}
+                )
+                if len(out) >= limit:
+                    return out
+    except OSError:  # pragma: no cover — os.walk already swallows per-directory errors
+        return out
+    return out
+
+
 def enrich_files(seed: dict[str, Any], vault_root: str | None) -> dict[str, Any]:
     """Attach a ``meta`` block to each canvas file object whose companion resolves.
 

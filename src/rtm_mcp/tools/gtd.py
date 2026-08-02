@@ -45,7 +45,7 @@ from ..canvas_create import (
 from ..canvas_overlay import apply_graph, lean_seed
 from ..canvas_seed import build_seed
 from ..client import RTMClient
-from ..companion import enrich_files, resolve_vault_root
+from ..companion import enrich_files, resolve_vault_root, walk_artefacts
 from ..contribution import STATE_KIND, TERMINAL_STATES
 from ..contribution import artefact_path as contrib_artefact_path
 from ..contribution import category as contrib_category
@@ -104,6 +104,8 @@ from ..engine_report import (
 )
 from ..engine_report import QUESTIONS_FILTER as ENGINE_QUESTIONS_FILTER
 from ..error_codes import ErrorCode
+from ..filing_gaps import FILING_GAPS_DEFAULT_ROWS, build_filing_gaps
+from ..filing_gate import check_source_action, enforce_filing
 from ..gtd_chat import (
     AI_CHAT,
     AI_CHAT_REQUESTED,
@@ -114,6 +116,7 @@ from ..gtd_chat import (
     build_thread,
     format_chat_title,
     local_stamp,
+    parse_output_note,
     project_descendants,
 )
 from ..gtd_reads import (
@@ -159,6 +162,7 @@ from ..gtd_writes import (
     LINK_MODES,
     MOSCOW_BANDS,
     MOSCOW_TO_PRIORITY,
+    OUTPUT_TITLE_CAP,
     PROCESSED_LIST,
     RESPONSE_SHAPES,
     SOURCES_DELIM,
@@ -172,10 +176,10 @@ from ..gtd_writes import (
     ai_analysis_body,
     ai_link_note,
     ai_link_targets,
-    append_outputs_row,
     apply_edit_op,
     assemble_note_body,
     auto_close_at,
+    build_outputs_register,
     check_payload,
     collapse_write,
     collect_item_tags,
@@ -187,20 +191,24 @@ from ..gtd_writes import (
     contrib_tag,
     depends_on_note,
     divergent_band_proposals,
+    elide,
     entity_short_ref,
     flip_depends_on,
     format_note_title,
     inbox_close_body,
     is_active_depends_on,
     item_tags,
-    new_outputs_register,
     output_approval_transition,
     output_note_body,
     outputs_register_row,
+    outputs_register_title,
+    register_paths,
     render_ai_context,
     render_sources,
     resolution_link_status,
     resolution_tags,
+    resolve_outputs_register,
+    sort_register_rows,
     split_batch,
     state_body,
     surface_body,
@@ -209,6 +217,7 @@ from ..gtd_writes import (
     surface_outcome_summary,
     surface_tags,
     surface_title,
+    unfiled_note_body,
     validate_add_note,
     validate_annotate_clarification,
     validate_attach_contribution,
@@ -254,6 +263,7 @@ from ..models import (
     ENGAGE_COMMIT_OUTPUT,
     ENGAGE_SEED_OUTPUT,
     ENGINE_REPORT_OUTPUT,
+    FILING_GAPS_OUTPUT,
     FOCUS_INDEX_OUTPUT,
     FOCUS_PROJECTS_OUTPUT,
     GTD_CONTEXT_OUTPUT,
@@ -265,6 +275,7 @@ from ..models import (
     ITEM_TODAY_OUTPUT,
     LINK_DEPENDENCY_OUTPUT,
     NEXT_ACTIONS_OUTPUT,
+    NOTE_REPORT_OUTPUT,
     PROJECT_CANVAS_OUTPUT,
     PROJECT_INDEX_OUTPUT,
     PROJECT_PLAN_OUTPUT,
@@ -284,6 +295,7 @@ from ..models import (
     WAITING_FOR_OUTPUT,
     WORKLOAD_REPORT_OUTPUT,
 )
+from ..note_report import build_note_report
 from ..order_note import from_envelope as resolve_order_note
 from ..order_note import make as make_order_note
 from ..parsers import (
@@ -4598,6 +4610,16 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 )
             ),
         ],
+        narrative: Annotated[
+            str | None,
+            optional_string(
+                "Optional prose recorded ABOVE the derived-items list — why the item was routed "
+                "the way it was, a reflection schedule, a hand-off pointer. The server emits the "
+                "block and the blank line; never write the derived list or the SOURCE line here, "
+                "the server builds both. Omit it and the note is byte-identical to a pre-v6.3.0 "
+                "close."
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """GTD — close the clarify loop on an Inbox_Stuff item: write the COMPLETION note listing
         every derived item with its deep link, then complete the source.
@@ -4611,12 +4633,20 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         land. The note title is the fixed canonical string
         `YYYY-MM-DD — COMPLETION — Processed into GTD system`.
 
+        Note shape CONSTRUCTED: you supply the semantics (an optional `narrative`); the server
+        builds the title, the numbered derived list with deep links, and the SOURCE back-pointer.
+        Body order is narrative → `DERIVED ITEMS CREATED:` → `SOURCE:`, so the machine-read tail
+        is never buried under prose. A blank `narrative` writes no block and says so in
+        `not_applied[]`.
+
         Args:
             inbox_item_ref: the source item (id preferred; a name resolves).
             derived_refs: ids of the derived items to list in the note.
+            narrative: optional prose above the derived list — the routing reasoning, a
+                reflection schedule, a hand-off pointer. Most closes need none.
 
         Returns (on success): {"task_id", "completed", "note_title", "derived_count",
-            "applied", "errors", "message"}.
+            "applied", "not_applied", "errors", "message"}.
         Returns (on ambiguity): {"candidates": [...]} — call again with an id.
         Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
             reason ∈ "task_not_found" | "missing_parameter".
@@ -4669,6 +4699,23 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         applied: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        # A narrative the caller ASKED for but which carried nothing renderable writes no block
+        # — and § 4.1 says the caller learns that from the receipt rather than from silence.
+        # Same rule, same reason, as gtd_note_add's sources / ai_context blocks.
+        not_applied: list[dict[str, Any]] = (
+            [
+                not_applied_entry(
+                    "close-inbox:narrative",
+                    item_id=str(task.get("id")),
+                    requested=narrative,
+                    reason=ErrorCode.NO_CHANGE,
+                    detail="`narrative` was blank, so no prose block was written above the "
+                    "derived-items list.",
+                )
+            ]
+            if narrative is not None and not narrative.strip()
+            else []
+        )
         _write = _writer(applied, errors, client)
         tz = await client.get_timezone()
         title = format_note_title("COMPLETION", INBOX_CLOSE_SUMMARY, date=_account_today(tz))
@@ -4686,6 +4733,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 derived,
                 source_name=task.get("name") or "",
                 source_url=_permalink(str(task.get("id")), by_id, task.get("list_id")),
+                narrative=narrative,
             ),
             **ids,
         )
@@ -4699,6 +4747,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "note_title": title,
                 "derived_count": len(derived),
                 "applied": applied,
+                "not_applied": not_applied,
                 "errors": errors,
                 "message": f"Closed the inbox item; {len(derived)} derived item(s) recorded.",
             },
@@ -5796,6 +5845,42 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         parts = raw.split("\n", 1)
         return parts[0], (parts[1] if len(parts) > 1 else "")
 
+    def _derive_register_entries(
+        proj: dict[str, Any], by_id: dict[str, dict[str, Any]], *, timezone: str | None
+    ) -> list[dict[str, Any]]:
+        """Every OUTPUT-note filing under *proj*, as register entries — the derivation source.
+
+        Walks the project's own notes plus its descendant tree (`gtd_chat.project_descendants`,
+        completed included — a completed action's filed output is still a project output) and
+        **reuses the parsers the server already has**: `parse_output_note` selects by the note's
+        title TYPE, `parse_filings` handles both catalogue § 3 forms. A third FILING parser
+        would be a third thing to keep in step with the two that already agree.
+
+        Cheap by construction: the tool's single broad read already carries every child and
+        every note, so this costs no extra API call.
+        """
+        entries: list[dict[str, Any]] = []
+        parsed = list(by_id.values())
+        owners = [proj, *project_descendants(parsed, str(proj.get("id")))]
+        for owner in owners:
+            for note in owner.get("notes") or []:
+                rec = parse_output_note(note)
+                if not rec:
+                    continue
+                for path in rec["paths"]:
+                    entries.append(
+                        {
+                            "date": _norm_date(note.get("created"), timezone)
+                            or (rec.get("created") or "")[:10],
+                            "action_name": owner.get("name") or "",
+                            "output_title": rec["label"],
+                            "output_type": "doc",
+                            "path": path,
+                            "note_id": str(note.get("id") or ""),
+                        }
+                    )
+        return entries
+
     @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=ATTACH_OUTPUT_OUTPUT)
     async def gtd_note_attach_output(
         ctx: Context,
@@ -5804,31 +5889,65 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         ],
         filing_path: Annotated[
             str,
-            Field(
-                description="Vault-relative path to the filed artefact (forward slashes, no "
-                "leading '/'). The OUTPUT note's machine purpose is this link."
+            optional_string(
+                "Vault-relative path to the filed artefact (forward slashes, no leading '/'). "
+                "Required UNLESS unfiled=True. The OUTPUT note's machine purpose is this link."
             ),
-        ],
+        ] = "",
         output_summary: Annotated[
             str, Field(description="One line naming what was produced (the OUTPUT note summary).")
-        ],
+        ] = "",
         output_type: Annotated[
             str, optional_string("Artefact type for the register row (e.g. 'doc', 'deck').")
         ] = "doc",
         register: Annotated[
             bool,
             Field(
-                description="Also append the row to the project's OUTPUTS register (default True)."
+                description="Also rebuild the project's OUTPUTS register from its OUTPUT notes "
+                "(default True)."
             ),
         ] = True,
+        unfiled: Annotated[
+            bool,
+            Field(
+                description="The deliverable is inline message text with no artefact. Skips the "
+                "filing gate and writes the note marked UNFILED (no FILING: line). Requires an "
+                "empty filing_path."
+            ),
+        ] = False,
     ) -> dict[str, Any]:
         """GTD — record a filed artefact: write the OUTPUT note (carrying the line-anchored
-        `FILING:` link the reader parses) on the action, and append the row to the parent
-        project's OUTPUTS register — in one governed call.
+        `FILING:` link the reader parses) on the action, and rebuild the parent project's
+        OUTPUTS register — in one governed call.
 
         Additive write; transaction-recorded (reversible via `batch_undo`); stamps
         `#ai_conversation`. Validate-then-apply — a bad filing path (absolute, or backslashed)
         or an empty summary rejects with nothing written.
+
+        THE FILING GATE (v6.4.0, `RTM_STRICT_FILING`, default `reject`). Filing an artefact and
+        journalling it were two unbound acts, so the second was forgettable — measured, 77% of
+        filed artefacts carried no OUTPUT note. With a vault mounted, this call now REFUSES a
+        `filing_path` that resolves to no artefact, or to one with no companion metadata
+        (`filing_unresolved`; `error.details.rejected_by` says which). **With no vault mounted
+        the gate is inert and the write proceeds** — a missing mount is absent evidence, not a
+        missing artefact, and the receipt advisory says so. The companion's `source_action` is
+        checked but NOT required: live population is 0%, so it is reported on the receipt and
+        counted by `gtd_note_filing_gaps` until agent-memory's backfill lands.
+
+        `unfiled=True` is the escape for a deliverable that genuinely has no artefact (inline
+        message text). It skips the gate, requires an empty `filing_path`, and writes an
+        `UNFILED:` marker instead of a `FILING:` line — deliberately, since a placeholder path
+        would be scraped by `gtd_chat_thread` as a real artefact.
+
+        THE REGISTER IS DERIVED, NOT APPENDED (v6.4.0). It is rebuilt on every attach from the
+        project's descendant OUTPUT notes, so it is idempotent, deduplicated by path, and
+        deterministically ordered. That regeneration is also the repair: the pre-v6.4.0 writer
+        emitted its header twice, truncated three fields mid-word at 60 characters, and titled
+        the note `OUTPUTS: <name>` — a prefix that a project rename orphans, which is how one
+        project came to hold two registers. The title is now the catalogue form
+        `YYYY-MM-DD — OUTPUTS — <project>`. The finder matches the parsed TYPE (plus the legacy
+        prefix, for one release); with several registers present the latest wins and the losers
+        are reported in `duplicate_register_ids`, never deleted.
 
         NOTE ON SHAPE (a deliberate deviation from the brief's 'OUTPUT + FILING pair'): this
         emits the note-shape-catalogue / validate-note.py model — ONE OUTPUT note with a
@@ -5838,17 +5957,30 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
 
         Args:
             task_ref: the action (id preferred; a name resolves, ambiguous → candidates).
-            filing_path / output_summary / output_type / register: see each.
+            filing_path / output_summary / output_type / register / unfiled: see each.
 
-        Returns (on success): {"task_id", "output_note_title", "filing_path",
-            "register_updated", "applied", "errors", "message"}.
+        Returns (on success): {"task_id", "output_note_title", "filing_path", "unfiled",
+            "register_updated", "register_note_id", "duplicate_register_ids", "register_rows",
+            "applied", "not_applied", "errors", "message"}.
         Returns (on ambiguity): {"candidates": [...]}.
         Returns (on rejection — nothing written): {"rejected": [{reason, detail}], …} where
             reason ∈ "invalid_input" | "missing_parameter" | "strict_tag_rejected".
+        Returns (on a gate refusal — nothing written): {"error": {"code": "filing_unresolved",
+            "message": …}} with rejected_path / rejected_by / how_to_proceed under
+            `error.details`.
         Returns (on miss): {"error": {"code": "task_not_found", "message": …}}.
         """
         client: RTMClient = await get_client()
-        rejections = validate_attach_output(filing_path=filing_path, output_summary=output_summary)
+        rejections = validate_attach_output(
+            filing_path=filing_path, output_summary=output_summary, unfiled=unfiled
+        )
+        # The filing gate runs BEFORE the resolver, so a refusal costs no API call (§ 6). It is
+        # filesystem-only and needs nothing from RTM; only the advisory `source_action` join
+        # below needs the resolved task id.
+        if not rejections and not unfiled:
+            gate_err = enforce_filing(client, filing_path, tool="gtd_note_attach_output")
+            if gate_err:
+                return build_response(data=gate_err)
         ref = await _resolve_ref(client, task_ref, "status:incomplete OR status:completed")
         if "task" not in ref:
             return build_response(data=ref)
@@ -5872,17 +6004,23 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             )
 
         applied: list[dict[str, Any]] = []
+        not_applied: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         _write = _writer(applied, errors, client)
         tz = await client.get_timezone()
         today = _account_today(tz)
-        title = format_note_title("OUTPUT", output_summary[:60], date=today)
+        vault_root = resolve_vault_root(client.config.vault_root)
+        title = format_note_title("OUTPUT", elide(output_summary, OUTPUT_TITLE_CAP), date=today)
         await _write(
             "rtm.tasks.notes.add",
             "output:note",
             str(task.get("id")),
             note_title=title,
-            note_text=output_note_body(filing_path, output_summary),
+            note_text=(
+                unfiled_note_body(output_summary)
+                if unfiled
+                else output_note_body(filing_path, output_summary)
+            ),
             task_id=task.get("id"),
             taskseries_id=task.get("taskseries_id"),
             list_id=task.get("list_id"),
@@ -5896,59 +6034,148 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             taskseries_id=task.get("taskseries_id"),
             list_id=task.get("list_id"),
         )
+        if unfiled:
+            not_applied.append(
+                not_applied_entry(
+                    "output:filing",
+                    item_id=str(task.get("id")),
+                    reason=ErrorCode.NO_DURABLE_WRITE,
+                    detail="unfiled=True — the note records the deliverable but links to no "
+                    "artefact, so nothing points into the vault.",
+                )
+            )
+        elif not vault_root:
+            not_applied.append(
+                not_applied_entry(
+                    "output:filing-check",
+                    item_id=str(task.get("id")),
+                    requested=filing_path,
+                    reason=ErrorCode.NOT_ELIGIBLE,
+                    detail="no AI Memory vault resolved, so the filing gate could not verify "
+                    "that this artefact exists — the note was written unverified.",
+                )
+            )
+        else:
+            join = check_source_action(vault_root, filing_path, str(task.get("id")))
+            if join:
+                not_applied.append(
+                    not_applied_entry(
+                        f"output:{join[0]}",
+                        item_id=str(task.get("id")),
+                        requested=filing_path,
+                        reason=ErrorCode.NOT_ELIGIBLE,
+                        detail=f"{join[1]} — advisory only; `gtd_note_filing_gaps` counts it.",
+                    )
+                )
 
         register_updated = False
+        register_note_id = ""
+        duplicate_ids: list[str] = []
+        register_rows: list[str] = []
         proj = _nearest_project(task, by_id)
         if register and str(proj.get("id")) != str(task.get("id")):
-            row = outputs_register_row(
-                date=today,
-                action_name=task.get("name") or "",
-                output_title=output_summary[:60],
-                output_type=output_type,
-                status="filed",
-                path=filing_path,
+            entries = _derive_register_entries(proj, by_id, timezone=tz)
+            # The note written moments ago is not in the read that preceded it, so its row is
+            # contributed explicitly rather than re-read.
+            entries.append(
+                {
+                    "date": today,
+                    "action_name": task.get("name") or "",
+                    "output_title": output_summary.strip(),
+                    "output_type": output_type,
+                    "path": filing_path.strip() if not unfiled else "",
+                    "note_id": "",
+                }
             )
-            existing = None
-            for n in proj.get("notes") or []:
-                nt, _ = _note_title_body(n)
-                if nt.startswith("OUTPUTS:") or extract_note_body(n).startswith("OUTPUTS:"):
-                    existing = n
-                    break
+            register_rows = [
+                outputs_register_row(
+                    date=e["date"],
+                    action_name=e["action_name"],
+                    output_title=e["output_title"],
+                    output_type=e["output_type"],
+                    status="filed" if e["path"] else "unfiled",
+                    path=e["path"],
+                )
+                for e in sort_register_rows(entries)
+            ]
+            existing, duplicate_ids = resolve_outputs_register(proj.get("notes") or [])
+            # Rebuilding drops any row that cannot be re-derived from a live OUTPUT note — a
+            # hand-typed row, or one whose note was deleted. Correct for a projection, but never
+            # silent: the diff is reported so the loss is a decision the caller can see.
+            if existing:
+                derived_paths = {e["path"] for e in entries if e["path"]}
+                dropped = [
+                    p
+                    for p in register_paths(_note_title_body(existing)[1])
+                    if p not in derived_paths
+                ]
+                if dropped:
+                    not_applied.append(
+                        not_applied_entry(
+                            "output:register-row-dropped",
+                            item_id=str(existing.get("id") or ""),
+                            requested=dropped,
+                            reason=ErrorCode.NO_DURABLE_WRITE,
+                            detail=f"{len(dropped)} register row(s) reference artefacts with no "
+                            "live OUTPUT note, so the rebuild could not re-derive them. Journal "
+                            "each with gtd_note_attach_output to restore it, or accept the drop.",
+                        )
+                    )
+            body = build_outputs_register(register_rows, date=today)
+            reg_title = outputs_register_title(proj.get("name") or "", date=today)
             pids = {
                 "task_id": proj.get("id"),
                 "taskseries_id": proj.get("taskseries_id"),
                 "list_id": proj.get("list_id"),
             }
             if existing:
-                _, body = _note_title_body(existing)
+                register_note_id = str(existing.get("id") or "")
                 await _write(
                     "rtm.tasks.notes.edit",
-                    "output:register-append",
+                    "output:register-rebuild",
                     str(proj.get("id")),
                     note_id=existing.get("id"),
-                    note_text=append_outputs_row(body, row, date=today),
+                    note_title=reg_title,
+                    note_text=body,
                     **pids,
                 )
             else:
-                await _write(
+                res = await _write(
                     "rtm.tasks.notes.add",
                     "output:register-new",
                     str(proj.get("id")),
-                    note_title=f"OUTPUTS: {proj.get('name') or ''}"[:60],
-                    note_text=new_outputs_register(proj.get("name") or "", row, date=today),
+                    note_title=reg_title,
+                    note_text=body,
                     **pids,
                 )
+                register_note_id = str(((res or {}).get("note") or {}).get("id") or "")
             register_updated = True
+            for dup in duplicate_ids:
+                not_applied.append(
+                    not_applied_entry(
+                        "output:register-duplicate",
+                        item_id=dup,
+                        reason=ErrorCode.NOT_ELIGIBLE,
+                        detail="a second OUTPUTS register on this project was left untouched — "
+                        "the latest was rebuilt. Merge or delete it by hand; deleting one "
+                        "automatically would destroy the evidence that they diverged.",
+                    )
+                )
 
         return build_response(
             data={
                 "task_id": str(task.get("id")),
                 "output_note_title": title,
                 "filing_path": filing_path,
+                "unfiled": unfiled,
                 "register_updated": register_updated,
+                "register_note_id": register_note_id,
+                "duplicate_register_ids": duplicate_ids,
+                "register_rows": len(register_rows),
                 "applied": applied,
+                "not_applied": not_applied,
                 "errors": errors,
-                "message": f"Recorded output; register {'updated' if register_updated else 'skipped'}.",
+                "message": f"Recorded output; register {'rebuilt' if register_updated else 'skipped'}.",
             },
             timeline_id=client.timeline_id,
         )
@@ -7125,6 +7352,133 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         return build_response(
             data=build_dependency_gaps(parsed, max_projects=max_projects, timezone=tz)
         )
+
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=FILING_GAPS_OUTPUT)
+    async def gtd_note_filing_gaps(
+        ctx: Context,
+        max_rows: Annotated[
+            int,
+            Field(
+                description="Cap on the rows returned PER finding class. Counts stay true and "
+                "`truncated` flags a short sample.",
+                ge=1,
+                le=2000,
+            ),
+        ] = FILING_GAPS_DEFAULT_ROWS,
+    ) -> dict[str, Any]:
+        """GTD — reconcile the OUTPUT notes in RTM against the filed artefacts in the AI Memory
+        vault: what is journalled but missing, filed but never journalled, untracked, unjoined,
+        pointed at in prose, or registered twice.
+
+        THIS SERVER IS THE ONLY PROCESS THAT CAN SEE BOTH SIDES — agent-memory-mcp holds no RTM
+        token and RTM holds no vault — which is why the join lives here rather than in an agent
+        comparing two tool outputs by eye. Computed identically every run, it is a fact; done by
+        reading, it is a fresh error opportunity each time.
+
+        Read-only: ONE signed `rtm.tasks.getList(status:incomplete OR status:completed)` plus a
+        cached timezone read; no write, no timeline. The vault is walked ONCE, client-side
+        (the `gtd_tag_report` precedent) — filesystem only, never an API call.
+
+        SIX FINDING CLASSES, each with a count and rows: `linked_missing` (a FILING: path that
+        resolves to nothing — the 18 July vault reorganisation broke four, and nothing noticed
+        for a fortnight), `filed_unlinked` (a tracked artefact no OUTPUT note references — 97 of
+        126 at baseline), `companion_missing` (resolves, but untracked), `join_unpopulated` (the
+        companion's `source_action` is absent or names another task — 0 of 40 populated at
+        baseline, so expect this to be large until agent-memory's backfill lands), `prose_path`
+        (an OUTPUT note describing a path instead of carrying a FILING: line — 67 of 104, in ten
+        mutually incompatible dialects, which is why they are reported and not parsed), and
+        `register_defect` (duplicate or non-conformant OUTPUTS registers).
+
+        AN ABSENT VAULT PRODUCES A PARTIAL RESULT, NEVER A CLEAN ONE. The four vault-dependent
+        classes are NAMED in `gaps[]` and their `count` is **null, not 0** — a reconciliation
+        reporting zero drift because nothing was mounted is worse than one that declines to
+        answer. `vault_present` says which run you are reading.
+
+        SCOPE CAVEAT: an artefact Paul filed by hand, outside any tool, is invisible to the gate
+        and will appear under `filed_unlinked` on every run. Judge that class with that in mind.
+
+        Args:
+            max_rows: per-class row cap; counts are unaffected.
+
+        Returns (on success): {"vault_present", "artefacts_scanned", "output_notes_scanned",
+            "untracked_unlinked_count", "findings": {<class>: {count, rows, truncated}},
+            "gaps": [...]}.
+        Returns (on bad input): {"error": {"code": "invalid_input", "message": ...}} — branch on
+            `error.code`, never the prose.
+        """
+        bad = _bounded_int(max_rows, name="max_rows", low=1, high=2000)
+        if bad:
+            return build_response(data=bad)
+        client: RTMClient = await get_client()
+        parsed = await _getlist(client, "status:incomplete OR status:completed")
+        tz = await client.get_timezone()
+        artefacts = walk_artefacts(resolve_vault_root(client.config.vault_root))
+        return build_response(
+            data=build_filing_gaps(parsed, artefacts=artefacts, timezone=tz, max_rows=max_rows)
+        )
+
+    @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=NOTE_REPORT_OUTPUT)
+    async def gtd_note_report(
+        ctx: Context,
+        include_completed: Annotated[
+            bool,
+            Field(
+                description="Also scan notes on completed tasks (default False — the audit acts "
+                "on live work)."
+            ),
+        ] = False,
+        max_rows: Annotated[
+            int,
+            Field(
+                description="Cap on the rows returned PER finding class. Counts stay true and "
+                "`truncated` flags a short sample.",
+                ge=1,
+                le=2000,
+            ),
+        ] = FILING_GAPS_DEFAULT_ROWS,
+    ) -> dict[str, Any]:
+        """GTD — note-shape hygiene across the estate: every note judged against the SAME grammar
+        the write gate applies, grouped by finding class. Backs the `gtd-notes-audit-weekly`
+        task, replacing one `validate-note.py` subprocess PER NOTE with one read.
+
+        Read-only: ONE signed `rtm.tasks.getList` plus a cached timezone read; no write, no
+        timeline, no vault.
+
+        THE CHECKS ARE THE WRITE GATE'S OWN, RUN IN REVERSE — `note_shape.check_title` /
+        `check_type` / `check_contract`, the same functions that gate `add_note`. Audit and gate
+        therefore cannot disagree about what conformant means. Five classes: `shape` (the title
+        does not parse), `vocabulary` (parses, but the TYPE is unregistered), `chat_title` and
+        `order_contract` (the per-TYPE contracts), and `filing_path` (a malformed FILING: path —
+        shape only; whether the artefact EXISTS is `gtd_note_filing_gaps`' question).
+
+        THE FREE-TEXT RULE IS NORMATIVE AND LOAD-BEARING. A note with **no date prefix** was
+        typed by Paul in the RTM app and is NEVER a finding — it is counted in `free_text_count`
+        and excluded. A date-prefixed note with an off-vocabulary TYPE is agent-written, and
+        THAT is the finding. Inverting this buries the real findings under Paul's own prose.
+
+        Twelve of `validate-note.py`'s sixteen checks are absent by design, not by omission: the
+        server *constructs* those shapes (titles, bodies, markers) rather than validating them,
+        so there is nothing post-hoc left to catch.
+
+        Args:
+            include_completed: widen the scan to completed tasks (slower, larger).
+            max_rows: per-class row cap; counts are unaffected.
+
+        Returns (on success): {"notes_scanned", "free_text_count", "finding_count",
+            "findings": {<class>: {count, rows, truncated}}, "free_text_rule"}.
+        Returns (on bad input): {"error": {"code": "invalid_input", "message": ...}} — branch on
+            `error.code`, never the prose.
+        """
+        bad = _bounded_int(max_rows, name="max_rows", low=1, high=2000)
+        if bad:
+            return build_response(data=bad)
+        client: RTMClient = await get_client()
+        query = (
+            "status:incomplete OR status:completed" if include_completed else "status:incomplete"
+        )
+        parsed = await _getlist(client, query)
+        tz = await client.get_timezone()
+        return build_response(data=build_note_report(parsed, timezone=tz, max_rows=max_rows))
 
     @_tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TAG_REPORT_OUTPUT)
     async def gtd_tag_report(ctx: Context) -> dict[str, Any]:

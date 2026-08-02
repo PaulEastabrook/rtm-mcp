@@ -138,6 +138,11 @@ class ErrorCode(str, Enum):
     STRICT_TAG_REJECTED = "strict_tag_rejected"  # tag absent from the account
     NOTE_SHAPE_REJECTED = "note_shape_rejected"  # note title fails the mechanical grammar
     DESTRUCTIVE_UNCONFIRMED = "destructive_unconfirmed"  # confirm_destructive not set
+    # ONE member, two verdicts. `error.details.rejected_by` carries which — `artefact_missing`
+    # (nothing at that vault path) or `companion_missing` (the artefact is there, untracked).
+    # A second code would be a synonym pair: it would churn all 100 fingerprints for a
+    # distinction the details already carry (the v5.2.0 shape-vs-vocabulary precedent).
+    FILING_UNRESOLVED = "filing_unresolved"  # the journalled artefact does not resolve
 
     # ------------------------------------------------------------------- outcome
     # NOT failures — these are the `not_applied[].reason` vocabulary (the teaching receipt,

@@ -11,7 +11,7 @@ Enables Claude to manage your tasks through natural language conversation.
 - **Smart Add Syntax**: Natural language task creation (`"Call mom ^tomorrow !1 #family"`)
 - **Default-List Aware**: `add_task` without a list routes to your configured RTM default list (not the built-in Inbox); `get_lists` surfaces the `smart`/`locked`/`archived` flags so callers can pick a writable target
 - **Strict-Tag Mode** (on by default): the server refuses to apply any tag that doesn't already exist in your account — stopping accidental tag creation at the source, with a guided error that tells the caller how to recover. Set `RTM_STRICT_TAGS=0` to disable.
-- **Write gates** (all three on by default since v5.1.0): alongside strict tags, the server refuses a note whose title doesn't parse as `YYYY-MM-DD [HH:MM] — TYPE — summary` (`RTM_STRICT_NOTES`) and an `add_task`/`move_task` aimed at a smart or locked list (`RTM_STRICT_LIST_TARGETS`). Each rejects before any API call, returns a typed error with recovery guidance, and is reversible with one env var.
+- **Write gates** (all four on by default): alongside strict tags, the server refuses a note whose title doesn't parse as `YYYY-MM-DD [HH:MM] — TYPE — summary` or carries an unregistered TYPE (`RTM_STRICT_NOTES`), an `add_task`/`move_task` aimed at a smart or locked list (`RTM_STRICT_LIST_TARGETS`), and — since v6.4.0 — a `gtd_note_attach_output` whose `filing_path` resolves to no artefact in the AI Memory vault (`RTM_STRICT_FILING`; inert when no vault is mounted). Each rejects before any API call, returns a typed error with recovery guidance, and is reversible with one env var.
 - **Logs that survive a headless run**: records go to stderr *and* to a bounded rotating file at `~/.config/rtm-mcp/logs/` — because a Desktop-spawned server's stderr is `/dev/null`, which silently destroyed every write-gate warning.
 - **Batched project read** (`gtd_project_plan`): a whole project plan — project, all descendant items, and every note — in one read-only call (vs `1+N`), as the `project-plan-seed` envelope the GTD canvas consumes. The first of the server's `gtd_`-prefixed domain compositions.
 - **Project-plan canvas tools** (`gtd_project_canvas` + `gtd_canvas_commit` + `gtd_project_create`): a read-only canvas seed with the deterministic plan-graph overlay applied (ordering, blocking, quick-wins), a single governed write surface that validates a whole canvas commit up-front and writes nothing if anything is rejected, and a create-sibling that builds a brand-new project (task + dependency-ordered children + notes/tags + finalise mark) from a canvas draft in one governed call.
@@ -532,6 +532,43 @@ owning module's docstring and pinned by a test.
   estimate totals and `estimate_coverage_pct` — read the two together, the hours figure is a floor.
 - `gtd_focus_index` - every active Area of Focus grouped by life context, with project and direct-item
   counts: the **Horizon-2 view**, a new capability. Pairs with `gtd_project_index` one horizon down.
+- `gtd_note_filing_gaps` (v6.4.0) - reconciles the OUTPUT notes in RTM against the filed artefacts
+  in the AI Memory vault: journalled-but-missing, filed-but-never-journalled, untracked, unjoined,
+  prose-path, and duplicate/non-conformant registers. One `getList` + one client-side vault walk.
+  **With no vault the vault-dependent classes are `null` and named in `gaps[]`, never `0`.**
+- `gtd_note_report` (v6.4.0) - note-shape hygiene estate-wide, using the write gate's own
+  `check_title` / `check_type` / `check_contract`, so audit and gate cannot drift. Replaces one
+  `validate-note.py` subprocess per note. A note with no date prefix is Paul's own and is never a
+  finding — it is counted in `free_text_count` and excluded.
+
+##### v6.4.0 — output-filing integrity (the filing gate, the derived register, two reads)
+Filing an artefact and journalling it were two unbound acts, so the second was forgettable. A
+read-only reconciliation on 2026-08-01 measured the cost: **97 of 126 filed artefacts carried no
+OUTPUT note (77%)**, only 37 of 104 OUTPUT notes carried a machine-readable `FILING:` line, and
+four pointers had been silently invalidated by the 18 July vault reorganisation.
+
+- **`gtd_note_attach_output` is now gated** (`RTM_STRICT_FILING`, default `reject`). With a vault
+  mounted it refuses a `filing_path` that resolves to no artefact, or to one with no companion —
+  `filing_unresolved`, with `rejected_by` naming which. **With no vault mounted the gate is inert
+  and the write proceeds**: absence of a mount is absence of evidence, not a missing artefact.
+  `unfiled=True` is the escape for a deliverable that genuinely has none; it writes an `UNFILED:`
+  marker rather than a placeholder `FILING:` line, which a reader would scrape as a real artefact.
+- **The OUTPUTS register is DERIVED, not appended** — rebuilt from the project's OUTPUT notes on
+  every attach, so it is idempotent and deduplicated. That regeneration is also the repair: the
+  old writer emitted its header twice (on all 4 live registers), cut three fields mid-word at 60
+  characters, and titled the note `OUTPUTS: <name>` — a prefix a project rename orphans, which is
+  how one project came to hold two registers. The title is now `YYYY-MM-DD — OUTPUTS — <project>`;
+  the legacy form is still *found* for one release. Duplicates are reported, never deleted.
+- **`gtd_note_filing_gaps`** (read) reconciles RTM's OUTPUT notes against the vault across six
+  finding classes. This server is the only process that can see both sides. **An absent vault
+  produces a partial result, never a clean one** — the vault-dependent classes are named in
+  `gaps[]` and their counts are `null`, never `0`.
+- **`gtd_note_report`** (read) audits note shape estate-wide using the write gate's own functions,
+  retiring one `validate-note.py` subprocess per note. A note with **no date prefix** is Paul's
+  own and is never a finding.
+- **The note gate gains a third tier**: `CHAT` and `ORDER` notes are checked against their own
+  contracts (`rejected_by: chat_title` / `order_contract`), reusing parsers the server already
+  has. `vocabulary` mode only, so `shape` stays a byte-for-byte rollback step.
 
 ##### v3.1.0 — the deprecated aliases are removed (breaking)
 The 25 renamed aliases and the `gtd_query` dispatcher shipped at v3.0.0 for one release and are
@@ -640,10 +677,14 @@ RTM_MAX_RETRIES=2              # Retries on HTTP 503
 RTM_RETRY_DELAY_FIRST=2.0      # Seconds before first retry
 RTM_RETRY_DELAY_SUBSEQUENT=5.0 # Seconds before 2nd+ retry
 
-# Write gates (all three ON by default since v5.1.0 — values shown DISABLE them)
+# Write gates (all four ON by default — values shown DISABLE them)
 RTM_STRICT_TAGS=0              # allow tags not already in the account (see Strict-Tag Mode)
-RTM_STRICT_NOTES=off           # 'shape' (default) rejects a malformed note title; 'warn' logs but allows
+RTM_STRICT_NOTES=off           # 'vocabulary' (default) = grammar + registered TYPE + per-TYPE
+                               # contract; 'shape' = grammar only; 'warn' logs but allows
 RTM_STRICT_LIST_TARGETS=0      # allow add_task/move_task to name a smart or locked list
+RTM_STRICT_FILING=off          # 'reject' (default, since v6.4.0) refuses gtd_note_attach_output when
+                               # filing_path resolves to no artefact / no companion; 'warn' logs but
+                               # allows. INERT in every mode when no vault is mounted.
 
 # Logging — stderr AND a bounded rotating file (1 MiB x 3 backups)
 RTM_LOG_LEVEL=INFO             # default INFO

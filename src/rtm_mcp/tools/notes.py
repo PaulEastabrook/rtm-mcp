@@ -77,7 +77,10 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         (since v5.2.0) — `error.details.rejected_by` names which check failed. Legacy
         AI-surface spellings (`Q`, `AR`, `ACTIVITY_REPORT`) stay readable but are no longer
         writable. Prefer `gtd_note_add`, which builds a conformant title.
-        RTM_STRICT_NOTES=shape drops the vocabulary check; =off drops both.
+        A `CHAT` or `ORDER` note is additionally checked against its own contract (since
+        v6.4.0): `rejected_by` is then `chat_title` or `order_contract`. The ORDER check reads
+        the BODY, so it only applies where one is supplied.
+        RTM_STRICT_NOTES=shape drops the vocabulary AND contract checks; =off drops all three.
 
         Caution: task_name uses fuzzy matching across all tasks. For common names,
         prefer passing task_id + taskseries_id + list_id to avoid matching an
@@ -187,8 +190,10 @@ def register_note_tools(mcp: Any, get_client: Any) -> None:
         a REGISTERED TYPE, or the edit is rejected with nothing written
         (`error.details.rejected_by` names which check failed). A body-only edit (no
         note_title) is never judged, so a legacy note whose title predates the grammar can
-        always have its body corrected. RTM_STRICT_NOTES=shape drops the vocabulary check;
-        =off drops both.
+        always have its body corrected. A `CHAT` title is additionally checked against the CHAT
+        grammar (since v6.4.0, `rejected_by: chat_title`); the ORDER contract check reads the
+        body and so does not fire on a title-only edit.
+        RTM_STRICT_NOTES=shape drops the vocabulary AND contract checks; =off drops all three.
 
         Caution: task_name uses fuzzy matching across all tasks. For common names,
         prefer passing task_id + taskseries_id + list_id to avoid matching an
