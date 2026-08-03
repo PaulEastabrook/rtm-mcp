@@ -1,5 +1,73 @@
 # Changelog
 
+## v6.8.0 — the recurrence KIND stops being discarded (`repeat_kind`)
+
+Minor, additive, vault-free. **20 of 102 fingerprints churn.** No new tag, no new `ErrorCode`,
+no gate, no strict-tag interaction.
+
+### The finding: the fact was thrown away, not unobtainable
+
+RTM has two recurrence kinds and they behave completely differently:
+
+| Kind | Structure | Identity across occurrences |
+|---|---|---|
+| `every` ("every 2 weeks") | ONE taskseries, MANY tasks | `taskseries_id` is **stable** |
+| `after` ("after 2 weeks") | a **NEW taskseries per occurrence** | **nothing survives** — both ids re-key |
+
+RTM sends `<rrule every="0|1">` and that attribute **is** the discriminator. `parsers.py` did
+`is_repeating = bool(ts.get("rrule"))` — collapsing the whole element to a boolean one line into
+the parser, so the attribute never reached any tool.
+
+This was nearly recorded as *unobtainable*. It is not, and this parser line is the **only** place
+it is available: MilkScript exposes a bare `isRecurring()`, `rtm.Recurrence` is a write-only
+builder with no getter, and the search syntax has `isRepeating:true` but no repeat-**type**
+operator.
+
+### The contract: three-valued, and never a guess
+
+`parsers.repeat_kind(rrule)` → `"every"` | `"after"` | `None`.
+
+`None` is deliberately overloaded and **`is_repeating` is what disambiguates it**: `None` with
+`is_repeating` False means *no rule*; `None` with `is_repeating` True means *a rule I could not
+classify*. Read as a pair, never alone.
+
+It is **not** defaulted to `"every"` on an unreadable rule. A wrong `"every"` is precisely the
+silent-wrong-identity failure this exists to prevent — a consumer keying durable state on
+`taskseries_id` would key it on an id that re-keys, with nothing saying so.
+
+### Where it surfaces
+
+`repeat_kind` follows `is_repeating` wherever it already travelled: the parsed task,
+`project-plan-seed/3.1` (`header.project` + every row, backing `gtd_project_plan`), and
+`gtd_item_stamp_tokens`.
+
+**`list_tasks` gains BOTH fields**, because it carried neither before. `repeat_kind` alone is
+undecodable there — its `None` covers two different facts, and only `is_repeating` beside it
+separates them. So `format_task` gains the pair or nothing.
+
+**`gtd_project_index` is deliberately untouched** — it carries neither `is_repeating` nor
+`taskseries_id`, so there is nothing for a kind to qualify.
+
+### Two brief claims corrected by measurement
+
+The hand-off brief stated `list_tasks` and `gtd_project_index` "already carry `is_repeating`".
+Neither does — `format_task` drops it, and `project_index` never had it.
+
+It also stated "there is no confirmed live `after` in the account any more", so the `after` branch
+would need a fixture. **There are 27**, so both branches are verified against live data.
+
+### Measured live (2026-08-03, whole account)
+
+- 118 repeating series: **91 `every`, 27 `after`** → 124 / 27 tasks post-parse.
+- **Zero** unclassified rules — every live rule carries a readable attribute.
+- The free deductive cross-check holds: a series with ≥2 tasks is provably `every` (an `after`
+  repeat cannot make one). Of **31** such series, **31** classified `every`, **0** violations.
+
+### Fingerprint churn — structural, not 20 behaviour changes
+
+`list_tasks`, `gtd_project_plan` and `gtd_item_stamp_tokens` changed shape. The other **17** are
+task-write tools that share the `Task` output model, which gained two fields.
+
 ## v6.7.0 — the Definition-of-Ready axes get their own key (`advisory_axes`)
 
 Minor. **One fingerprint churns** (`gtd_item_create`). No new tag, no new `ErrorCode`, no

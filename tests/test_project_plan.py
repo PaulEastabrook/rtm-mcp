@@ -28,6 +28,7 @@ def _t(
     notes=None,
     deleted=None,
     is_repeating=False,
+    repeat_kind=None,
 ):
     """Build a task dict in the shape parse_tasks_response emits."""
     return {
@@ -46,6 +47,7 @@ def _t(
         "url": url,
         "parent_task_id": parent or None,
         "is_repeating": is_repeating,
+        "repeat_kind": repeat_kind,
     }
 
 
@@ -199,6 +201,33 @@ class TestBuildEnvelope:
         assert env["header"]["project"]["is_repeating"] is True
         assert _row(env, "c1")["is_repeating"] is True
         assert _row(env, "c2")["is_repeating"] is False
+
+    def test_repeat_kind_travels_onto_the_header_and_every_row(self):
+        # The envelope carries WHICH kind, because `taskseries_id` beside it means different
+        # things per kind: durable for "every", re-keyed every occurrence for "after". A one-off
+        # reads None, and `is_repeating` is what distinguishes that from an unclassifiable rule.
+        parsed = [
+            _t(
+                PROJECT_ID,
+                parent=AREA_ID,
+                tags=["project"],
+                is_repeating=True,
+                repeat_kind="every",
+            ),
+            _t("c1", parent=PROJECT_ID, tags=["action"], is_repeating=True, repeat_kind="after"),
+            _t("c2", parent=PROJECT_ID, tags=["action"]),
+        ]
+        env = build_envelope(parsed, PROJECT_ID)
+        assert env["header"]["project"]["repeat_kind"] == "every"
+        assert _row(env, "c1")["repeat_kind"] == "after"
+        assert _row(env, "c2")["repeat_kind"] is None
+        assert _row(env, "c2")["is_repeating"] is False
+
+    def test_repeat_kind_defaults_none_on_a_one_off_plan(self):
+        # Additive: the pre-v6.8.0 plan reads None everywhere and behaves exactly as before.
+        env = build_envelope(_sample_parsed(), PROJECT_ID)
+        assert env["header"]["project"]["repeat_kind"] is None
+        assert all(r["repeat_kind"] is None for r in env["rows"])
 
     def test_template_child_token_default_empty(self):
         # Seed 3.1 resolve-references: a one-off plan carries template_child_id="" on every row

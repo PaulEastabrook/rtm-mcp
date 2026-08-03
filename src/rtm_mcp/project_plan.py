@@ -327,6 +327,12 @@ def build_envelope(
             # series id. The GTD side gates on `is_repeating` OR ≥2 open rows sharing a series.
             # Additive — a one-off project reads False/"" and behaves exactly as before.
             "is_repeating": bool(proj.get("is_repeating")) if proj else False,
+            # WHICH kind of recurrence — "every" | "after" | None. Load-bearing beside
+            # `taskseries_id`: for an "every" project that id is stable across occurrences and is
+            # a durable key; for an "after" one it re-keys every time, so it is not. `None` means
+            # not repeating, or a rule the parser could not classify (`is_repeating` separates
+            # those two). Additive to project-plan-seed/3.1.
+            "repeat_kind": (proj.get("repeat_kind") if proj else None),
             "taskseries_id": (proj.get("taskseries_id") or "") if proj else "",
         },
         "rowCount": len(children),
@@ -358,6 +364,8 @@ def build_envelope(
                 # `is_repeating` and groups occurrences by `taskseries_id`. snake_case to match
                 # that consumer's row contract exactly. Additive; a one-off row reads False/"".
                 "is_repeating": bool(c.get("is_repeating")),
+                # See header.project.repeat_kind — "every" | "after" | None, additive.
+                "repeat_kind": c.get("repeat_kind"),
                 "taskseries_id": c.get("taskseries_id") or "",
                 # Durable child-identity token (tmpl-child/1) for a repeating templated project —
                 # feeds the plan-graph `token_map` so token-space deps/pins resolve across

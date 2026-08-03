@@ -121,6 +121,60 @@ def priority_to_code(priority: str | int | None) -> str:
     return PRIORITY_INPUT_CODES.get(str(priority).lower(), "N")
 
 
+# RTM's `<rrule every="0|1">` attribute IS the recurrence-kind discriminator, and it is the ONLY
+# place the fact is available: MilkScript exposes a bare `isRecurring()`, `rtm.Recurrence` is a
+# write-only builder with no getter, and the search syntax has `isRepeating:true` but no
+# repeat-TYPE operator. Measured live 2026-08-03 (118 repeating series): the attribute arrives
+# through this server's JSON conversion as the STRING "1" or "0" on a dict that also carries the
+# rule text in "$t" — e.g. {"every": "1", "$t": "FREQ=WEEKLY;INTERVAL=1;WKST=MO"}.
+# `True`/`False` are deliberately absent and still covered: bool subclasses int, so `True == 1`
+# and `False == 0` — adding them is a literal duplicate (ruff flags it) rather than extra reach.
+_EVERY_TRUE: frozenset[object] = frozenset({"1", 1})
+_EVERY_FALSE: frozenset[object] = frozenset({"0", 0})
+
+
+def repeat_kind(rrule: Any) -> str | None:
+    """Classify an RTM `rrule` element as an "every" or an "after" recurrence.
+
+    The two kinds behave completely differently and the difference is invisible without this:
+
+    - **every** ("every 2 weeks") — ONE taskseries, MANY tasks; name/tags/notes shared, and
+      `taskseries_id` is **stable** across occurrences.
+    - **after** ("after 2 weeks") — a NEW taskseries per occurrence, properties copied. **Nothing
+      survives**: both `task_id` and `taskseries_id` re-key, so no RTM identifier of any kind
+      links one occurrence to the next.
+
+    Three-valued, and the third value is load-bearing:
+
+    - ``"every"`` / ``"after"`` — classified.
+    - ``None`` — either NOT repeating (no rule at all), or a rule this function could not
+      classify. Those are distinguished by ``is_repeating`` sitting beside it: ``None`` with
+      ``is_repeating`` False means "no rule"; ``None`` with ``is_repeating`` True means "a rule
+      I could not read". A consumer that must not guess needs both.
+
+    Deliberately NOT defaulted to ``"every"`` on an unreadable rule. A wrong ``"every"`` is
+    precisely the silent-wrong-identity failure this exists to prevent — a caller keying durable
+    state on `taskseries_id` would key it on an id that re-keys, and nothing would say so.
+
+    A free deductive cross-check, for callers that want one: **a taskseries holding >=2 tasks is
+    provably "every"**, since an `after` recurrence cannot produce two tasks in one series. It
+    cannot confirm a never-yet-recurred series, which stays unknown. Verified live: of 31 series
+    holding >=2 tasks, all 31 carried every="1" and none carried "0".
+    """
+    if not isinstance(rrule, dict):
+        # No rule at all, or a shape this function does not recognise. Either way it cannot be
+        # classified; `is_repeating` carries whether a rule was present.
+        return None
+
+    every = rrule.get("every")
+    if every in _EVERY_TRUE:
+        return "every"
+    if every in _EVERY_FALSE:
+        return "after"
+    # A rule with no readable `every` attribute — the fourth case. Unclassified, never guessed.
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
@@ -162,6 +216,11 @@ def format_task(
         "parent_task_id": task.get("parent_task_id") or None,
         "subtask_count": task.get("subtask_count", 0),
         "modified": task.get("modified") or None,
+        # Recurrence, as a PAIR. `repeat_kind` is meaningless alone: its `None` covers both "not
+        # repeating" and "repeating, kind unreadable", and only `is_repeating` beside it separates
+        # the two. So this formatter — which carried neither before — gains both or neither.
+        "is_repeating": bool(task.get("is_repeating")),
+        "repeat_kind": task.get("repeat_kind"),
     }
 
     if include_ids:
@@ -228,7 +287,13 @@ def parse_tasks_response(result: dict[str, Any]) -> list[dict[str, Any]]:
             # series has none. This is a series-level fact — every open occurrence's task
             # instance inherits it. Surfaced so the GTD side can detect a "repeating templated
             # project" (its parent series recurs) without a second read.
-            is_repeating = bool(ts.get("rrule"))
+            rrule = ts.get("rrule")
+            is_repeating = bool(rrule)
+            # ...and WHICH KIND of recurrence, which `is_repeating` alone cannot say. The kind
+            # decides whether `taskseries_id` is a durable identity ("every") or re-keys on every
+            # occurrence ("after"), so a consumer keying durable state on it must be able to tell.
+            # See repeat_kind() for the three-valued contract.
+            kind = repeat_kind(rrule)
 
             for t in task_data:
                 tasks.append(
@@ -252,6 +317,7 @@ def parse_tasks_response(result: dict[str, Any]) -> list[dict[str, Any]]:
                         "location_id": ts.get("location_id") or None,
                         "parent_task_id": parent_task_id,
                         "is_repeating": is_repeating,
+                        "repeat_kind": kind,
                         "created": ts.get("created") or None,
                         "modified": ts.get("modified") or None,
                     }

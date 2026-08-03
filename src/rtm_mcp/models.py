@@ -132,6 +132,8 @@ class Task(BaseModel):
     parent_task_id: str | None
     subtask_count: int
     modified: str | None
+    is_repeating: bool
+    repeat_kind: str | None  # "every" | "after" | None (not repeating, or unclassifiable)
     id: str
     taskseries_id: str
     list_id: str
@@ -359,6 +361,7 @@ class PlanHeaderProject(BaseModel):
     files: list[str]
     redacted: bool
     is_repeating: bool
+    repeat_kind: str | None  # "every" | "after" | None
     taskseries_id: str
 
 
@@ -390,6 +393,7 @@ class PlanRow(BaseModel):
     start: str
     url: str
     is_repeating: bool
+    repeat_kind: str | None  # "every" | "after" | None
     taskseries_id: str
     template_child_id: str
 
@@ -541,6 +545,7 @@ class StampProject(BaseModel):
     project_id: str
     project_name: str
     is_repeating: bool
+    repeat_kind: str | None  # "every" | "after" | None
     stamped: list[dict[str, Any]]
     dep_lines: list[dict[str, Any]]
     skipped_reason: str | None = None

@@ -8,6 +8,7 @@ from rtm_mcp.parsers import (
     parse_lists_response,
     parse_tasks_response,
     priority_to_code,
+    repeat_kind,
 )
 from rtm_mcp.response_builder import (
     build_response,
@@ -202,6 +203,63 @@ class TestPriorityConversion:
         assert priority_to_code(None) == "N"
 
 
+class TestRepeatKind:
+    """The recurrence-kind classifier.
+
+    RTM's `<rrule every="0|1">` attribute is the ONLY place this fact is available — MilkScript
+    exposes a bare `isRecurring()`, `rtm.Recurrence` is a write-only builder, and the search
+    syntax has `isRepeating:true` but no repeat-TYPE operator. Until v6.8.0 the whole element was
+    collapsed to a boolean one line into the parser and the attribute was discarded.
+    """
+
+    def test_every_one_is_an_every_repeat(self) -> None:
+        """The live shape: `every` arrives as the STRING "1" alongside the rule text in `$t`."""
+        assert repeat_kind({"every": "1", "$t": "FREQ=WEEKLY;INTERVAL=1;WKST=MO"}) == "every"
+
+    def test_every_zero_is_an_after_repeat(self) -> None:
+        """`every="0"` is an after-type repeat — 27 of these were live on 2026-08-03."""
+        assert repeat_kind({"every": "0", "$t": "FREQ=YEARLY;INTERVAL=1;WKST=MO"}) == "after"
+
+    def test_no_rule_is_none(self) -> None:
+        """A one-off series has no rrule at all."""
+        assert repeat_kind(None) is None
+
+    def test_a_rule_with_no_readable_every_is_unclassified_never_guessed(self) -> None:
+        """The fourth case, and the one that must NOT default to "every".
+
+        A wrong "every" is exactly the silent-wrong-identity failure this exists to prevent: a
+        caller keying durable state on `taskseries_id` would key it on an id that re-keys, and
+        nothing would say so. Unreadable must read as unreadable.
+        """
+        assert repeat_kind({"$t": "FREQ=WEEKLY;INTERVAL=1"}) is None
+        assert repeat_kind({"every": "yes"}) is None
+        assert repeat_kind({"every": None}) is None
+        # A shape this function does not recognise at all is still not a guess.
+        assert repeat_kind("FREQ=WEEKLY") is None
+
+    def test_tolerates_a_non_string_every(self) -> None:
+        """The attribute is a string on the wire, but the classifier must not hinge on that.
+
+        If the JSON conversion ever coerces it, `1`/`True` must still read "every" rather than
+        silently falling through to the unclassified branch and stranding every repeating item.
+        """
+        assert repeat_kind({"every": 1}) == "every"
+        assert repeat_kind({"every": True}) == "every"
+        assert repeat_kind({"every": 0}) == "after"
+        assert repeat_kind({"every": False}) == "after"
+
+    def test_the_deductive_cross_check_holds(self) -> None:
+        """A taskseries holding >=2 tasks is provably "every" — an `after` repeat cannot make one.
+
+        Free from the same read, and it can never wrongly bless an `after` series. Asserted here
+        against the live census (2026-08-03): of 31 series holding >=2 tasks, all 31 carried
+        every="1" and none carried "0". A series that has not yet recurred stays unknown, which
+        is why this is a consistency check and not the primary signal.
+        """
+        multi_task_series = {"every": "1", "$t": "FREQ=MONTHLY;INTERVAL=1;WKST=MO"}
+        assert repeat_kind(multi_task_series) == "every"
+
+
 class TestParseTasksResponse:
     """Test task response parsing."""
 
@@ -254,6 +312,56 @@ class TestParseTasksResponse:
         tasks = parse_tasks_response(result)
         assert tasks[0]["is_repeating"] is True
         assert tasks[1]["is_repeating"] is False
+
+    def test_parse_repeat_kind_travels_with_is_repeating(self) -> None:
+        """The parsed task carries the recurrence KIND, not only that one exists.
+
+        Both live shapes, taken verbatim from the 2026-08-03 account census: `every="1"` is an
+        every-type repeat (one series, many tasks, stable taskseries_id) and `every="0"` an
+        after-type (a new series per occurrence, both ids re-keyed).
+        """
+        result = {
+            "stat": "ok",
+            "tasks": {
+                "list": [
+                    {
+                        "id": "1",
+                        "taskseries": [
+                            {
+                                "id": "10",
+                                "name": "Weekly GTD review",
+                                "tags": [],
+                                "notes": [],
+                                "rrule": {"every": "1", "$t": "FREQ=WEEKLY;INTERVAL=1;WKST=MO"},
+                                "task": {"id": "100", "priority": "N"},
+                            },
+                            {
+                                "id": "20",
+                                "name": "z4 car insurance",
+                                "tags": [],
+                                "notes": [],
+                                "rrule": {"every": "0", "$t": "FREQ=YEARLY;INTERVAL=1;WKST=MO"},
+                                "task": {"id": "200", "priority": "N"},
+                            },
+                            {
+                                "id": "30",
+                                "name": "One-off",
+                                "tags": [],
+                                "notes": [],
+                                "task": {"id": "300", "priority": "N"},
+                            },
+                        ],
+                    }
+                ]
+            },
+        }
+        by_id = {t["id"]: t for t in parse_tasks_response(result)}
+
+        assert by_id["100"]["repeat_kind"] == "every"
+        assert by_id["200"]["repeat_kind"] == "after"
+        # Not repeating at all — kind is None, and `is_repeating` is what says which None this is.
+        assert by_id["300"]["repeat_kind"] is None
+        assert by_id["300"]["is_repeating"] is False
 
     def test_parse_empty_response(self) -> None:
         """Test parsing empty response."""
@@ -662,6 +770,31 @@ class TestFormatTask:
         assert formatted["name"] == "Test Task"
         assert formatted["priority"] == "high"
         assert formatted["id"] == "123"
+
+    def test_format_task_carries_the_recurrence_pair(self) -> None:
+        """`list_tasks` surfaces BOTH recurrence fields, because neither is usable alone.
+
+        `repeat_kind` alone is undecodable — its None covers both "not repeating" and "repeating,
+        kind unreadable" — so this formatter, which carried neither before v6.8.0, gains both.
+        """
+        base = {"id": "1", "taskseries_id": "10", "list_id": "100", "name": "T", "notes": []}
+
+        every = format_task({**base, "is_repeating": True, "repeat_kind": "every"})
+        assert every["is_repeating"] is True
+        assert every["repeat_kind"] == "every"
+
+        after = format_task({**base, "is_repeating": True, "repeat_kind": "after"})
+        assert after["repeat_kind"] == "after"
+
+        # A rule that could not be classified: kind None but is_repeating still TRUE, which is
+        # what separates it from a plain one-off. Collapsing these two is the failure mode.
+        unknown = format_task({**base, "is_repeating": True, "repeat_kind": None})
+        assert unknown["repeat_kind"] is None
+        assert unknown["is_repeating"] is True
+
+        one_off = format_task(base)
+        assert one_off["is_repeating"] is False
+        assert one_off["repeat_kind"] is None
 
     def test_format_task_subtask_count(self) -> None:
         """Test that subtask_count is included in formatted output."""

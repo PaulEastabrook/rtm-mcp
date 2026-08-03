@@ -131,7 +131,17 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
             {"tasks": [...], "count": N} with optional analysis (priority breakdown,
             overdue count, estimate totals). Each task includes id, taskseries_id,
             list_id (needed by write tools), name, due, priority, tags, parent_task_id,
-            and subtask_count (number of children in the current result set).
+            subtask_count (number of children in the current result set), and the
+            recurrence pair is_repeating + repeat_kind ("every"|"after"|null).
+
+        Recurrence kind — read both fields, never repeat_kind alone:
+            "every" ("every 2 weeks") is ONE taskseries with MANY tasks, so
+            taskseries_id is STABLE across occurrences and is a durable key.
+            "after" ("after 2 weeks") mints a NEW taskseries per occurrence, so
+            BOTH ids re-key and nothing links one occurrence to the next — do not
+            key durable state on a taskseries_id when repeat_kind is "after".
+            null means either not repeating (is_repeating false) or a rule that
+            could not be classified (is_repeating true) — it is never a guess.
 
         Caveat — task order is NOT user-visible display order:
             The order returned by RTM's `rtm.tasks.getList` API is not the order
