@@ -177,9 +177,11 @@ inventory, `CHANGELOG.md`, `README.md`) · § 10 versioning (minor ×2) · § 12
 - **Consumer (gtd / board artifacts) — no action.** Both changes are additive at runtime. A caller
   that ignores `advisory` and `advisory_axes` is unaffected.
 - **Paul — one action:** restart the MCP server on v6.7.0.
-- **Open, minor, not a contract gap:** `tool_help.RECEIPT_FIELD_DOC["advisory"]` documents the
-  bare-call and leaked-markup causes but not the name-length producer. Tier-2 documentation only —
-  the tier-1 descriptions and the docstrings are correct.
+- **Closed after the merge, in `main`:** `tool_help.RECEIPT_CONTRACT["advisory"]` described only
+  the bare-call producer — it was never updated for v6.1.0's leaked markup either, so for two
+  releases tier 2 told a caller the field means one thing when it could mean three. Rewritten to
+  name all three, with two guards asserted on the projection a caller receives (there were none,
+  which is how it went stale). Data-only: no fingerprint churn, no version bump.
 - **Out of scope by design, and stays there:** the slug, the length cap, the path budget and the
   folder shape are all agent-memory's. If a future change here appears to need any of them, the
   scope is wrong.

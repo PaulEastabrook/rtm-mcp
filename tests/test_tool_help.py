@@ -323,3 +323,32 @@ class TestGuidedRejection:
             result = await c.call_tool("rtm_tool_help", arity)
         assert "data" in result.structured_content
         assert "metadata" in result.structured_content
+
+
+class TestTheReceiptContractNamesEveryAdvisoryProducer:
+    """`RECEIPT_CONTRACT["advisory"]` is tier 2 — the place with no byte budget, and therefore
+    the only surface that can describe the field in full.
+
+    **It went stale twice before anything asserted on it.** It was written for the single
+    bare-call producer, and neither v6.1.0 (leaked markup) nor v6.6.0 (name length) updated it,
+    so for two releases it told a caller the field means one thing when it could mean three. A
+    reader acting on it would have gone looking for a stripped optional on a call that had none.
+
+    Asserted on the CONTRACT a caller actually receives, not on the module constant, so the
+    projection is what is pinned.
+    """
+
+    async def test_it_describes_all_three_producers(self):
+        view = next(v for v in await _views() if v["name"] == "gtd_item_create")
+        advisory = build_contract(view)["receipt"]["advisory"]
+        for producer, marker in (
+            ("bare call", "none of this tool's optional parameters"),
+            ("leaked markup", "<parameter name="),
+            ("name length", "60 characters"),
+        ):
+            assert marker in advisory, f"the {producer} producer is undocumented in tier 2"
+
+    async def test_it_says_the_field_never_blocks(self):
+        # The hard invariant across all three producers — a caller must not treat it as a failure.
+        view = next(v for v in await _views() if v["name"] == "gtd_item_create")
+        assert "never blocking" in build_contract(view)["receipt"]["advisory"]
