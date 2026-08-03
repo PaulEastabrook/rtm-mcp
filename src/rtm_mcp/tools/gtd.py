@@ -682,6 +682,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             Returns (on success): {"header": {...}, "rows": [...]} — the `project-plan-seed/3`
                 envelope (project metadata + own notes in the header; one row per descendant with
                 priority, dates, tags, permalink, deps, filed-artefact paths, and full note bodies).
+                Header + rows carry repeat_kind ("every"|"after"|null): taskseries_id is
+                durable for "every", re-keyed per occurrence for "after".
             Returns (on ambiguity): {"candidates": [{id, name, list_id}, ...]} — call again with a
                 project_id from the list.
             Returns (on miss / bad input): {"error": {"code": "project_not_found" | "missing_parameter",
@@ -1969,7 +1971,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     templated project in the portfolio (incomplete #project, not #test, is_repeating).
                 dry_run: compute and return the plan (what would be stamped) WITHOUT writing anything.
 
-            Returns: {"projects": [{project_id, project_name, is_repeating, stamped: [{child_id, slug}],
+            Returns: {"projects": [{project_id, project_name, is_repeating,
+                repeat_kind ("every"|"after"|null), stamped: [{child_id, slug}],
                 dep_lines: [{child_id, note_id, upstream_slug}], skipped_reason ("not_repeating"|null)}],
                 "dry_run", "applied": [...], "errors": [...], "message": "..."}.
             Returns (on a bad explicit project_id): {"error": {"code": "project_not_found",
@@ -2028,6 +2031,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 "project_id": pid,
                 "project_name": proj.get("name") or "",
                 "is_repeating": bool(proj.get("is_repeating")),
+                # "every" | "after" | None. Stamping propagates because RTM copies a child's notes
+                # onto each new occurrence — which is an "every"-series behaviour. Reported so a
+                # caller can see WHICH kind it stamped rather than inferring it.
+                "repeat_kind": proj.get("repeat_kind"),
                 "stamped": [],
                 "dep_lines": [],
                 "skipped_reason": None,
