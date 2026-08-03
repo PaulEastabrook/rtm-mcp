@@ -134,6 +134,8 @@ class Task(BaseModel):
     modified: str | None
     is_repeating: bool
     repeat_kind: str | None  # "every" | "after" | None (not repeating, or unclassifiable)
+    entity_id: str  # the durable GTD handle — never empty (parsers.entity_handle)
+    recurring: bool  # one commitment with many instances; True only for repeat_kind "every"
     id: str
     taskseries_id: str
     list_id: str
@@ -142,6 +144,29 @@ class Task(BaseModel):
 class TaskListResult(BaseModel):
     tasks: list[Task]
     count: int
+
+
+class Occurrence(BaseModel):
+    """One task instance under a taskseries (list_task_occurrences)."""
+
+    task_id: str
+    due: str | None
+    completed: str | None
+    current: bool  # open — not completed. NOT singular: a series can hold several at once.
+
+
+class TaskOccurrencesResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    taskseries_id: str
+    list_id: str
+    name: str
+    is_repeating: bool
+    repeat_kind: str | None  # "every" | "after" | None
+    entity_id: str
+    recurring: bool
+    count: int
+    current_count: int
+    occurrences: list[Occurrence]
 
 
 class TaskWriteResult(BaseModel):
@@ -1730,6 +1755,7 @@ def _write_envelope_schema(name: str, *success: type[BaseModel]) -> dict[str, An
 
 # Tasks
 LIST_TASKS_OUTPUT = _envelope_schema("ListTasksEnvelope", TaskListResult)
+TASK_OCCURRENCES_OUTPUT = _envelope_schema("TaskOccurrencesEnvelope", TaskOccurrencesResult)
 TASK_WRITE_OUTPUT = _envelope_schema("TaskWriteEnvelope", TaskWriteResult)
 DELETE_TASK_OUTPUT = _envelope_schema("DeleteTaskEnvelope", MessageResult)
 

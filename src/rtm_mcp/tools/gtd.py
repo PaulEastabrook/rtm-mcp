@@ -660,30 +660,29 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         """GTD — return a whole project plan (the project + all its descendant items + every
             note, with full bodies) as the `project-plan-seed` envelope consumed by the GTD canvas.
 
-            Read-only. Collapses the canvas read path from ~1+N calls to ONE signed
-            rtm.tasks.getList (plus a session-cached rtm.settings.getList for the account timezone):
-            it fetches the tasks once, reconstructs the project→children tree via parent_task_id, and
-            emits the comprehensive envelope — the RTM token never leaves the server. Dates are
-            localised to the account timezone (RTM returns UTC). The tool issues no write and creates
-            no timeline.
+            Read-only — no write, no timeline. Collapses the canvas read path from ~1+N calls
+            to ONE signed rtm.tasks.getList (plus a session-cached rtm.settings.getList): it
+            reconstructs the project→children tree via parent_task_id and emits the whole
+            envelope, with dates localised to the account timezone (RTM returns UTC).
 
             Identify the project by EXACTLY ONE of:
                 project_id: the project (parent) task id. Preferred when known.
                 project_name: resolved server-side to an incomplete, `project`-tagged, non-`test`
-                    task. If the name matches more than one, a candidate list is returned (the tool
-                    does not guess).
+                    task. A name matching more than one returns candidates (never a guess).
 
             Args:
-                list_id: optional — scope the fetch to one list (smaller/faster). When omitted, the
+                list_id: optional — scope the fetch to one list (smaller/faster). Omitted, the
                     whole account is read so the project can be found anywhere.
-                include_completed: include completed children (default True — the canvas needs the
-                    history rows). Set False for only-active items.
+                include_completed: include completed children (default True — the canvas needs
+                    the history rows). Set False for only-active items.
 
             Returns (on success): {"header": {...}, "rows": [...]} — the `project-plan-seed/3`
                 envelope (project metadata + own notes in the header; one row per descendant with
                 priority, dates, tags, permalink, deps, filed-artefact paths, and full note bodies).
-                Header + rows carry repeat_kind ("every"|"after"|null): taskseries_id is
-                durable for "every", re-keyed per occurrence for "after".
+                Header + rows carry entity_id + recurring — the durable GTD handle, never
+                empty. Read those, not the raw ids: entity_id is the taskseries_id for an
+                "every" repeat, the task_id otherwise. repeat_kind + taskseries_id remain
+                for consumers needing RTM mechanics (the gtd series_guard).
             Returns (on ambiguity): {"candidates": [{id, name, list_id}, ...]} — call again with a
                 project_id from the list.
             Returns (on miss / bad input): {"error": {"code": "project_not_found" | "missing_parameter",
@@ -797,7 +796,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     honest `nc` (default True; byte-compatible with build_canvas --emit html-lean).
                 note_cap: max notes kept per item when lean (default 3).
 
-            Returns (on success): {"mode": "existing", "frame": {...}, "seed": [...]} — the canvas seed.
+            Returns (on success): {"mode": "existing", "frame": {...}, "seed": [...]} — the canvas
+                seed. The frame and every seed item carry entity_id + recurring, the durable GTD
+                handle (never empty) — resolve an item to its vault folder from those, not from
+                any raw RTM id.
             Returns (on ambiguity): {"candidates": [{id, name, list_id}, ...]}.
             Returns (on miss / bad input): {"error": {"code": "project_not_found" | "missing_parameter",
         "message": "<actionable prose>", "rtm_code": null}} — branch on `code`, never the prose.
@@ -921,7 +923,8 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 #hold stays excluded regardless).
 
         Returns (on success): an object {projects, foci, actions} where
-            projects: [{life, focus, focus_id, project, project_id, priority ("1"|"2"|"3"|""),
+            projects: [{life, focus, focus_id, project, project_id, entity_id, recurring,
+                priority ("1"|"2"|"3"|""),
                 open_count (incomplete children), blocked_count (children blocked by an open
                 DEPENDS-ON upstream), next_tickle (earliest open due date, incl. overdue, or ""),
                 updated (project modified date), ai_quick / ai_now / ai_later (incomplete
@@ -930,10 +933,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 items), waiting_count (incomplete #waiting_for items — the Focus pill's waiting-for
                 segment), redacted (bool, the project's #redacted viewing-curtain state)}], sorted by
                 life → focus → project;
-            foci: [{focus_id, focus, life, redacted (bool, the area's #redacted state — the
+            foci: [{focus_id, focus, entity_id, recurring, life, redacted (bool, the area's
+                #redacted state — the
                 navigator collapses a redacted focus to one "Redacted Area of Focus" row)}], sorted
                 by life → focus;
-            actions: [{action_id, name, project_id, project, focus, life, type
+            actions: [{action_id, name, entity_id, recurring, project_id, project, focus, life, type
                 ("action"|"waiting_for"|"calendar"), due (YYYY-MM-DD localised, or ""), priority
                 ("1"|"2"|"3"|""), blocked (bool), estimate (int minutes or null), contexts (list of
                 action-context tags, may be []), energy ("high"|"low"|null), exec
@@ -941,6 +945,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 tallies), redacted (bool — the action's own #redacted OR a cascade from a redacted
                 project / focus; a shielded row's estimate/energy/exec are null and contexts [])}],
                 sorted by life → focus → project → name.
+            entity_id + recurring on all three collections are the durable GTD handle: ONE id with
+            ONE meaning, never empty. entity_id is the taskseries_id for an "every" repeat (stable
+            across occurrences) and the item's own task_id otherwise; recurring is true only for
+            "every" — an "after" occurrence is an independent one-off.
         Returns (on empty portfolio): {"projects": [], "foci": [], "actions": []}.
         """
         client: RTMClient = await get_client()

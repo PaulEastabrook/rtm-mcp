@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, PropertyMock
 
 from rtm_mcp.parsers import (
+    entity_handle,
     format_list,
     format_task,
     parse_lists_response,
@@ -248,16 +249,117 @@ class TestRepeatKind:
         assert repeat_kind({"every": 0}) == "after"
         assert repeat_kind({"every": False}) == "after"
 
-    def test_the_deductive_cross_check_holds(self) -> None:
-        """A taskseries holding >=2 tasks is provably "every" — an `after` repeat cannot make one.
+    def test_the_deductive_cross_check_is_retracted(self) -> None:
+        """v6.8.0's "a series with >=2 tasks is provably every" is FALSE. Pinned by counter-example.
 
-        Free from the same read, and it can never wrongly bless an `after` series. Asserted here
-        against the live census (2026-08-03): of 31 series holding >=2 tasks, all 31 carried
-        every="1" and none carried "0". A series that has not yet recurred stays unknown, which
-        is why this is a consistency check and not the primary signal.
+        The claim was verified over `status:incomplete` (31 series) and generalised to the whole
+        account. Over all 44,730 tasks (2026-08-03) **11 `after` series hold >=2 tasks**, the
+        largest 86 deep — `226592019` "Taken protein shake?", every task carrying `every="0"`.
+        An `after` series accumulates its completed occurrences exactly as an `every` one does;
+        what re-keys is the series a NEW occurrence lands in, not the history already recorded.
+        (The reason the subset held: an `after` series has at most ONE open occurrence, because
+        the next is minted only on completion.)
+
+        The test it replaces asserted `repeat_kind({"every": "1"}) == "every"` and called that
+        the cross-check — it could not have failed whatever the live data said, which is how a
+        false claim shipped with a green suite. This one uses the real counter-example.
         """
-        multi_task_series = {"every": "1", "$t": "FREQ=MONTHLY;INTERVAL=1;WKST=MO"}
-        assert repeat_kind(multi_task_series) == "every"
+        # The live shape from series 226592019 — 86 tasks in ONE series, and it is NOT "every".
+        after_series_with_86_tasks = {"every": "0", "$t": "FREQ=DAILY;INTERVAL=1;WKST=MO"}
+        assert repeat_kind(after_series_with_86_tasks) == "after"
+
+    def test_counting_occurrences_says_nothing_in_the_other_direction_either(self) -> None:
+        """A series with many tasks may not repeat AT ALL — 325 live ones do exactly that.
+
+        Deleting a recurrence rule leaves its occurrence history behind: series `147643653`
+        ("Weekly GTD review") holds 31 tasks and carries no rrule. So neither `is_repeating` nor
+        the kind can be inferred from a count in either direction, and `rrule/@every` is the only
+        discriminator.
+        """
+        assert repeat_kind(None) is None  # 31 tasks, no rule — not repeating, kind unknowable
+
+
+class TestEntityHandle:
+    """The durable GTD entity handle — ONE id with ONE meaning (Piece 1, v6.9.0).
+
+    Exists so a consumer never chooses between `task_id` and `taskseries_id`, and never learns
+    RTM has two recurrence kinds. The mixup is measured: on 2026-08-02 six of 37 rename ids were
+    `taskseries_id`s passed as `task_id`s.
+    """
+
+    def test_a_one_off_is_its_own_task_id(self) -> None:
+        assert entity_handle(task_id="1195027990", taskseries_id="605236582", repeat_kind=None) == (
+            "1195027990",
+            False,
+        )
+
+    def test_an_every_repeat_is_its_taskseries_id(self) -> None:
+        """Live: series 237677328 "Weekly GTD review", 17 occurrences, one stable series id."""
+        assert entity_handle(
+            task_id="1219062151", taskseries_id="237677328", repeat_kind="every"
+        ) == ("237677328", True)
+
+    def test_an_after_occurrence_is_its_own_task_id_and_is_NOT_recurring(self) -> None:
+        """Paul, 2026-08-03: an `after` occurrence is an independent one-off, not a recurrence.
+
+        RTM mints a new taskseries per `after` occurrence sharing only a name — its own docs say
+        such a task "isn't tied to previous tasks" — so its `task_id` is a perfectly good durable
+        handle and there is no refusal case. Live example: series 600211106.
+        """
+        assert entity_handle(
+            task_id="1219999999", taskseries_id="600211106", repeat_kind="after"
+        ) == ("1219999999", False)
+
+    def test_an_unclassifiable_rule_is_not_treated_as_recurring(self) -> None:
+        """The fourth `repeat_kind` case. Only "every" earns a series handle — nothing weaker."""
+        assert entity_handle(task_id="900", taskseries_id="90", repeat_kind=None) == ("900", False)
+        assert entity_handle(task_id="900", taskseries_id="90", repeat_kind="") == ("900", False)
+
+    def test_entity_id_is_never_absent(self) -> None:
+        """The guarantee the vault depends on: a non-empty string in every case, never null.
+
+        A consumer never has to interpret an absent handle, which is why the refusal case the
+        first draft of this design carried was dropped.
+        """
+        for kind in ("every", "after", None, "nonsense"):
+            for series in ("77", "", None):
+                eid, _ = entity_handle(task_id="1234", taskseries_id=series, repeat_kind=kind)
+                assert isinstance(eid, str) and eid, (kind, series)
+
+    def test_recurring_is_a_real_bool_never_a_truthy_string(self) -> None:
+        """The vault's path builder rejects a non-bool — a truthy "false" picks the wrong shape."""
+        for kind in ("every", "after", None):
+            _, recurring = entity_handle(task_id="1", taskseries_id="2", repeat_kind=kind)
+            assert recurring is True or recurring is False
+
+    def test_recurring_is_true_iff_entity_id_is_the_series_id(self) -> None:
+        """The invariant the degradation guard buys: the pair can never disagree.
+
+        `recurring=True` alongside a task_id would be the silent-wrong-identity failure — a
+        caller keying durable state on an id that re-keys per occurrence, with nothing saying so.
+        """
+        for kind in ("every", "after", None):
+            for series in ("237677328", ""):
+                eid, recurring = entity_handle(
+                    task_id="1219062151", taskseries_id=series, repeat_kind=kind
+                )
+                assert recurring == (eid == series and bool(series))
+
+    def test_an_every_with_no_series_id_degrades_to_not_recurring(self) -> None:
+        """Structurally unreachable (the rrule hangs on the very series whose id this is), but
+        the direction is chosen deliberately. `recurring=False` on a truly recurring item costs
+        a folder per occurrence — ugly and recoverable. `recurring=True` on a re-keying id is
+        the failure this field exists to prevent."""
+        assert entity_handle(task_id="1219062151", taskseries_id="", repeat_kind="every") == (
+            "1219062151",
+            False,
+        )
+
+    def test_it_is_never_re_derived_from_the_presence_of_an_id(self) -> None:
+        """Every task has a taskseries_id, so `recurring = bool(taskseries_id)` would be True for
+        the entire account. `repeat_kind` is the discriminator; the id presence is only a guard."""
+        _, recurring = entity_handle(task_id="1", taskseries_id="99999", repeat_kind=None)
+        assert recurring is False
 
 
 class TestParseTasksResponse:
@@ -795,6 +897,32 @@ class TestFormatTask:
         one_off = format_task(base)
         assert one_off["is_repeating"] is False
         assert one_off["repeat_kind"] is None
+
+    def test_format_task_carries_the_entity_handle(self) -> None:
+        """The generic tier surfaces `entity_id`/`recurring` too, so the transition off it is free.
+
+        The raw ids stay beside them — this tier IS the escape hatch and still speaks RTM. It is
+        the `gtd_*` layer that wraps the mechanics away.
+        """
+        base = {"id": "1", "taskseries_id": "10", "list_id": "100", "name": "T", "notes": []}
+
+        every = format_task({**base, "is_repeating": True, "repeat_kind": "every"})
+        assert every["entity_id"] == "10"  # the stable series id
+        assert every["recurring"] is True
+        assert every["id"] == "1" and every["taskseries_id"] == "10"  # raw ids retained
+
+        after = format_task({**base, "is_repeating": True, "repeat_kind": "after"})
+        assert after["entity_id"] == "1"  # its own task id — an independent one-off
+        assert after["recurring"] is False
+
+        # An unreadable rule must not be promoted to a series handle.
+        unknown = format_task({**base, "is_repeating": True, "repeat_kind": None})
+        assert unknown["entity_id"] == "1"
+        assert unknown["recurring"] is False
+
+        one_off = format_task(base)
+        assert one_off["entity_id"] == "1"
+        assert one_off["recurring"] is False
 
     def test_format_task_subtask_count(self) -> None:
         """Test that subtask_count is included in formatted output."""

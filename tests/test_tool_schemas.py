@@ -51,6 +51,7 @@ READ_ONLY_TOOLS = {
     # the server's own advertised schema, so it reaches RTM not at all.
     "rtm_tool_help",
     "list_tasks",
+    "list_task_occurrences",
     "get_lists",
     "get_tags",
     "get_locations",

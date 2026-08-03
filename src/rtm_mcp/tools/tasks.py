@@ -12,11 +12,14 @@ from ..lookup import find_task, resolve_list_id, resolve_task_ids
 from ..models import (
     DELETE_TASK_OUTPUT,
     LIST_TASKS_OUTPUT,
+    TASK_OCCURRENCES_OUTPUT,
     TASK_WRITE_OUTPUT,
 )
 from ..parsers import (
     PRIORITY_INPUT_CODES,
+    _convert_rtm_date,
     analyze_tasks,
+    entity_handle,
     format_task,
     parse_lists_response,
     parse_tasks_response,
@@ -245,6 +248,140 @@ def register_task_tools(mcp: Any, get_client: Any) -> None:
                 "count": len(tasks),
             },
             analysis=analyze_tasks(tasks, timezone=timezone) if tasks else None,
+        )
+
+    @mcp.tool(annotations=READ_ONLY_ANNOTATIONS, output_schema=TASK_OCCURRENCES_OUTPUT)
+    async def list_task_occurrences(
+        ctx: Context,
+        taskseries_id: Annotated[
+            str,
+            required_string("The taskseries whose occurrences to list."),
+        ],
+        list_id: Annotated[
+            str | None,
+            optional_string(
+                "The list the series lives in. Strongly recommended: it scopes the read and "
+                "cuts its size by roughly 3x. Every read that gave you a taskseries_id also "
+                "gave you a list_id."
+            ),
+        ] = None,
+        include_completed: Annotated[
+            bool,
+            Field(
+                description="Include completed occurrences (default: True — the history IS "
+                "the point). False reads only the open ones, which is far cheaper."
+            ),
+        ] = True,
+    ) -> dict[str, Any]:
+        """RTM — list every task occurrence RTM holds under one taskseries.
+
+        Read-only: ONE `rtm.tasks.getList`, no timeline, no write. RTM's search syntax has
+        no taskseries operator, so the series is matched client-side — hence `list_id`.
+
+        RTM plumbing, deliberately generic-tier: for tooling (migration, backfill,
+        reconciliation), not a GTD workflow. To identify a GTD entity read `entity_id`
+        off a `gtd_*` tool instead — that needs no occurrence list.
+
+        Two traps, both measured live 2026-08-03:
+            `current` is NOT singular — an "every" series can hold several open at once
+            (`File company accounts` has two, `Weekly GTD review` two of its 17).
+            Occurrence COUNT says nothing about the kind, either way: 11 "after" series
+            hold 2+ (one 86 deep), and 325 non-repeating series do too — deleting a
+            repeat rule leaves its history. Read `repeat_kind`.
+
+        Args:
+            taskseries_id: the series to enumerate.
+            list_id: scope the read to one list. Strongly recommended — the
+                completed-inclusive read measures 44,730 tasks account-wide vs 15,596
+                for one list. Any read giving you a taskseries_id also gives a list_id.
+            include_completed: include completed occurrences (default True; False reads
+                only open ones — 1,162 account-wide, much cheaper).
+
+        Returns (on success): {taskseries_id, list_id, name, is_repeating,
+            repeat_kind ("every"|"after"|null), entity_id, recurring, count,
+            current_count, occurrences: [{task_id, due, completed, current}]} —
+            oldest-first by due, undated last, tie-broken by task_id. Deleted excluded.
+        Returns (on miss): {"error": {"code": "task_not_found", ...}} — no task under
+            that series in the scope read. A fully-completed series is invisible with
+            include_completed=False; one outside `list_id` is invisible too.
+
+        Errors: {"error": {"code": ..., "message": "<actionable prose>",
+            "rtm_code": ...}} — branch on `code`, NEVER parse the message.
+            Possible: task_not_found.
+        """
+        client: RTMClient = await get_client()
+        timezone = await client.get_timezone()
+
+        series_id = str(taskseries_id).strip()
+        call_params: dict[str, Any] = {
+            "filter": "status:incomplete OR status:completed"
+            if include_completed
+            else "status:incomplete"
+        }
+        if list_id:
+            call_params["list_id"] = list_id
+
+        result = await client.call("rtm.tasks.getList", **call_params)
+        # A deleted occurrence is not an occurrence any more — excluded, matching every other
+        # builder in this codebase (RTM soft-deletes, so the row can still come back).
+        rows = [
+            t
+            for t in parse_tasks_response(result)
+            if str(t.get("taskseries_id") or "") == series_id and not t.get("deleted")
+        ]
+
+        if not rows:
+            scope = f" in list {list_id}" if list_id else ""
+            hint = (
+                ""
+                if include_completed
+                else " It may hold only completed occurrences — retry with include_completed=True."
+            )
+            return build_response(
+                data=build_error(
+                    ErrorCode.TASK_NOT_FOUND,
+                    f"No task found under taskseries {series_id}{scope}.{hint} Use list_tasks "
+                    "to find the series and read its taskseries_id and list_id.",
+                    taskseries_id=series_id,
+                    list_id=list_id,
+                )
+            )
+
+        head = rows[0]
+        entity_id, recurring = entity_handle(
+            task_id=head.get("id"),
+            taskseries_id=series_id,
+            repeat_kind=head.get("repeat_kind"),
+        )
+
+        occurrences = [
+            {
+                "task_id": str(t.get("id") or ""),
+                "due": _convert_rtm_date(t["due"], timezone) if t.get("due") else None,
+                "completed": t.get("completed") or None,
+                # Open, not "the newest". A series can hold several at once (see the docstring).
+                "current": not t.get("completed"),
+            }
+            for t in rows
+        ]
+        # Oldest first. An undated occurrence has no position on that axis, so it sorts to the
+        # end rather than to the beginning where "" would otherwise put it; task_id breaks ties
+        # deterministically (RTM ids ascend with creation).
+        occurrences.sort(key=lambda o: (o["due"] is None, o["due"] or "", o["task_id"]))
+
+        return build_response(
+            data={
+                "taskseries_id": series_id,
+                "list_id": str(head.get("list_id") or ""),
+                "name": head.get("name") or "",
+                "is_repeating": bool(head.get("is_repeating")),
+                "repeat_kind": head.get("repeat_kind"),
+                "entity_id": entity_id,
+                "recurring": recurring,
+                "count": len(occurrences),
+                "current_count": sum(1 for o in occurrences if o["current"]),
+                "occurrences": occurrences,
+            }
         )
 
     @mcp.tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=TASK_WRITE_OUTPUT)

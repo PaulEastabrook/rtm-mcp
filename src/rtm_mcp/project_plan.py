@@ -25,7 +25,7 @@ from typing import Any
 
 from .config import RTM_WEB_BASE_URL
 from .error_codes import ErrorCode
-from .parsers import _convert_rtm_date, extract_note_body
+from .parsers import _convert_rtm_date, entity_handle, extract_note_body
 from .response_builder import build_error
 from .urls import build_task_url
 
@@ -301,6 +301,11 @@ def build_envelope(
                 break
 
     proj_list_id = proj.get("list_id") if proj else ""
+    proj_entity_id, proj_recurring = entity_handle(
+        task_id=project_id,
+        taskseries_id=proj.get("taskseries_id") if proj else "",
+        repeat_kind=proj.get("repeat_kind") if proj else None,
+    )
     proj_notes_raw = proj.get("notes", []) if proj else []
     # Project-level support material: filed-artefact paths from the PROJECT's own notes
     # (not a child action's) — the analog of row files[]. deps are unused at project level.
@@ -334,6 +339,13 @@ def build_envelope(
             # those two). Additive to project-plan-seed/3.1.
             "repeat_kind": (proj.get("repeat_kind") if proj else None),
             "taskseries_id": (proj.get("taskseries_id") or "") if proj else "",
+            # The durable GTD entity handle — ONE id, ONE meaning, never absent. The vault stores
+            # this and `recurring` and nothing else about identity; it never sees taskseries_id and
+            # never learns RTM has two recurrence kinds. See parsers.entity_handle for the rule.
+            # (The raw ids above stay for the gtd `series_guard`, which groups occurrences by
+            # series — a consumer that needs RTM mechanics still has them.)
+            "entity_id": proj_entity_id,
+            "recurring": proj_recurring,
         },
         "rowCount": len(children),
     }
@@ -342,6 +354,11 @@ def build_envelope(
     for c in children:
         notes_full = c.get("notes", [])
         deps, files, template_child_id = _extract_deps_and_files(notes_full)
+        row_entity_id, row_recurring = entity_handle(
+            task_id=c["id"],
+            taskseries_id=c.get("taskseries_id"),
+            repeat_kind=c.get("repeat_kind"),
+        )
         rows.append(
             {
                 "type": "row",
@@ -367,6 +384,9 @@ def build_envelope(
                 # See header.project.repeat_kind — "every" | "after" | None, additive.
                 "repeat_kind": c.get("repeat_kind"),
                 "taskseries_id": c.get("taskseries_id") or "",
+                # See header.project.entity_id — the durable GTD handle, never absent.
+                "entity_id": row_entity_id,
+                "recurring": row_recurring,
                 # Durable child-identity token (tmpl-child/1) for a repeating templated project —
                 # feeds the plan-graph `token_map` so token-space deps/pins resolve across
                 # recurrence. `""` for a one-off row (token_map empty → byte-unchanged).

@@ -23,11 +23,14 @@ def _t(
     notes=None,
     modified=None,
     estimate=None,
+    repeat_kind=None,
 ):
     """Task dict in the shape parse_tasks_response emits (subset used by build_index)."""
     return {
         "id": id,
         "taskseries_id": "ts" + id,
+        "is_repeating": repeat_kind is not None,
+        "repeat_kind": repeat_kind,
         "list_id": list_id,
         "name": name,
         "due": due,
@@ -143,6 +146,8 @@ class TestShape:
             "focus_id",
             "project",
             "project_id",
+            "entity_id",
+            "recurring",
             "priority",
             "open_count",
             "blocked_count",
@@ -458,7 +463,10 @@ class TestFoci:
 
     def test_field_set(self):
         foci = build_foci(_portfolio())
-        assert all(set(f) == {"focus_id", "focus", "life", "redacted"} for f in foci)
+        assert all(
+            set(f) == {"focus_id", "focus", "entity_id", "recurring", "life", "redacted"}
+            for f in foci
+        )
 
     def test_life_from_tag(self):
         by_id = {f["focus_id"]: f for f in build_foci(_portfolio())}
@@ -498,6 +506,8 @@ class TestActions:
         assert set(a) == {
             "action_id",
             "name",
+            "entity_id",
+            "recurring",
             "project_id",
             "project",
             "focus",
@@ -913,3 +923,77 @@ class TestCompletedRowGuards:
     def test_build_actions_excludes_completed_children(self):
         actions = build_actions(self._portfolio_with_completed_child())
         assert [a["action_id"] for a in actions] == ["201"]
+
+
+class TestEntityHandleOnTheIndex:
+    """`entity_id` / `recurring` on project, focus and action rows (Piece 1, v6.9.0).
+
+    This index deliberately carries neither `is_repeating` nor `taskseries_id` — there is nothing
+    here for a recurrence kind to qualify. `entity_id` is a different proposition: a domain handle
+    rather than an RTM internal, and the cockpit is precisely where a consumer resolves a project
+    to its vault folder.
+    """
+
+    def _portfolio_with_a_repeat(self):
+        parsed = _portfolio()
+        by_id = {t["id"]: t for t in parsed}
+        by_id[P1]["repeat_kind"] = "every"
+        by_id[P1]["is_repeating"] = True
+        by_id["101"]["repeat_kind"] = "after"
+        by_id["101"]["is_repeating"] = True
+        # An ACTION that is itself an "every" repeat — the only row whose handle differs from its
+        # own task_id. Without it every assertion below is satisfied by `entity_id = action_id`,
+        # which is exactly the mutant that survived the first mutation pass.
+        by_id["102"]["repeat_kind"] = "every"
+        by_id["102"]["is_repeating"] = True
+        return parsed
+
+    def test_an_every_action_row_hands_back_its_series_id(self):
+        actions = {a["action_id"]: a for a in build_actions(self._portfolio_with_a_repeat())}
+        assert actions["102"]["entity_id"] == "ts102"
+        assert actions["102"]["recurring"] is True
+
+    def test_an_every_project_row_hands_back_its_series_id(self):
+        row = next(r for r in build_index(self._portfolio_with_a_repeat()) if r["project_id"] == P1)
+        assert row["entity_id"] == "ts" + P1
+        assert row["recurring"] is True
+
+    def test_a_one_off_project_row_hands_back_its_own_id(self):
+        row = next(r for r in build_index(_portfolio()) if r["project_id"] == P1)
+        assert row["entity_id"] == P1
+        assert row["recurring"] is False
+
+    def test_an_after_action_row_is_its_own_id_and_not_recurring(self):
+        actions = {a["action_id"]: a for a in build_actions(self._portfolio_with_a_repeat())}
+        assert actions["101"]["entity_id"] == "101"
+        assert actions["101"]["recurring"] is False
+
+    def test_focus_rows_carry_a_handle_too(self):
+        # The vault has a focus tier and this is the read that names it. An area never recurs in
+        # practice, so this is its own id — the rule is applied uniformly, not special-cased.
+        foci = {f["focus_id"]: f for f in build_foci(_portfolio())}
+        assert foci[AREA1]["entity_id"] == AREA1
+        assert foci[AREA1]["recurring"] is False
+
+    def test_entity_id_is_never_absent_on_any_of_the_three_collections(self):
+        parsed = self._portfolio_with_a_repeat()
+        projects, foci, actions = build_index(parsed), build_foci(parsed), build_actions(parsed)
+        # Guard: all three collections must be non-empty, else the assertions below pass vacuously.
+        assert projects and foci and actions
+        for rows in (projects, foci, actions):
+            for r in rows:
+                assert isinstance(r["entity_id"], str) and r["entity_id"], r
+                assert r["recurring"] is True or r["recurring"] is False, r
+
+    def test_the_action_handle_matches_the_plan_envelope_exactly(self):
+        """One derivation, one answer — the cockpit and an open plan can never disagree.
+
+        `build_actions` takes the handle straight off the envelope row rather than re-deriving it,
+        which is what makes this hold by construction rather than by two rules being kept in step.
+        """
+        parsed = self._portfolio_with_a_repeat()
+        env = build_envelope(parsed, P1)
+        by_row = {r["id"]: (r["entity_id"], r["recurring"]) for r in env["rows"]}
+        for a in build_actions(parsed):
+            if a["project_id"] == P1:
+                assert (a["entity_id"], a["recurring"]) == by_row[a["action_id"]]

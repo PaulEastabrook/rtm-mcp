@@ -441,3 +441,73 @@ def h_perma(env):
 
 def _row(env, row_id):
     return next(r for r in env["rows"] if r["id"] == row_id)
+
+
+class TestEntityHandleOnTheEnvelope:
+    """`entity_id` / `recurring` on header.project and every row (Piece 1, v6.9.0).
+
+    The envelope is the identity surface the canvas and the portfolio index both draw from, so
+    deriving the handle ONCE here is what keeps every downstream read agreeing about what an item
+    is. The raw `taskseries_id` stays beside it for the gtd `series_guard`, which genuinely needs
+    RTM mechanics; `entity_id` is what a domain consumer should read instead.
+    """
+
+    def _mixed(self):
+        return [
+            _t(AREA_ID, name="Area", tags=["focus"]),
+            _t(
+                PROJECT_ID,
+                parent=AREA_ID,
+                tags=["project"],
+                is_repeating=True,
+                repeat_kind="every",
+            ),
+            _t("c1", parent=PROJECT_ID, tags=["action"], is_repeating=True, repeat_kind="after"),
+            _t("c2", parent=PROJECT_ID, tags=["action"]),
+            _t("c3", parent=PROJECT_ID, tags=["action"], is_repeating=True, repeat_kind=None),
+        ]
+
+    def test_an_every_project_hands_back_its_series_id(self):
+        env = build_envelope(self._mixed(), PROJECT_ID)
+        proj = env["header"]["project"]
+        assert proj["entity_id"] == "ts" + PROJECT_ID  # the stable series id
+        assert proj["recurring"] is True
+
+    def test_an_after_row_hands_back_its_own_task_id_and_is_not_recurring(self):
+        # RTM mints a new taskseries per `after` occurrence, sharing only a name, so the
+        # occurrence is an independent one-off — its task_id is the durable handle.
+        row = _row(build_envelope(self._mixed(), PROJECT_ID), "c1")
+        assert row["entity_id"] == "c1"
+        assert row["recurring"] is False
+
+    def test_a_one_off_row_hands_back_its_own_task_id(self):
+        row = _row(build_envelope(self._mixed(), PROJECT_ID), "c2")
+        assert row["entity_id"] == "c2"
+        assert row["recurring"] is False
+
+    def test_an_unclassifiable_rule_is_not_promoted_to_recurring(self):
+        # is_repeating True, kind unreadable — the one case that must NOT get a series handle.
+        row = _row(build_envelope(self._mixed(), PROJECT_ID), "c3")
+        assert row["is_repeating"] is True
+        assert row["entity_id"] == "c3"
+        assert row["recurring"] is False
+
+    def test_entity_id_is_never_absent_on_any_row_or_the_header(self):
+        env = build_envelope(self._mixed(), PROJECT_ID)
+        assert env["header"]["project"]["entity_id"]
+        assert all(isinstance(r["entity_id"], str) and r["entity_id"] for r in env["rows"])
+        assert env["rows"], "guard: the fixture must actually produce rows"
+
+    def test_recurring_is_a_real_bool_everywhere(self):
+        # The vault's path builder rejects a non-bool: a truthy "false" picks the wrong shape.
+        env = build_envelope(self._mixed(), PROJECT_ID)
+        assert env["header"]["project"]["recurring"] in (True, False)
+        for r in env["rows"]:
+            assert r["recurring"] is True or r["recurring"] is False
+
+    def test_a_missing_project_still_yields_a_handle(self):
+        # build_envelope tolerates an absent project row (header fields fall back). The handle
+        # must still be the project id rather than "" — entity_id is never absent.
+        env = build_envelope([], PROJECT_ID)
+        assert env["header"]["project"]["entity_id"] == PROJECT_ID
+        assert env["header"]["project"]["recurring"] is False
