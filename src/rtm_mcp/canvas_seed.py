@@ -183,6 +183,13 @@ def map_row(row: dict[str, Any]) -> dict[str, Any]:
     # redacted: the board's viewing curtain — always emitted so the client can lock the row without
     # a second lookup. Additive; absent on older/pre-flag seeds reads as not-redacted.
     item["redacted"] = map_redacted(tags)
+    # entity_id / recurring: the durable GTD handle (parsers.entity_handle), carried straight off
+    # the envelope row so the board resolves an item to its vault folder without a second read and
+    # without ever seeing a taskseries_id. Always emitted; entity_id is never absent. Additive to
+    # the build-canvas-seed.py reference, same as prog/redacted/files (upstream parity is a
+    # follow-up).
+    item["entity_id"] = str(row.get("entity_id") or row.get("id") or "")
+    item["recurring"] = bool(row.get("recurring"))
     if item["k"] == "action":
         item["c"] = map_context(tags)
         item["m"] = map_comms(tags)
@@ -234,6 +241,11 @@ def build_seed(
         # redacted: the project's own #redacted state (carried on header.project by build_envelope)
         # — an open-but-redacted project renders the locked screen without a second lookup.
         "redacted": bool(proj.get("redacted")),
+        # The project's own durable GTD handle (see map_row / parsers.entity_handle). Never absent:
+        # falls back to the project id, which is exactly what entity_handle would return for a
+        # one-off, so an older envelope with no entity_id degrades to the correct value.
+        "entity_id": str(proj.get("entity_id") or proj.get("id") or ""),
+        "recurring": bool(proj.get("recurring")),
     }
     # Project-level notes matter for the canvas frame region (pinned Outcome/Now + carousel). Parsed
     # with the SAME parse_note as item notes, so the frame gets {t, d, s, b?} — full bodies included.

@@ -17,7 +17,7 @@ from typing import Any
 
 from .canvas_seed import _CONTEXT_TAGS, map_kind, map_prog
 from .gtd_chat import AI_CHAT, AI_OUTPUT_REVIEW_NEEDED
-from .parsers import parse_estimate_minutes
+from .parsers import entity_handle, parse_estimate_minutes
 from .plan_graph import build_graph
 from .project_plan import (
     _LIFE_TAGS,
@@ -131,8 +131,13 @@ def build_index(
         truncation (safe fallback, same as `build_envelope`).
 
     Returns a list (sorted by life → focus → project for deterministic output) of:
-        {life, focus, focus_id, project, project_id, priority, open_count, blocked_count,
-         next_tickle, updated, ai_quick, ai_now, ai_later, chat_count, chat_review_count, redacted}.
+        {life, focus, focus_id, project, project_id, entity_id, recurring, priority, open_count,
+         blocked_count, next_tickle, updated, ai_quick, ai_now, ai_later, chat_count,
+         chat_review_count, redacted}.
+
+    `entity_id` / `recurring` are the durable GTD handle (`parsers.entity_handle`) — ONE id with
+    ONE meaning, so the cockpit resolves a project to its vault folder without ever choosing
+    between `task_id` and `taskseries_id`. `entity_id` is never empty.
 
     `redacted` is the project's own #redacted viewing-curtain state (the navigator locks the row).
 
@@ -221,6 +226,16 @@ def build_index(
         focus = (parent.get("name") or "") if parent else "(unfiled)"
         focus_id = parent["id"] if parent else ""
 
+        # The durable GTD handle. This index deliberately carries NEITHER is_repeating NOR
+        # taskseries_id (there is nothing here for a kind to qualify) — but entity_id is a domain
+        # handle rather than an RTM internal, and the cockpit is precisely where a consumer
+        # resolves a project to its vault folder, so it belongs. See parsers.entity_handle.
+        entity_id, recurring = entity_handle(
+            task_id=pid,
+            taskseries_id=proj.get("taskseries_id"),
+            repeat_kind=proj.get("repeat_kind"),
+        )
+
         out.append(
             {
                 "life": life,
@@ -228,6 +243,8 @@ def build_index(
                 "focus_id": focus_id,
                 "project": proj.get("name") or "",
                 "project_id": pid,
+                "entity_id": entity_id,
+                "recurring": recurring,
                 "priority": _priority_code(proj),
                 "open_count": open_count,
                 "blocked_count": blocked_count,
@@ -263,7 +280,7 @@ def build_foci(
     list is sourced from the `#focus` tag directly.
 
     Returns a list (sorted by life → focus for deterministic output) of
-    {focus_id, focus, life, redacted}. `redacted` is the focus task's own #redacted viewing-curtain
+    {focus_id, focus, entity_id, recurring, life, redacted}. `redacted` is the focus task's own #redacted viewing-curtain
     state — the navigator collapses a redacted area to a single "Redacted Area of Focus" row.
     """
     out: list[dict[str, Any]] = []
@@ -273,10 +290,20 @@ def build_foci(
             tags, t.get("completed"), include_someday=include_someday
         ):
             continue
+        # An Area of Focus is a task like any other, so it gets the same durable handle — the vault
+        # has a focus tier and this is the read that names it. In practice an area never recurs, so
+        # this is its own id; the rule is applied uniformly rather than special-cased.
+        focus_entity_id, focus_recurring = entity_handle(
+            task_id=t["id"],
+            taskseries_id=t.get("taskseries_id"),
+            repeat_kind=t.get("repeat_kind"),
+        )
         out.append(
             {
                 "focus_id": t["id"],
                 "focus": t.get("name") or "",
+                "entity_id": focus_entity_id,
+                "recurring": focus_recurring,
                 "life": _life(tags),
                 # Viewing-curtain flag from the focus task's own #redacted tag — the navigator
                 # collapses the whole area to a single "Redacted Area of Focus" row (name + its
@@ -339,8 +366,11 @@ def build_actions(
         action's `due` matches the project `next_tickle` / canvas date convention).
 
     Returns a list (sorted by life → focus → project → name for deterministic, grouped output) of
-        {action_id, name, project_id, project, focus, life, type, due, priority, blocked, estimate,
-         contexts, energy, exec, redacted}.
+        {action_id, name, entity_id, recurring, project_id, project, focus, life, type, due,
+         priority, blocked, estimate, contexts, energy, exec, redacted}.
+
+    `entity_id` / `recurring` are the durable GTD handle, taken straight off the envelope row so
+    the cockpit and an open plan can never disagree about an item.
     """
     by_id = {t["id"]: t for t in parsed}
     out: list[dict[str, Any]] = []
@@ -387,6 +417,11 @@ def build_actions(
                 {
                     "action_id": r["id"],
                     "name": r["name"],
+                    # The durable GTD handle, taken straight off the envelope row (build_envelope
+                    # already derived it) so the cockpit and the plan can never disagree about an
+                    # item's identity. Never absent. See parsers.entity_handle.
+                    "entity_id": r["entity_id"],
+                    "recurring": r["recurring"],
                     "project_id": pid,
                     "project": project_name,
                     "focus": focus,

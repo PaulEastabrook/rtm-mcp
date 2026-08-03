@@ -1955,6 +1955,8 @@ class TestGtdProjectIndex:
             "focus_id",
             "project",
             "project_id",
+            "entity_id",
+            "recurring",
             "priority",
             "open_count",
             "blocked_count",
@@ -2020,6 +2022,10 @@ class TestGtdProjectIndex:
         assert foci[AREA_ID] == {
             "focus_id": AREA_ID,
             "focus": "Sam — University",
+            # An area never recurs in practice, so its handle is its own id — the rule is
+            # applied uniformly rather than special-cased (v6.9.0).
+            "entity_id": AREA_ID,
+            "recurring": False,
             "life": "personal",
             "redacted": False,
         }
@@ -2037,6 +2043,8 @@ class TestGtdProjectIndex:
         assert set(a) == {
             "action_id",
             "name",
+            "entity_id",
+            "recurring",
             "project_id",
             "project",
             "focus",

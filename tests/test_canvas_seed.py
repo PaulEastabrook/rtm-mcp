@@ -280,3 +280,83 @@ class TestBuildSeed:
         files = seed["frame"]["files"]
         assert [f["n"] for f in files] == ["cert.pdf"]  # only the genuine filed artefact
         assert files[0]["kind"] == "reference"
+
+
+class TestEntityHandleOnTheSeed:
+    """`entity_id` / `recurring` on the frame and every seed item (Piece 1, v6.9.0).
+
+    Carried straight off the envelope (build_envelope already derived it) rather than re-derived,
+    so the board and an open plan can never disagree about an item's identity. Additive to the
+    build-canvas-seed.py reference, same as prog/redacted/files.
+    """
+
+    def _row(self, **over):
+        row = {
+            "id": "c1",
+            "name": "First",
+            "tags": ["action"],
+            "priority": "NoPriority",
+            "completed": 0,
+            "due": "",
+            "permalink": "u1",
+            "deps": [],
+            "files": [],
+            "noteCount": 0,
+            "notes": [],
+        }
+        row.update(over)
+        return row
+
+    def test_an_item_carries_the_handle_from_the_envelope_row(self):
+        item = map_row(self._row(entity_id="237677328", recurring=True))
+        assert item["entity_id"] == "237677328"
+        assert item["recurring"] is True
+
+    def test_a_one_off_item_carries_its_own_id(self):
+        item = map_row(self._row(entity_id="c1", recurring=False))
+        assert item["entity_id"] == "c1"
+        assert item["recurring"] is False
+
+    def test_an_older_envelope_without_the_fields_degrades_to_the_item_id(self):
+        """The value entity_handle would return for a one-off — so the fallback is correct, not
+        merely non-empty. entity_id is never absent, on any envelope vintage."""
+        item = map_row(self._row())
+        assert item["entity_id"] == "c1"
+        assert item["recurring"] is False
+
+    def test_the_frame_carries_the_projects_own_handle(self):
+        header = {
+            "project": {
+                "id": "P",
+                "life": "work",
+                "name": "Proj",
+                "permalink": "http://rtm/P",
+                "notes": [],
+                "entity_id": "476408903",
+                "recurring": True,
+            }
+        }
+        frame = build_seed(header, [self._row()])["frame"]
+        assert frame["entity_id"] == "476408903"
+        assert frame["recurring"] is True
+
+    def test_an_older_header_frame_degrades_to_the_project_id(self):
+        header = {"project": {"id": "P", "life": "work", "name": "Proj", "notes": []}}
+        frame = build_seed(header, [self._row()])["frame"]
+        assert frame["entity_id"] == "P"
+        assert frame["recurring"] is False
+
+    def test_recurring_is_a_real_bool_never_a_truthy_string(self):
+        # The vault's path builder rejects a non-bool — a truthy "false" picks the wrong shape.
+        item = map_row(self._row(recurring="false"))
+        assert item["recurring"] is True or item["recurring"] is False
+
+    def test_lean_seed_keeps_the_handle(self):
+        """lean_seed strips note BODIES only. A transform that dropped identity would make the
+        board's cheapest profile the one that cannot resolve an item to its folder."""
+        from rtm_mcp.canvas_overlay import lean_seed
+
+        header = {"project": {"id": "P", "life": "work", "name": "P", "notes": []}}
+        seed = lean_seed(build_seed(header, [self._row(entity_id="c1")]))
+        assert seed["seed"][0]["entity_id"] == "c1"
+        assert seed["frame"]["entity_id"] == "P"

@@ -1,6 +1,6 @@
 """Tests for task MCP tools via mocked RTM client."""
 
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
@@ -1828,3 +1828,316 @@ class TestTheShippedDefaultIsLiveEndToEnd:
         result = await tools["add_task"](FakeContext(), name="New", list_name="Work")
         assert "error" not in result["data"]
         assert any(c.args[0] == "rtm.tasks.add" for c in client.call.await_args_list)
+
+
+# ---------------------------------------------------------------------------
+# list_task_occurrences (Piece 2, v6.9.0)
+# ---------------------------------------------------------------------------
+
+
+def _series(ts_id: str, tasks: list[dict], name: str = "Weekly GTD review", rrule=None) -> dict:
+    """A taskseries carrying SEVERAL task instances — the shape RTM actually returns for a
+    repeat, which the flat parser expands into one row per occurrence."""
+    ts = _ts(ts_id=ts_id, name=name)
+    ts["task"] = tasks
+    if rrule is not None:
+        ts["rrule"] = rrule
+    return ts
+
+
+def _occ(task_id: str, due: str = "", completed: str = "", deleted: str = "") -> dict:
+    return {
+        "id": task_id,
+        "due": due,
+        "has_due_time": "0",
+        "added": "2026-01-01T00:00:00Z",
+        "completed": completed,
+        "deleted": deleted,
+        "priority": "N",
+        "postponed": "0",
+        "estimate": "",
+        "start": "",
+        "has_start_time": "0",
+    }
+
+
+class TestListTaskOccurrences:
+    """The occurrence-listing primitive. Deliberately at the GENERIC tier: enumerating
+    occurrences is RTM plumbing whose consumers are tooling (a migration, a backfill, a
+    reconciliation), not a GTD workflow — the domain set gains nothing from it."""
+
+    EVERY: ClassVar[dict] = {"every": "1", "$t": "FREQ=WEEKLY;INTERVAL=1;WKST=MO"}
+    AFTER: ClassVar[dict] = {"every": "0", "$t": "FREQ=YEARLY;INTERVAL=1;WKST=MO"}
+
+    @pytest.mark.asyncio
+    async def test_current_is_not_singular(self, task_tools):
+        """The assertion the brief singles out, and it is not hypothetical.
+
+        Live 2026-08-03, series 476408903 `File company accounts` holds four occurrences with
+        TWO open at once (due 2026-09-01 and 2027-04-07). A test asserting one current row would
+        pass on most repeating projects and be wrong.
+        """
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response(
+                    [
+                        _series(
+                            "476408903",
+                            [
+                                _occ("879575656", "2024-11-01T00:00:00Z", "2023-12-29T16:31:34Z"),
+                                _occ("1014580836", "2025-11-01T00:00:00Z", "2024-08-02T13:55:05Z"),
+                                _occ("1124622244", "2026-09-01T00:00:00Z"),
+                                _occ("1195891528", "2027-04-07T00:00:00Z"),
+                            ],
+                            name="File company accounts",
+                            rrule=self.EVERY,
+                        )
+                    ]
+                ),
+            ],
+        )
+        res = await tools["list_task_occurrences"](FakeContext(), taskseries_id="476408903")
+        data = res["data"]
+        assert data["count"] == 4
+        assert data["current_count"] == 2
+        assert [o["task_id"] for o in data["occurrences"] if o["current"]] == [
+            "1124622244",
+            "1195891528",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_oldest_first_with_undated_last(self, task_tools):
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response(
+                    [
+                        _series(
+                            "237677328",
+                            [
+                                _occ("300", "2026-08-10T00:00:00Z"),
+                                _occ("100", "2026-08-03T00:00:00Z"),
+                                _occ("400"),  # undated — no position on the date axis
+                                _occ("200", "2026-08-03T00:00:00Z"),  # tie → task_id breaks it
+                            ],
+                            rrule=self.EVERY,
+                        )
+                    ]
+                ),
+            ],
+        )
+        res = await tools["list_task_occurrences"](FakeContext(), taskseries_id="237677328")
+        assert [o["task_id"] for o in res["data"]["occurrences"]] == ["100", "200", "300", "400"]
+
+    @pytest.mark.asyncio
+    async def test_an_every_series_reports_the_series_as_its_entity(self, task_tools):
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response(
+                    [_series("237677328", [_occ("100", "2026-08-03T00:00:00Z")], rrule=self.EVERY)]
+                ),
+            ],
+        )
+        data = (await tools["list_task_occurrences"](FakeContext(), taskseries_id="237677328"))[
+            "data"
+        ]
+        assert data["repeat_kind"] == "every"
+        assert data["entity_id"] == "237677328"
+        assert data["recurring"] is True
+
+    @pytest.mark.asyncio
+    async def test_an_after_series_with_many_tasks_is_still_after(self, task_tools):
+        """Counting occurrences proves NOTHING about the kind — v6.8.0 claimed it did.
+
+        Live: 11 `after` series hold >=2 tasks, the largest 86 deep (226592019 "Taken protein
+        shake?"). This fixture is that shape: several occurrences under one `every="0"` series.
+        The entity is each occurrence's own task_id and `recurring` stays False.
+        """
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response(
+                    [
+                        _series(
+                            "226592019",
+                            [
+                                _occ("1", "2014-03-28T00:00:00Z", "2014-03-28T09:00:00Z"),
+                                _occ("2", "2014-03-29T00:00:00Z", "2014-03-29T09:00:00Z"),
+                                _occ("3", "2014-03-30T00:00:00Z", "2014-03-30T09:00:00Z"),
+                            ],
+                            name="Taken protein shake?",
+                            rrule=self.AFTER,
+                        )
+                    ]
+                ),
+            ],
+        )
+        data = (await tools["list_task_occurrences"](FakeContext(), taskseries_id="226592019"))[
+            "data"
+        ]
+        assert data["count"] == 3
+        assert data["repeat_kind"] == "after"
+        assert data["recurring"] is False
+        assert data["entity_id"] == "1"  # its own task id, never the re-keying series
+        assert data["current_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_non_repeating_series_may_still_hold_many_occurrences(self, task_tools):
+        """The brief's "a one-off → one occurrence" is false on live data.
+
+        Deleting a recurrence rule leaves its history behind: 325 live series hold >=2 tasks with
+        no rrule at all, one of them 31 deep (147643653). The tool must report what RTM holds.
+        """
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response(
+                    [
+                        _series(
+                            "147643653",
+                            [
+                                _occ("232259762", "2012-01-29T00:00:00Z", "2012-01-29T15:55:45Z"),
+                                _occ("232300093", "2012-02-05T00:00:00Z", "2012-02-05T15:37:59Z"),
+                            ],
+                        )
+                    ]
+                ),
+            ],
+        )
+        data = (await tools["list_task_occurrences"](FakeContext(), taskseries_id="147643653"))[
+            "data"
+        ]
+        assert data["count"] == 2
+        assert data["is_repeating"] is False
+        assert data["repeat_kind"] is None
+        assert data["recurring"] is False
+
+    @pytest.mark.asyncio
+    async def test_other_series_are_excluded(self, task_tools):
+        """RTM's search syntax has no taskseries operator, so the match is client-side — the one
+        thing that must not leak a neighbour's occurrence into the answer."""
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response(
+                    [
+                        _series("10", [_occ("100")], rrule=self.EVERY),
+                        _series("20", [_occ("200"), _occ("201")], rrule=self.EVERY),
+                    ]
+                ),
+            ],
+        )
+        data = (await tools["list_task_occurrences"](FakeContext(), taskseries_id="20"))["data"]
+        assert [o["task_id"] for o in data["occurrences"]] == ["200", "201"]
+
+    @pytest.mark.asyncio
+    async def test_deleted_occurrences_are_excluded(self, task_tools):
+        """RTM soft-deletes, so the row still comes back. A deleted occurrence is not one."""
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response(
+                    [
+                        _series(
+                            "10",
+                            [
+                                _occ("100", "2026-01-01T00:00:00Z"),
+                                _occ("101", "2026-01-08T00:00:00Z", deleted="2026-01-09T00:00:00Z"),
+                            ],
+                            rrule=self.EVERY,
+                        )
+                    ]
+                ),
+            ],
+        )
+        data = (await tools["list_task_occurrences"](FakeContext(), taskseries_id="10"))["data"]
+        assert [o["task_id"] for o in data["occurrences"]] == ["100"]
+
+    @pytest.mark.asyncio
+    async def test_a_miss_is_a_typed_error_that_names_the_fix(self, task_tools):
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response([_series("10", [_occ("100")])]),
+            ],
+        )
+        res = await tools["list_task_occurrences"](FakeContext(), taskseries_id="99999")
+        assert res["data"]["error"]["code"] == "task_not_found"
+        assert res["data"]["error"]["details"]["taskseries_id"] == "99999"
+
+    @pytest.mark.asyncio
+    async def test_a_miss_without_completed_says_to_retry_with_them(self, task_tools):
+        """A fully-completed series is invisible to the cheap read — and all 11 live `after`
+        series holding >=2 tasks are exactly that. The error must name the way through."""
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response([_series("10", [_occ("100")])]),
+            ],
+        )
+        res = await tools["list_task_occurrences"](
+            FakeContext(), taskseries_id="99999", include_completed=False
+        )
+        assert "include_completed=True" in res["data"]["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_read_only_call_surface_and_no_transaction(self, task_tools):
+        """One getList plus the session-cached settings read. No timeline, no write."""
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response([_series("10", [_occ("100")], rrule=self.EVERY)]),
+            ],
+        )
+        await tools["list_task_occurrences"](FakeContext(), taskseries_id="10")
+        methods = [c.args[0] for c in client.call.call_args_list]
+        assert methods == ["rtm.tasks.getList"]
+        assert all(not c.kwargs.get("require_timeline") for c in client.call.call_args_list)
+        client.record_transaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_list_id_scopes_the_read_and_the_filter_follows_include_completed(
+        self, task_tools
+    ):
+        """The cost knob. Measured 2026-08-03: `status:incomplete OR status:completed` returns
+        44,730 tasks account-wide against 15,596 scoped to one list, and 1,162 for incomplete
+        alone — so both parameters have to actually reach the wire."""
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response([_series("10", [_occ("100")], rrule=self.EVERY)]),
+            ],
+        )
+        await tools["list_task_occurrences"](
+            FakeContext(), taskseries_id="10", list_id="49657585", include_completed=False
+        )
+        getlist = client.call.call_args_list[0]
+        assert getlist.kwargs["list_id"] == "49657585"
+        assert getlist.kwargs["filter"] == "status:incomplete"
+
+    @pytest.mark.asyncio
+    async def test_without_list_id_no_list_scope_is_sent(self, task_tools):
+        tools, client = task_tools
+        _setup_calls(
+            client,
+            [
+                _make_getlist_response([_series("10", [_occ("100")], rrule=self.EVERY)]),
+            ],
+        )
+        await tools["list_task_occurrences"](FakeContext(), taskseries_id="10")
+        getlist = client.call.call_args_list[0]
+        assert "list_id" not in getlist.kwargs
+        assert getlist.kwargs["filter"] == "status:incomplete OR status:completed"

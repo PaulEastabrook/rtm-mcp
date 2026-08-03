@@ -1,5 +1,106 @@
 # Changelog
 
+## v6.9.0 — one durable entity handle, and one door for occurrences
+
+Minor, additive, vault-free. **No new tag, no new `ErrorCode`, no gate, no strict-tag
+interaction.** One new read-only tool (`list_task_occurrences`); `entity_id` / `recurring` added
+to four `gtd_*` reads and to `format_task`.
+
+### Piece 1 — `entity_id` + `recurring`, so a consumer never chooses between two ids
+
+The vault stores **one id and one boolean**. It does not store `taskseries_id`, does not know RTM
+has two recurrence kinds, and carries no current-occurrence id — so something has to resolve the
+handle, and the `gtd_*` layer is the canonical RTM wrapper.
+
+The mixup this removes is measured: on 2026-08-02 six of 37 rename ids were `taskseries_id`s
+passed as `task_id`s. They found no task and the operation survived only because it matched on
+name instead. Two id fields differing by an RTM internal keep producing that.
+
+| Case | `entity_id` | `recurring` |
+|---|---|---|
+| one-off | its own `task_id` | `false` |
+| `every` repeat | its `taskseries_id` | `true` |
+| `after` occurrence | its own `task_id` | `false` |
+
+**`entity_id` is never absent** — every item has a handle, so a consumer never interprets an
+absence. **An `after` occurrence is not recurring**: RTM mints a new taskseries per occurrence
+sharing only a name (its own docs say such a task "isn't tied to previous tasks"), so it is an
+independent one-off. `recurring` means ONE COMMITMENT WITH MANY INSTANCES and is `true` only for
+`every` — never re-derived from the presence of an id, and never from a count of occurrences.
+
+Derived once in `parsers.entity_handle` and read from there by every surface, so no two reads can
+disagree. `build_actions` takes the handle straight off the envelope row rather than re-deriving
+it, which makes cockpit/plan agreement hold by construction.
+
+**Where it lands, and why those four.** The identity-bearing reads:
+`gtd_project_plan` (header + every row — the envelope the other two draw from),
+`gtd_project_canvas` (frame + every seed item), `gtd_project_index` (project, focus and action
+rows), `gtd_item_context` (the single-item bundle, and the read where the two-id choice was most
+exposed). `format_task` carries it too, so the transition off the generic tier is free.
+Detector and candidate reads are deliberately untouched: they return work-lists whose consumer
+goes to the plan or to `gtd_item_context` for identity.
+
+`gtd_project_index` was a judgement call, not a mechanical extension — it deliberately carries
+neither `is_repeating` nor `taskseries_id`. `entity_id` is a domain handle rather than an RTM
+internal, and the cockpit is precisely where a consumer resolves a project to its vault folder,
+so it belongs.
+
+**`taskseries_id` is retained everywhere it already appeared.** Removing it is breaking, and the
+gtd `series_guard` genuinely needs it. It is sequenced with the generic-tier exclusion Paul will
+signal; `entity_id` is what a domain consumer should read from now.
+
+### Piece 2 — `list_task_occurrences` (generic tier, read-only)
+
+`list_task_occurrences(taskseries_id, list_id=None, include_completed=True)` → the occurrences
+RTM holds under one series, oldest-first, `current` marking the open ones. Deleted excluded.
+
+Deliberately `rtm_*` and not `gtd_*`: enumerating occurrences is RTM plumbing whose consumers are
+tooling — a migration, a backfill, a reconciliation — not a GTD workflow. The domain set gains
+nothing from it, which is the correct outcome.
+
+RTM's search syntax has no taskseries operator, so the series is matched client-side off ONE
+`getList`. Measured 2026-08-03: `status:incomplete OR status:completed` returns **44,730** tasks
+account-wide and **15,596** scoped to one list, against **1,162** for `status:incomplete` alone —
+hence `list_id` as the cost knob, and both it and `include_completed` are pinned by test as
+reaching the wire.
+
+### Two claims measured FALSE, and one of them was ours
+
+**`current` is not singular** (the brief was right to flag it): live, `File company accounts`
+(476408903) holds two open occurrences and `Weekly GTD review` (237677328) two of its 17.
+
+**v6.8.0's "free deductive cross-check" is retracted.** It claimed a taskseries holding >=2 tasks
+is provably `every`, since an `after` recurrence cannot produce two tasks in one series. Over the
+whole account **11 `after` series hold >=2 tasks**, the largest **86** deep (`226592019` "Taken
+protein shake?", every task carrying `every="0"`). The v6.8.0 census ran over `status:incomplete`
+only, where it happens to hold — an `after` series has at most one OPEN occurrence, because the
+next is minted on completion. Verified on a subset, generalised to the whole.
+
+Nothing executable depended on it; it was offered to callers in a docstring, and a caller who
+implemented it would mis-classify 11 series. The test that "covered" it asserted
+`repeat_kind({"every": "1"}) == "every"` — it could not have failed whatever the data said, which
+is how the claim shipped green. It is replaced by the real counter-example.
+
+**And the same counting is unsound in the other direction**: 325 live series that do not repeat
+at all hold >=2 tasks — one 31 deep — because deleting a recurrence rule leaves its history
+behind. So the brief's "a one-off returns one occurrence" is false too, and a test asserting it
+would have been wrong. `rrule/@every` is the only discriminator.
+
+### Housekeeping
+
+- Removed `.venv/lib/python3.14/site-packages/_editable_impl_rtm_mcp 2.pth`, a cloud-sync
+  conflict copy. Two sibling duplicates remain in `.venv/bin` (`rtm-mcp 2`, `rtm-setup 2`) and
+  are reported rather than swept — removing binaries was not in scope.
+- The brief's `make test` finding is **stale**: every make target has been pinned to
+  `~/.venvs/rtm-mcp` since 2026-07-31 (`b4d47d3`), and that venv carries pytest, pytest-asyncio
+  and respx. `/opt/anaconda3/bin/pytest` is still on PATH but no make target reaches it.
+
+### Membrane / activation
+
+Pure RTM data — vault-free, no new tag, no gate. This server resolves a handle from RTM facts and
+the vault decides what to do with it. To go live: restart the server on v6.9.0. Rollback is a
+revert.
+
 ## v6.8.0 — the recurrence KIND stops being discarded (`repeat_kind`)
 
 Minor, additive, vault-free. **20 of 102 fingerprints churn.** No new tag, no new `ErrorCode`,

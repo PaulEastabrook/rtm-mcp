@@ -14,7 +14,7 @@ from typing import Any
 
 from .canvas_seed import _CONTEXT_TAGS, map_kind
 from .note_shape import effective_title
-from .parsers import extract_note_body
+from .parsers import entity_handle, extract_note_body
 from .project_plan import _ancestor_chain, _norm_date, _permalink
 
 # Canonical closed vocabulary (advertised as an advisory enum; asserted equal in
@@ -305,7 +305,11 @@ def build_context(
     """The STATE-first context bundle for one task: the gtd-interpreted task view, its notes
     (STATE-first), siblings, and the parent chain to the Area of Focus. ``depth`` widens the
     bundle: shallow = task + own notes; medium = + parent + immediate siblings; deep = + full
-    note bodies + full siblings + the full ancestor chain."""
+    note bodies + full siblings + the full ancestor chain.
+
+    ``task`` carries ``entity_id`` / ``recurring`` — the durable GTD handle
+    (`parsers.entity_handle`). Read those rather than the raw ``id`` / ``taskseries_id`` beside
+    them: one id with one meaning, never absent."""
     by_id = {str(t.get("id") or ""): t for t in parsed}
     tags = task.get("tags") or []
     tid = str(task.get("id") or "")
@@ -313,11 +317,24 @@ def build_context(
     full = depth == "deep"
     include_relations = depth in ("medium", "deep")
 
+    entity_id, recurring = entity_handle(
+        task_id=tid,
+        taskseries_id=task.get("taskseries_id"),
+        repeat_kind=task.get("repeat_kind"),
+    )
+
     task_view = {
         "id": tid,
         "name": task.get("name") or "",
         "list_id": str(task.get("list_id") or ""),
         "taskseries_id": str(task.get("taskseries_id") or ""),
+        # The durable GTD handle — ONE id with ONE meaning, so a caller never chooses between the
+        # two raw ids above. This is the read where that choice was most exposed: `taskseries_id`
+        # has been on this view since it shipped, and it is an RTM internal a domain consumer
+        # should never have to reason about. Retained (removing it is breaking and is sequenced
+        # with the generic-tier exclusion); `entity_id` is what a consumer should now read.
+        "entity_id": entity_id,
+        "recurring": recurring,
         "gtd_type": classify_gtd_type(tags),
         "kind": map_kind(tags),
         "priority": _prio(task.get("priority")),

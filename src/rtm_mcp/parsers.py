@@ -156,10 +156,19 @@ def repeat_kind(rrule: Any) -> str | None:
     precisely the silent-wrong-identity failure this exists to prevent — a caller keying durable
     state on `taskseries_id` would key it on an id that re-keys, and nothing would say so.
 
-    A free deductive cross-check, for callers that want one: **a taskseries holding >=2 tasks is
-    provably "every"**, since an `after` recurrence cannot produce two tasks in one series. It
-    cannot confirm a never-yet-recurred series, which stays unknown. Verified live: of 31 series
-    holding >=2 tasks, all 31 carried every="1" and none carried "0".
+    ⚠ **RETRACTED at v6.9.0 — the "free deductive cross-check" v6.8.0 offered here is FALSE.**
+    It claimed *a taskseries holding >=2 tasks is provably "every", since an `after` recurrence
+    cannot produce two tasks in one series*. Measured over the WHOLE account (44,730 tasks,
+    2026-08-03): **11 `after` series hold >=2 tasks**, up to **86** in one — `226592019` "Taken
+    protein shake?", every task carrying `every="0"`. So an `after` series accumulates its
+    completed occurrences exactly as an `every` one does; what re-keys is the series a NEW
+    occurrence lands in, not the history already recorded.
+
+    The v6.8.0 census was run over `status:incomplete` only, where the account happens to hold no
+    such series (an `after` series has at most one OPEN occurrence, because the next is minted
+    only on completion). Verifying on the live subset and generalising to the whole is the same
+    mistake this module already documents four times over — so the rule is retracted rather than
+    narrowed, and **`rrule/@every` is the only discriminator**. Counting tasks proves nothing.
     """
     if not isinstance(rrule, dict):
         # No rule at all, or a shape this function does not recognise. Either way it cannot be
@@ -173,6 +182,52 @@ def repeat_kind(rrule: Any) -> str | None:
         return "after"
     # A rule with no readable `every` attribute — the fourth case. Unclassified, never guessed.
     return None
+
+
+def entity_handle(*, task_id: Any, taskseries_id: Any, repeat_kind: str | None) -> tuple[str, bool]:
+    """The durable GTD entity handle for one item: ``(entity_id, recurring)``.
+
+    ONE id with ONE meaning, so a consumer never chooses between `task_id` and `taskseries_id` —
+    and never learns that RTM has two recurrence kinds. The mixup this removes is measured, not
+    theoretical: on 2026-08-02 six of 37 rename ids were `taskseries_id`s passed as `task_id`s,
+    and survived only because the write matched on name instead.
+
+    ===========================  ==========================  ============
+    case                         entity_id                   recurring
+    ===========================  ==========================  ============
+    one-off                      its own `task_id`           False
+    "every" repeat               its `taskseries_id`         True
+    "after" occurrence           its own `task_id`           False
+    ===========================  ==========================  ============
+
+    **`entity_id` is NEVER absent** — every item has a handle, so a consumer never has to
+    interpret its absence.
+
+    **An "after" occurrence is not recurring**, and that is a domain judgement rather than a
+    shortcut (Paul, 2026-08-03). RTM mints a NEW taskseries per `after` occurrence, sharing only
+    a name — RTM's own docs say such a task "isn't tied to previous tasks" — so it is an
+    independent one-off and its own `task_id` is a perfectly good durable handle.
+
+    **`recurring` means ONE COMMITMENT WITH MANY INSTANCES — nothing weaker**, so it is True for
+    `"every"` and nothing else. In particular it is never re-derived from the mere presence of a
+    `taskseries_id` (every task has one) nor from a count of occurrences (see `repeat_kind` —
+    counting is unsound in BOTH directions: 11 live `after` series hold >=2 tasks, and 325 live
+    NON-repeating series do too, one of them 31 deep).
+
+    The one guard: an `"every"` classification with no usable `taskseries_id` cannot be honoured,
+    so it degrades to ``(task_id, False)`` rather than handing back a recurring claim keyed on an
+    id that re-keys per occurrence. Structurally unreachable — `repeat_kind` is read off the
+    `rrule` that hangs on the very taskseries whose id this is, so having one implies having the
+    other — but the degradation direction is chosen deliberately: `recurring=False` on a truly
+    recurring item costs a folder per occurrence (ugly, recoverable), whereas `recurring=True`
+    on a re-keying id is the silent-wrong-identity failure this whole field exists to prevent.
+    The invariant it buys is checkable: ``recurring`` is True **iff** ``entity_id`` is the
+    taskseries id.
+    """
+    series = str(taskseries_id or "")
+    if repeat_kind == "every" and series:
+        return series, True
+    return str(task_id or ""), False
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +277,17 @@ def format_task(
         "is_repeating": bool(task.get("is_repeating")),
         "repeat_kind": task.get("repeat_kind"),
     }
+
+    # The durable entity handle, carried here too so the transition off the generic tier is free.
+    # The raw ids stay below (include_ids) — this tier IS the escape hatch and still speaks RTM;
+    # it is the `gtd_*` layer that wraps the mechanics away. See parsers.entity_handle.
+    entity_id, recurring = entity_handle(
+        task_id=task.get("id"),
+        taskseries_id=task.get("taskseries_id"),
+        repeat_kind=task.get("repeat_kind"),
+    )
+    formatted["entity_id"] = entity_id
+    formatted["recurring"] = recurring
 
     if include_ids:
         formatted["id"] = task.get("id")

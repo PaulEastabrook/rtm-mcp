@@ -183,6 +183,12 @@ EXAMPLES: dict[str, tuple[str, ...]] = {
         'list_tasks(filter="status:incomplete AND tag:next_action AND NOT tag:someday")',
         'list_tasks(filter="status:incomplete", list_name="Work")',
     ),
+    "list_task_occurrences": (
+        'list_task_occurrences(taskseries_id="237677328", list_id="49657585")'
+        "   # 17 occurrences of a weekly repeat, 2 of them current",
+        'list_task_occurrences(taskseries_id="237677328", include_completed=False)'
+        "   # only the open ones, off a far smaller read",
+    ),
     "add_task": (
         'add_task(name="Call the dentist ^tomorrow !2 #calls")',
         'add_task(name="Draft Q3 summary", parse=False, list_name="Work")',

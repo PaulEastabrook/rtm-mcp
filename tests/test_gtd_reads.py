@@ -24,6 +24,8 @@ def _t(**k: Any) -> dict[str, Any]:
         "notes": k.get("notes", []),
         "parent_task_id": k.get("parent_task_id"),
         "modified": k.get("modified"),
+        "is_repeating": k.get("repeat_kind") is not None,
+        "repeat_kind": k.get("repeat_kind"),
     }
 
 
@@ -269,3 +271,37 @@ def test_context_deep_includes_bodies():
     assert out["notes"][0]["body"] == "b"  # full bodies at deep
     shallow = g.build_context([task], task, depth="shallow", timezone=None)
     assert shallow["notes"][0]["body"] == ""
+
+
+# --------------------------------------------------------------------------- #
+# entity handle on gtd_item_context (Piece 1, v6.9.0)
+# --------------------------------------------------------------------------- #
+
+
+def test_context_carries_the_durable_entity_handle():
+    """`gtd_item_context` is the read where the two-id choice was most exposed.
+
+    `taskseries_id` has sat on this view since it shipped and is an RTM internal a domain
+    consumer should never reason about. It is retained (removing it is breaking and is sequenced
+    with the generic-tier exclusion); `entity_id` is what a consumer should now read.
+    """
+    every = _t(id="t", taskseries_id="237677328", tags=["action"], repeat_kind="every")
+    view = g.build_context([every], every, depth="shallow", timezone=None)["task"]
+    assert view["entity_id"] == "237677328"
+    assert view["recurring"] is True
+    assert view["id"] == "t" and view["taskseries_id"] == "237677328"  # raw ids retained
+
+
+def test_context_handle_for_an_after_occurrence_is_its_own_task_id():
+    after = _t(id="t", taskseries_id="600211106", tags=["action"], repeat_kind="after")
+    view = g.build_context([after], after, depth="shallow", timezone=None)["task"]
+    assert view["entity_id"] == "t"
+    assert view["recurring"] is False
+
+
+def test_context_handle_is_never_absent_and_recurring_is_a_real_bool():
+    for kind in ("every", "after", None):
+        task = _t(id="t", taskseries_id="s1", tags=["action"], repeat_kind=kind)
+        view = g.build_context([task], task, depth="shallow", timezone=None)["task"]
+        assert isinstance(view["entity_id"], str) and view["entity_id"]
+        assert view["recurring"] is True or view["recurring"] is False
