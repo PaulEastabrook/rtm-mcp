@@ -33,7 +33,7 @@ from .canvas_create import CREATE_REJECT_REASONS
 from .engage_commit import ENGAGE_REJECT_REASONS
 from .error_codes import ErrorCode
 from .gtd_writes import GTD_WRITE_REJECT_REASONS
-from .receipt import RECEIPT_REASONS
+from .receipt import RECEIPT_FIELDS, RECEIPT_REASONS
 
 
 def _enum_extra(reasons: frozenset[ErrorCode]) -> dict[str, Any]:
@@ -678,7 +678,11 @@ class CreateItemResult(BaseModel):
     deep_link: str = ""
     ready: bool = False
     missing: list[str] = []
-    advisory: list[str] = []
+    #: The DoR axes reported but NOT gated (`gtd_writes.ADVISORY_AXES`) — `missing`'s sibling:
+    #: same type, opposite gate. Named `advisory_axes` since v6.7.0; it was `advisory`, which
+    #: COLLIDED with the receipt's own `advisory` and lost at runtime while winning in the
+    #: advertised schema (see `_write_envelope_schema`, which now refuses the collision).
+    advisory_axes: list[str] = []
     applied: list[AppliedOp] = []
     errors: list[dict[str, Any]] = []
     rejected: list[GtdWriteRejection] | None = None
@@ -1689,7 +1693,29 @@ def _write_envelope_schema(name: str, *success: type[BaseModel]) -> dict[str, An
     The subclass keeps its parent's `__name__`, so the advertised model title — which
     `tests/test_tool_schemas.py::_find_model` locates models by — is unchanged. Only the error
     branch is left alone: an error envelope carries no receipt (`receipt.attach` returns it
-    untouched), so advertising one there would promise a field that never arrives."""
+    untouched), so advertising one there would promise a field that never arrives.
+
+    **A success model may not declare a name the receipt owns, and this raises rather than
+    reports it (v6.7.0).** The mixin puts the result model FIRST in the MRO, so on a collision
+    the tool's field wins in the ADVERTISED schema while `receipt.attach` — which assigns
+    unconditionally — wins at RUNTIME. Both sides then work perfectly and disagree, which is
+    the one failure a green suite cannot see. `CreateItemResult.advisory` was exactly that from
+    v4.0.0 to v6.6.0: advertised `array of string`, written `str | None`, and the DoR axes it
+    was carrying never reached a caller once.
+
+    It raises at import — the v6.0.0 posture, where a wrong block order stopped being *rejected*
+    and became unrepresentable. A collision is a developer error with no legitimate form (the
+    receipt's three fields are the receipt's by definition), it is silent by construction, and
+    failing at import means it cannot reach a caller. Give the field its own name instead."""
+    for s in success:
+        clash = sorted(set(s.model_fields) & set(RECEIPT_FIELDS))
+        if clash:
+            raise TypeError(
+                f"{s.__name__} declares receipt-owned field(s) {clash}. The receipt is attached "
+                "centrally by tools/gtd.py::_tool and would overwrite them at runtime while "
+                "losing to them in the advertised schema. Rename the field (see "
+                "CreateItemResult.advisory_axes)."
+            )
     enriched = tuple(
         create_model(s.__name__, __base__=(s, Receipt))
         for s in success  # type: ignore[call-overload]

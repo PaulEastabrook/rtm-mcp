@@ -637,7 +637,10 @@ MoSCoW `priority`, `note_type`) are now **server-owned** advisory enums, asserte
   `action` **+** `calendar_entry` — `calendar_entry` is a Special Tag, not a workflow state), sets
   the MoSCoW band on RTM's priority field, resolves the due phrase via `parse_time` **before** any
   write, writes an optional CONTEXT note, and stamps `#ai_overlay_refresh_needed` on the nearest
-  `#project` ancestor. **Definition-of-Ready is hard-gated** per kind.
+  `#project` ancestor. **Definition-of-Ready is hard-gated** per kind — `missing[]` names the
+  required axes that were gated and `advisory_axes[]` (since v6.7.0) the ones reported but not,
+  currently `relational`. `advisory_axes` is deliberately not the receipt's `advisory`: the two
+  collided until v6.7.0, and the receipt won at runtime, so the axes never reached a caller.
 - `gtd_note_add` - write a conforming journal note from typed parts. You supply the semantics
   (`narrative`, `sources[]`, `ai_context{}`); the server builds the
   `YYYY-MM-DD [HH:MM] — TYPE — summary` title **and** the body — narrative →

@@ -368,6 +368,15 @@ Rules when writing or changing a governed write:
 - **Never gate on the receipt.** It is advisory data. A caller that ignores all three fields must
   still get a correct, complete result — that is an invariant, not a preference, and
   `tests/test_receipt.py` pins that the module is a pure leaf with no async and no client import.
+- **Never name your own payload field `not_applied`, `guidance` or `advisory`** (the list is
+  `receipt.RECEIPT_FIELDS`). `receipt.attach` assigns the last two unconditionally, while
+  `models._write_envelope_schema` mixes `Receipt` in BEHIND your result model — so a collision
+  lets your field win the **advertised schema** and the receipt win at **runtime**. Both halves
+  then work and disagree, and no test sees it: the schema tests read the schema, the tool tests
+  read the runtime. `CreateItemResult.advisory` was exactly that for three releases and its
+  Definition-of-Ready axes reached a caller zero times. Since v6.7.0 `_write_envelope_schema`
+  **raises** on a collision, so this fails at import rather than shipping green — give the field
+  its own name (`advisory_axes` is the worked example).
 - **An error envelope carries no receipt.** `data.error` is the `success | error` discriminator and
   a failure already teaches; `receipt.attach` returns it untouched.
 - **Reads get nothing.** "Did what I asked for land?" has no meaning for a tool that writes nothing.

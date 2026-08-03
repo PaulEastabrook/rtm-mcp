@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "server": "rtm",
-  "generated_at": "2026-08-02T14:03:20Z",
-  "source_version": "6.5.2",
+  "generated_at": "2026-08-02T22:13:48Z",
+  "source_version": "6.7.0",
   "tools": {
     "mcp__rtm__add_list": "84a661c720e67f3d1eae9bfc221b6eb510a610419380086e680bb1c770fa5365",
     "mcp__rtm__add_note": "15cb54d08d042ef0aba5fe6bdb97c3269f81a3cf8d214ea442008314a2a47ba0",
@@ -54,7 +54,7 @@
     "mcp__rtm__gtd_inbox_state": "bb5effc0bd563d238429370382241050b4e51effcfa800c9d65c2f853f19790e",
     "mcp__rtm__gtd_item_complete": "75d88b27d3ce3dea136c80c8791959093f6a80135c54c0993dfd0f48cda53d92",
     "mcp__rtm__gtd_item_context": "53563ac1ee6c8d4c988fb92db24c042f7cc66f9710a0c81dba06812eabd28dc1",
-    "mcp__rtm__gtd_item_create": "11e32129675db89cf47dcc8aefc6db67521f7370dd22f0bf8b4ebf309a57b097",
+    "mcp__rtm__gtd_item_create": "087ed762316e6346b7a4072594197a16f327c420a7b9725447c95e7bbcb08d77",
     "mcp__rtm__gtd_item_set_properties": "37405ecc2c22d7e048f5a4446b78d5f8e82bee00a7304c69e121a195f33a120d",
     "mcp__rtm__gtd_item_set_redaction": "b4f2340e02f25c849f651c6781c74487f528bcfed57a82c5061ad65735259213",
     "mcp__rtm__gtd_item_shape": "330884d66c33f6b8d35803b539172a5f454f8602e3509a8e9ae4c3c909dff4d9",
@@ -70,7 +70,7 @@
     "mcp__rtm__gtd_note_filing_gaps": "d8d2634ecbc7eaf2b85b84844721e16b37c2594ae57d821b1d372f8c837aabb4",
     "mcp__rtm__gtd_note_report": "241d94c8c933aaebc81ee5f844ffda5bd6cf0f70d5e03ec04a736e7b4e11c11b",
     "mcp__rtm__gtd_project_canvas": "6c63fb895eb31db61ff112717f63e2539ca357f1e1b2e585c15373eb4c509053",
-    "mcp__rtm__gtd_project_create": "f44e52f1ab9a09b481901563a0649c4ae265ae43ce8eca1ea6248ffa350cc143",
+    "mcp__rtm__gtd_project_create": "75c6db64441e9862231c316a6660b202130bfb69c02edc8c92d854c9cfd3db1a",
     "mcp__rtm__gtd_project_index": "086b9d2f777d068836e016c2e5e46171b61e3e12c635acc19e63b84c18e91c53",
     "mcp__rtm__gtd_project_plan": "daf78ec1c485125cbc511e8c0fe20a054a9bcc731874b3545084722746e897be",
     "mcp__rtm__gtd_reassessment_candidates": "6ea9122236422c90a6bc3435587f51da2ee490e6de0f8621aaf5a9f85c2dbc19",

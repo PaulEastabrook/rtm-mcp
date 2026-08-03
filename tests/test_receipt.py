@@ -27,6 +27,7 @@ import pytest
 from rtm_mcp import receipt
 from rtm_mcp.error_codes import ErrorCode
 from rtm_mcp.receipt import (
+    NAME_ADVISORY_LIMIT,
     RECEIPT_DOC,
     RECEIPT_FIELDS,
     RECEIPT_REASONS,
@@ -34,6 +35,7 @@ from rtm_mcp.receipt import (
     build_advisory,
     build_guidance,
     build_markup_advisory,
+    build_name_advisory,
     detect_leaked_markup,
     is_facet,
     not_applied_entry,
@@ -48,6 +50,24 @@ async def _tools() -> dict[str, Any]:
 def _is_governed_write(name: str, mcp_tool: Any) -> bool:
     """The same gate `tools/gtd.py::_with_receipt` applies — a gtd tool that is not read-only."""
     return name.startswith("gtd_") and not getattr(mcp_tool.annotations, "readOnlyHint", False)
+
+
+def _walk_models(node: Any) -> list[dict[str, Any]]:
+    """Every object-with-properties in an advertised outputSchema, at any depth.
+
+    FastMCP 3.x dereferences `$defs`, so a success model is inlined wherever it is used rather
+    than sitting in one table — the same reason `tests/test_tool_schemas.py::_find_model` walks
+    instead of indexing."""
+    found: list[dict[str, Any]] = []
+    if isinstance(node, dict):
+        if isinstance(node.get("properties"), dict):
+            found.append(node)
+        for value in node.values():
+            found += _walk_models(value)
+    elif isinstance(node, list):
+        for value in node:
+            found += _walk_models(value)
+    return found
 
 
 class TestReceiptReasonVocabulary:
@@ -872,3 +892,263 @@ class TestOutOfScopeOfEmptyRejection:
             schema = tools[tool].to_mcp_tool().inputSchema or {}
             assert flag in (schema.get("properties") or {})
             assert flag not in set(schema.get("required") or []), f"{tool}.{flag} became required"
+
+
+class TestNameAdvisory:
+    """The name-length hygiene advisory (v6.6.0).
+
+    Note what is NOT asserted anywhere in this class: any statement about vault folders, slugs
+    or paths. That is the membrane (`TestTheMembraneIsIntact` below) — this server owns one
+    integer and a comparison, and the message it produces speaks of length only.
+    """
+
+    def test_it_fires_above_the_threshold_and_names_the_length(self):
+        name = "x" * (NAME_ADVISORY_LIMIT + 1)
+        msg = build_name_advisory(name)
+        assert msg and str(NAME_ADVISORY_LIMIT + 1) in msg
+        assert "belongs in another field" in msg
+
+    def test_it_is_silent_at_and_below_the_threshold(self):
+        # AT the threshold, not merely below it: an off-by-one here is the difference between
+        # a documented cut-off and an undocumented one.
+        assert build_name_advisory("x" * NAME_ADVISORY_LIMIT) is None
+        assert build_name_advisory("x" * (NAME_ADVISORY_LIMIT - 1)) is None
+        assert build_name_advisory("") is None
+
+    def test_it_is_silent_when_there_is_no_name(self):
+        # Every governed write other than the two passes None, so this is the common case and
+        # must never produce prose.
+        assert build_name_advisory(None) is None
+        assert build_name_advisory({"name": "x" * 200}) is None
+        assert build_name_advisory(["x" * 200]) is None
+
+    def test_it_never_names_a_path_or_a_folder(self):
+        """The membrane, asserted on the OUTPUT rather than only on the imports.
+
+        A message mentioning a folder would be this server making a filesystem claim it has no
+        basis for — and, being a one-sided proxy, one that is sometimes false."""
+        msg = build_name_advisory("x" * 200) or ""
+        for banned in ("folder", "path", "slug", "directory", "vault", "truncat", "filename"):
+            assert banned not in msg.lower(), f"the advisory leaked a filesystem claim: {banned}"
+
+
+class TestNameAdvisoryIsAppendedNotRanked:
+    """Name length is independent of the two loss advisories, so it must not displace them.
+
+    Markup and bare-call are mutually exclusive because one *explains* the other. Name length
+    explains neither, so ranking it against them would silently drop a true signal."""
+
+    def test_a_long_name_on_a_bare_call_carries_both(self):
+        data = attach(
+            {"applied": [1]},
+            tool_name="gtd_item_create",
+            absent_optional=["due", "energy"],
+            declared_optional=["due", "energy"],
+            item_name="x" * 90,
+        )
+        advisory = data["advisory"]
+        assert "No optional parameter reached" in advisory
+        assert "Name is 90 characters" in advisory
+
+    def test_a_long_name_alongside_leaked_markup_carries_both(self):
+        data = attach(
+            {"applied": [1]},
+            tool_name="gtd_item_create",
+            absent_optional=[],
+            declared_optional=["due"],
+            leaked=[{"param": "name", "closed": ["name"], "lost": ["due"]}],
+            item_name="x" * 90,
+        )
+        advisory = data["advisory"]
+        assert "Tool-call markup arrived" in advisory
+        assert "Name is 90 characters" in advisory
+
+    def test_a_short_name_leaves_the_loss_advisories_byte_identical(self):
+        """The parameter must be invisible to every call that does not trip it."""
+        kwargs: dict[str, Any] = {
+            "tool_name": "gtd_item_create",
+            "absent_optional": ["due"],
+            "declared_optional": ["due"],
+        }
+        without = attach({"applied": [1]}, **kwargs)["advisory"]
+        with_short = attach({"applied": [1]}, **kwargs, item_name="Short name")["advisory"]
+        assert with_short == without
+
+    def test_a_clean_call_with_a_short_name_still_has_no_advisory(self):
+        data = attach(
+            {"applied": [1]},
+            tool_name="gtd_item_create",
+            absent_optional=[],
+            declared_optional=["due"],
+            item_name="Short name",
+        )
+        assert data["advisory"] is None
+
+
+class TestTheMembraneIsIntact:
+    """rtm-mcp must learn NOTHING about vault paths (designed change § 1a.1).
+
+    An earlier draft of that change gave this repo the slug function, the path template and the
+    length budget. This fails loudly if anyone widens it back."""
+
+    def test_no_module_imports_the_vault_naming_rule(self):
+        import ast
+        import pathlib
+
+        src = pathlib.Path(__file__).resolve().parents[1] / "src" / "rtm_mcp"
+        offenders = []
+        for path in sorted(src.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and "vault_naming" in (node.module or ""):
+                    offenders.append(f"{path.name}:{node.lineno}")
+                elif isinstance(node, ast.Import):
+                    offenders += [
+                        f"{path.name}:{node.lineno}" for a in node.names if "vault_naming" in a.name
+                    ]
+        assert offenders == [], f"the vault-naming rule was imported into rtm-mcp: {offenders}"
+
+    def test_no_module_carries_a_vault_path_template(self):
+        """A path template is the other half of the breach — the rule can be copied as well as
+        imported. `companion.py` is the ONE vault seam and is read-only by contract, so it is
+        the only file allowed to name the vault's own directories."""
+        import pathlib
+        import re
+
+        src = pathlib.Path(__file__).resolve().parents[1] / "src" / "rtm_mcp"
+        # A vault-relative path template: a life context followed by a separator and a slot.
+        template = re.compile(r"\b(work|personal|leanworking|client)/\{")
+        offenders = [
+            f"{p.name}:{i}"
+            for p in sorted(src.rglob("*.py"))
+            if p.name != "companion.py"
+            for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+            if template.search(line)
+        ]
+        assert offenders == [], f"a vault path template appeared in rtm-mcp: {offenders}"
+
+
+class TestNameAdvisoryOnTheRealServer:
+    """Anti-vacuity: every test above is a pure function and would pass against a server that
+    never wires the producer in. These assert the live advertised surface."""
+
+    @pytest.mark.asyncio
+    async def test_both_creation_tools_document_the_threshold(self):
+        """The limit is hard-coded in two docstrings (a docstring cannot interpolate), so this
+        is the only thing keeping them in step with the constant."""
+        tools = await _tools()
+        for name in ("gtd_item_create", "gtd_project_create"):
+            description = tools[name].to_mcp_tool().description or ""
+            assert str(NAME_ADVISORY_LIMIT) in description, f"{name} does not state the threshold"
+            assert "ONE-SIDED proxy" in description, f"{name} does not state the caveat"
+
+    @pytest.mark.asyncio
+    async def test_no_read_tool_gained_an_advisory(self):
+        """A read writes nothing, so it has no name to judge and no receipt at all. This is the
+        guard the brief asks for, and it also re-pins the read/write split the wrapper draws."""
+        tools = await _tools()
+        reads = [n for n, t in tools.items() if not _is_governed_write(n, t)]
+        assert reads, "no read tools found — the guard would pass vacuously"
+        for name in reads:
+            description = tools[name].to_mcp_tool().description or ""
+            assert RECEIPT_DOC not in description, f"{name} is a read carrying a receipt"
+
+
+class TestNoSuccessModelShadowsTheReceipt:
+    """The receipt owns three field names, and a success model may not also declare one (v6.7.0).
+
+    **This is the one failure a green suite cannot see.** `models._write_envelope_schema` mixes
+    `Receipt` in BEHIND the result model, so on a collision the tool's field wins in the
+    ADVERTISED schema while `receipt.attach` — which assigns unconditionally — wins at RUNTIME.
+    Both halves then work perfectly and disagree with each other, and every existing test passes:
+    the schema tests read the schema, the tool tests read the runtime, and nothing compares them.
+
+    `CreateItemResult.advisory` was exactly that from v4.0.0 to v6.6.0. It advertised
+    `array of string`, a string was written, and the Definition-of-Ready `relational` axis its
+    own docstring promised was "REPORTED in `advisory`" reached a caller zero times in three
+    releases. The field is `advisory_axes` from v6.7.0.
+    """
+
+    def test_the_schema_builder_refuses_a_collision(self):
+        """Guard-the-guard, and the load-bearing test in this class. Every assertion below is
+        satisfied by today's models and would keep passing if the check were deleted."""
+        from pydantic import BaseModel
+
+        from rtm_mcp.models import _write_envelope_schema
+
+        class Shadowing(BaseModel):
+            advisory: list[str] = []
+            message: str = ""
+
+        with pytest.raises(TypeError) as exc:
+            _write_envelope_schema("ShadowEnvelope", Shadowing)
+        assert "advisory" in str(exc.value)
+        # It must name the fix, not merely the fault — this is a developer's error message.
+        assert "advisory_axes" in str(exc.value)
+
+    def test_it_refuses_every_receipt_field_not_just_advisory(self):
+        """`advisory` is the one that happened; the rule is the three names, sourced from
+        `RECEIPT_FIELDS` so a fourth field added later is covered by construction."""
+        from pydantic import BaseModel, create_model
+
+        from rtm_mcp.models import _write_envelope_schema
+
+        assert RECEIPT_FIELDS, "the field list emptied — every check here would pass vacuously"
+        for field in RECEIPT_FIELDS:
+            model = create_model(  # type: ignore[call-overload]
+                "Probe", __base__=BaseModel, **{field: (list[str], [])}
+            )
+            with pytest.raises(TypeError, match=field):
+                _write_envelope_schema("ProbeEnvelope", model)
+
+    def test_a_clean_model_still_builds(self):
+        """The counterfactual: a check that refused everything would pass the two above."""
+        from pydantic import BaseModel
+
+        from rtm_mcp.models import _write_envelope_schema
+
+        class Clean(BaseModel):
+            advisory_axes: list[str] = []
+            message: str = ""
+
+        schema = _write_envelope_schema("CleanEnvelope", Clean)
+        assert schema["properties"]["data"]
+
+    @pytest.mark.asyncio
+    async def test_every_governed_write_advertises_advisory_as_a_nullable_string(self):
+        """The direct assertion of the defect, over the REAL server.
+
+        The runtime writes `str | None` on all 25 governed writes (`receipt.attach`), so any tool
+        advertising `data.advisory` as anything else is lying to a caller reading the schema.
+        This is what was missing: nothing had ever compared the two surfaces."""
+        tools = await _tools()
+        checked, offenders = 0, []
+        for name, tool in tools.items():
+            mcp_tool = tool.to_mcp_tool()
+            if not _is_governed_write(name, mcp_tool):
+                continue
+            for node in _walk_models(mcp_tool.outputSchema or {}):
+                advisory = (node.get("properties") or {}).get("advisory")
+                if advisory is None:
+                    continue
+                checked += 1
+                types = {v.get("type") for v in advisory.get("anyOf") or []}
+                if types != {"string", "null"}:
+                    offenders.append(f"{name}.{node.get('title')}: {advisory}")
+        assert checked >= 20, f"only {checked} advisory fields inspected — the walk went blind"
+        assert not offenders, f"advertised advisory disagrees with receipt.attach: {offenders}"
+
+    @pytest.mark.asyncio
+    async def test_the_dor_axes_are_advertised_on_their_own_key(self):
+        """The other half: the DoR axes did not merely move out of `advisory`, they landed
+        somewhere a consumer can branch on — a list, beside `missing`, its same-typed sibling."""
+        tools = await _tools()
+        schema = tools["gtd_item_create"].to_mcp_tool().outputSchema or {}
+        result = next(
+            node for node in _walk_models(schema) if node.get("title") == "CreateItemResult"
+        )
+        props = result["properties"]
+        # Same shape as `missing` — a caller iterates a list, it never searches a substring.
+        assert props["advisory_axes"] == {**props["missing"], "title": "Advisory Axes"}
+        # And `advisory` is still there, still the receipt's, on the same payload.
+        assert {v.get("type") for v in props["advisory"]["anyOf"]} == {"string", "null"}

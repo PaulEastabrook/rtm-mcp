@@ -374,12 +374,19 @@ def _at_default(value: Any, default: Any) -> bool:
         return value is default
 
 
-def _with_receipt(fn: Any, annotations: Any) -> Any:
+def _with_receipt(fn: Any, annotations: Any, name_of: Any = None) -> Any:
     """Wrap a governed write so its response carries the teaching receipt (`receipt.py`).
 
     Reads pass through **unwrapped** — the receipt answers "did what I asked for actually land?",
     which is meaningless for a tool that writes nothing, and wrapping them would put a null
     `advisory` on every read in the server.
+
+    `name_of` is an optional extractor `(bound arguments) -> name`, supplied at registration by
+    the two tools that create a *named* GTD entity, and feeds `receipt.build_name_advisory`. A
+    callable rather than a dotted-path string because the two sources are genuinely different
+    shapes (`name`; `frame["name"]`, which may still arrive as a JSON string) — two small lambdas
+    at the two call sites beat a path mini-language nothing else would use. Every other tool
+    passes nothing, so the producer is silent for them by construction.
 
     `functools.wraps` is load-bearing rather than cosmetic: FastMCP builds the advertised
     `inputSchema` from `inspect.signature`, which follows `__wrapped__`, and the
@@ -438,6 +445,7 @@ def _with_receipt(fn: Any, annotations: Any) -> Any:
             absent_optional=absent,
             declared_optional=declared,
             leaked=leaked,
+            item_name=name_of(supplied) if name_of else None,
         )
         return result
 
@@ -618,8 +626,12 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
     _registry: dict[str, dict[str, Any]] = {}
 
     def _tool(**kwargs: Any) -> Any:
+        # Popped, never forwarded: `name_of` is this wrapper's own concern and FastMCP would
+        # reject it as an unknown registration keyword.
+        name_of = kwargs.pop("name_of", None)
+
         def decorator(fn: Any) -> Any:
-            registered = _with_receipt(fn, kwargs.get("annotations"))
+            registered = _with_receipt(fn, kwargs.get("annotations"), name_of)
             _registry[fn.__name__] = {"fn": registered, **kwargs}
             return mcp.tool(**kwargs)(registered)
 
@@ -1505,7 +1517,14 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             timeline_id=client.timeline_id,
         )
 
-    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CREATE_PROJECT_OUTPUT)
+    @_tool(
+        annotations=ADDITIVE_WRITE_ANNOTATIONS,
+        output_schema=CREATE_PROJECT_OUTPUT,
+        # `frame` may still arrive as a JSON string (the Cowork serialisation), exactly as the
+        # body's own belt-and-braces `coerce_json` allows for — so coerce here too rather than
+        # going silent on that caller.
+        name_of=lambda a: (coerce_json(a.get("frame")) or {}).get("name"),
+    )
     async def gtd_project_create(
         ctx: Context,
         frame: Annotated[
@@ -1563,7 +1582,10 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         Args:
             frame: {life, focus, name, outcome}. `life` is one of work|personal|leanworking; `name`
                 is the project title (required); `focus` selects the parent area; `outcome` is
-                recorded in the INCEPTION note.
+                recorded in the INCEPTION note. A `name` over 60 characters draws a hygiene
+                advisory — long names usually mean the outcome belongs in `outcome`, not the
+                title. It is a deliberate ONE-SIDED proxy: it under-warns, never over-warns, and
+                is never a gate.
             items: [{id, type: action|waiting_for|calendar, text, classifiers:{context?, comms?,
                 priority?, quick?, energy?}, chase?/calendar_date?/due?, start?, estimate?,
                 deps:[in-draft ids], done?, execute?: now|later|quick, notes:[{title?/type?,
@@ -3642,7 +3664,11 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
             query=task_ref,
         )
 
-    @_tool(annotations=ADDITIVE_WRITE_ANNOTATIONS, output_schema=CREATE_ITEM_OUTPUT)
+    @_tool(
+        annotations=ADDITIVE_WRITE_ANNOTATIONS,
+        output_schema=CREATE_ITEM_OUTPUT,
+        name_of=lambda a: a.get("name"),
+    )
     async def gtd_item_create(
         ctx: Context,
         parent_ref: Annotated[
@@ -3730,21 +3756,25 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
         report-and-resolve). Required per kind — action: life_context + estimate + energy +
         priority; waiting_for: life_context + priority + due; calendar_entry: life_context +
         priority + due. `action_context` is satisfied by the documented 'using_device' default.
-        The `relational` axis is REPORTED in `advisory`, not gated (DEPENDS-ON authoring is a
-        later phase).
+        The `relational` axis is REPORTED in `advisory_axes`, not gated (DEPENDS-ON authoring is
+        a later phase). `advisory_axes` is `missing`'s sibling — same `list[str]`, opposite gate
+        — and is NOT the receipt's `advisory`, a separate string about the call itself.
 
         Args:
             parent_ref: the parent project/task (id preferred; a name resolves, ambiguous →
                 candidates).
             kind: action | waiting_for | calendar_entry. A calendar entry is materialised as
                 `action` + `calendar_entry` (calendar_entry is a Special Tag, not a workflow state).
-            name: the item name, written verbatim (parse is disabled so a '#token' cannot mint a tag).
+            name: the item name, written verbatim (parse is disabled so a '#token' cannot mint a
+                tag). Over 60 characters draws a hygiene advisory — long names usually mean an
+                outcome, an acceptance criterion or a date is sitting in the title field. It is a
+                deliberate ONE-SIDED proxy: it under-warns, never over-warns, and is never a gate.
             life_context / priority: required structural facets.
             action_context / energy / comms / estimate / due / context_note / extra_tags: see each.
 
         Returns (on success): the TRUE post-state — {"task_id", "taskseries_id", "list_id",
             "name", "kind", "tags", "priority", "due", "deep_link", "ready", "missing",
-            "advisory", "applied", "errors", "message"} — the real id triple RTM returned,
+            "advisory_axes", "applied", "errors", "message"} — the real id triple RTM returned,
             never an echo of the request.
         Returns (on ambiguity): {"candidates": [{id, name, list_id}]} — call again with an id.
         Returns (on rejection — nothing written): {"rejected": [{reason, detail, …}], …} where
@@ -3834,7 +3864,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     "errors": [],
                     "ready": not val["missing"],
                     "missing": val["missing"],
-                    "advisory": val["advisory"],
+                    "advisory_axes": val["advisory_axes"],
                     "message": "Create rejected; nothing was written.",
                 }
             )
@@ -3861,7 +3891,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                     "errors": errors or [{"op": "create", "error": "no id returned"}],
                     "ready": False,
                     "missing": val["missing"],
-                    "advisory": val["advisory"],
+                    "advisory_axes": val["advisory_axes"],
                     "message": "Create failed; no task id returned.",
                 },
                 timeline_id=client.timeline_id,
@@ -3922,7 +3952,7 @@ def register_gtd_tools(mcp: Any, get_client: Any) -> None:
                 ),
                 "ready": True,
                 "missing": [],
-                "advisory": val["advisory"],
+                "advisory_axes": val["advisory_axes"],
                 "applied": applied,
                 "errors": errors,
                 "message": f"Created {kind} '{name}' with {len(applied)} write(s).",

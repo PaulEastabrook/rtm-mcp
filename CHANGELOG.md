@@ -1,5 +1,173 @@
 # Changelog
 
+## v6.7.0 — the Definition-of-Ready axes get their own key (`advisory_axes`)
+
+Minor. **One fingerprint churns** (`gtd_item_create`). No new tag, no new `ErrorCode`, no
+strict-tag interaction, no gate, vault-free. Found during the v6.6.0 work and deliberately
+deferred there, because the fix changes an advertised output schema.
+
+### The defect: a field the receipt and the tool both owned
+
+`gtd_item_create` set `data["advisory"]` on all three of its return paths to
+`gtd_writes.ADVISORY_AXES[kind]` — the Definition-of-Ready `relational` axis, a `list[str]`. Its
+docstring promised that axis was "REPORTED in `advisory`, not gated". Then `receipt.attach`,
+applied centrally by `tools/gtd.py::_tool`, assigned `data["advisory"]` **unconditionally** with
+the receipt's `str | None`.
+
+**So the DoR advisory reached a caller zero times between v4.0.0 and v6.6.0.**
+
+The advertised schema was wrong in the other direction at the same time.
+`models._write_envelope_schema` mixes `Receipt` in BEHIND the result model, so
+`CreateItemResult.advisory: list[str]` won the MRO and `data.advisory` advertised
+`array of string` — while a string was what actually arrived.
+
+**Neither half could fail a test.** The schema tests read the schema, the tool tests read the
+runtime, and nothing had ever compared the two. Both surfaces worked perfectly and disagreed.
+
+### The decision: a separate key, not a merged prose advisory
+
+Both options were on the table. `advisory_axes: list[str]` wins on three counts:
+
+1. **The receipt's `advisory` must be one type across all 25 governed writes.** The collision
+   *is* the defect; making one tool's `advisory` a different shape from the other 24 keeps it.
+2. **`ADVISORY_AXES` carries no per-call information** — it is a constant lookup by `kind`
+   (`("relational",)` for an action, `()` for the other two kinds). Merging it into the receipt's
+   prose would append a fixed sentence to **100% of action creates**. This repo has already
+   measured that rule and acted on it: `receipt.is_facet` exists because two tools fired their
+   advisory on 100% of legitimate calls, and the fix was to stop firing, not to reword.
+3. **It has a natural home.** `ready: bool` / `missing: list[str]` are the first two members of
+   the DoR triple; `advisory_axes` is the third — same type as `missing`, opposite gate. A
+   consumer iterates a list instead of searching a substring.
+
+It also stays coherent with v6.6.0's third advisory producer: `build_name_advisory` is APPENDED
+to the loss advisories because it explains neither and is explained by neither. The DoR axes are
+not a fourth producer at all — they were never about the call, only about the item.
+
+### The durable half: the collision class is now unrepresentable
+
+`_write_envelope_schema` **raises `TypeError`** when a success model declares any name in
+`receipt.RECEIPT_FIELDS`. Not a report — the v6.0.0 posture, where a wrong block order stopped
+being *rejected* and became impossible to express. A collision is a developer error with no
+legitimate form (the receipt's three fields are the receipt's by definition), it is silent by
+construction, and failing at import means it can never reach a caller. The message names the fix,
+not just the fault.
+
+Beside it, the assertion that was missing all along: **every governed write's advertised
+`data.advisory` is `string | null`**, checked over the real server, which is the direct
+comparison of the two surfaces nobody had made.
+
+### Compatibility
+
+The runtime `data["advisory"]` on `gtd_item_create` is unchanged — it has carried the receipt's
+string since v4.0.0, and the list it advertised has never once been sent. So no consumer can have
+been reading the DoR axes from it, which is why this is a minor rather than a major: the
+advertised schema is corrected to match three releases of runtime reality, and `advisory_axes` is
+additive.
+
+### Still open, and unchanged by this release
+
+`tool_help.RECEIPT_FIELD_DOC["advisory"]` describes the bare-call and leaked-markup causes but
+not v6.6.0's name-length producer. A tier-2 documentation gap, not a contract one.
+
+To go live: restart the server on v6.7.0. Rollback is a revert.
+
+## v6.6.0 — a name-length advisory on the two governed item-creation writes
+
+Additive. **Two fingerprints churn** (`gtd_item_create`, `gtd_project_create` — description
+only). No new tag, no new `ErrorCode`, no strict-tag interaction, no gate, vault-free.
+
+Implements the approved designed change `2026-08-02-vault-naming-mirrors-rtm` §§ 1a.1, 1a.3,
+Moves 7 and 8.
+
+### Why a length is worth mentioning at all
+
+Vault folder names are now derived from the RTM item name, so a long name produces a truncated
+folder. That is **not** the value here. Measured over the live estate on 2026-08-02:
+
+| Finding | Measure |
+|---|---|
+| Live project names vs archived | **45% longer** (median slug 46.5 vs 32.0) |
+| Live projects over budget | 31, of which **18** come under by cutting at the first `—` or `(` |
+| Of those 31, defects the length merely EXPOSED | **13** — nine outcome statements sitting in the title field, four single actions mis-tagged as projects, two carrying a date that belongs on the due date |
+
+So the useful claim is *"something is in the wrong field"*, not *"your folder will be shortened"*
+— and that judgement is the caller's, which is why this is an advisory and can never become a
+gate. The message names a length and never a path.
+
+### The membrane — the one thing this change had to get right
+
+rtm-mcp marks tool after tool "vault-free", and the single place it touches the vault
+(`companion.py`) is read-only and documented as never to widen. An earlier draft of the designed
+change gave this repo the slug function, the path template and the length budget; that was
+corrected before implementation (§ 1a.1) precisely because it breached that boundary.
+
+**What this repo owns is ONE integer and a comparison.** It does not import the naming rule, does
+not know what a folder is, and its message speaks of name length only. The filesystem reasoning
+lives in gtd's `references/focus-area-map.md`. Two tests fail loudly if anyone widens it back: an
+`ast` sweep for an import of the naming rule, and a scan for a vault path template in any module
+but `companion.py`.
+
+### ⚠ It is a deliberate ONE-SIDED proxy, and lowering the number does not fix that
+
+The advisory measures the **raw name**; truncation is decided by the **slug**, computed
+vault-side. They are different quantities and will not always agree:
+
+- Measured: **6** live items truncate without tripping a 60-character advisory (a 56-character
+  name losing its last word). **Zero** trip the advisory without truncating. The error is strictly
+  one-sided — it under-warns, never over-warns, which is the safe direction for an advisory.
+- A raw-name threshold is unsound **in principle**, not merely imprecise: slugging expands as well
+  as contracts (`&` → `and`), so `R&D & QA & Ops & Sec review` is 27 characters and slugs to 37.
+  No raw-name threshold is sound, and reaching for a sounder one would mean importing the slug
+  rule — the membrane above.
+
+The band is closed at the other end instead: `agent-memory-mcp` reports **actual** truncation at
+filing time, where `folder_name()` can compute it. Both docstrings state the caveat.
+
+### What changed
+
+- `receipt.py` gains `NAME_ADVISORY_LIMIT = 60` (Paul's decision, 2026-08-02) and
+  `build_name_advisory` — a pure producer, silent for a non-string and at or below the threshold.
+- `attach` gains `item_name`. **The name advisory is APPENDED to the loss advisories, not ranked
+  against them.** Markup and bare-call are mutually exclusive because one *explains* the other;
+  name length explains neither and is explained by neither, so ranking it would silently drop a
+  true signal while concatenating duplicates nothing.
+- `tools/gtd.py::_tool` accepts `name_of`, an extractor supplied at the two registration sites
+  (`name`; `frame["name"]`, coerced because `frame` may arrive as a JSON string). A callable
+  rather than a dotted-path string — two small lambdas beat a path mini-language nothing else
+  would use. **Every other tool passes nothing, so the producer is silent for them by
+  construction rather than by exemption.**
+- No `not_applied[]` entry: nothing was withheld. No `ErrorCode`: a new member re-fingerprints all
+  102 tools for a non-failure the advisory already states.
+
+### Verification
+
+Each guard was **watched to fail** under a deliberate mutation, not merely observed green:
+
+| Mutation | Result |
+|---|---|
+| the threshold comparison never fires | 6 failed — including all four "fires" tests |
+| `name_of` never reaches `attach` | **3 failed — only the end-to-end ones.** Every pure test passed, which is exactly the vacuity the end-to-end class exists to close |
+| an import of the naming rule + a path template added | both membrane guards failed, naming the file and line |
+
+2,012 tests green; `make lint` clean.
+
+### Membrane / activation
+
+Vault-free, no new tag, no new `ErrorCode`, no gate. To go live: restart the server on v6.6.0.
+Rollback is a revert.
+
+### Found in passing — NOT fixed here, and it is a live defect
+
+`gtd_item_create` sets `data["advisory"] = val["advisory"]`, the Definition-of-Ready `relational`
+axis (a `list[str]`, which its docstring promises is "REPORTED in `advisory`"). `receipt.attach`
+then **overwrites that key unconditionally** with the receipt's `str | None`, so the DoR advisory
+has never reached a caller. The advertised schema and the runtime value also disagree:
+`CreateItemResult.advisory` advertises `array of string` while the runtime writes a string.
+
+Left alone deliberately — it is pre-existing, out of this brief's scope, and fixing it changes an
+advertised output schema. It is coupled to this change: a fix must decide whether the DoR axes
+move to their own key or the two advisories merge.
+
 ## v6.5.2 — a companion was also counted as an artefact
 
 Bug fix. **No fingerprint churn** (only `generated_at` / `source_version` move), no schema change,

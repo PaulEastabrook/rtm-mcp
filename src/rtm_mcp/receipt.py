@@ -286,6 +286,60 @@ def build_markup_advisory(tool_name: str, findings: list[dict[str, Any]]) -> str
     )
 
 
+# --------------------------------------------------------------------------- #
+# Name length (v6.6.0) — a GTD hygiene signal, and emphatically NOT a filesystem one.
+#
+# THE MEMBRANE. This server knows NOTHING about vaults, folders, slugs or path budgets, and
+# this block must not be the place that changes. `companion.py` is the single vault seam, it
+# is read-only, and it is documented as never to widen. An earlier draft of the designed
+# change gave this repo the slug function, the path template and the length cap; that was
+# corrected before implementation (`2026-08-02-vault-naming-mirrors-rtm` § 1a.1) precisely
+# because it breached that boundary. What lives here is ONE integer and a comparison. The
+# filesystem reasoning lives in gtd's `references/focus-area-map.md`; actual truncation is
+# reported by `agent-memory-mcp` at filing time, where `folder_name()` can compute it.
+#
+# WHY 60 IS WORTH SAYING ANYTHING ABOUT, measured over the live estate 2026-08-02: live
+# project names run 45% longer than archived ones (median slug 46.5 vs 32.0), and of the 31
+# live projects over budget, **13 are defects the length merely exposed** — nine outcome
+# statements sitting in the title field ("…(ensure this is objective and data backed)" is an
+# acceptance criterion), four single actions mis-tagged as projects, two carrying a date that
+# belongs on the due date. So the useful claim is "something is in the wrong field", not "your
+# folder will be shortened" — and that judgement is the caller's, which is why this is an
+# advisory and can never become a gate.
+# --------------------------------------------------------------------------- #
+
+#: Characters of raw item/project name above which the hygiene advisory fires (Paul, 2026-08-02).
+NAME_ADVISORY_LIMIT = 60
+
+
+def build_name_advisory(name: Any, *, limit: int = NAME_ADVISORY_LIMIT) -> str | None:
+    """The name-length advisory, or None at or below the threshold (and for a non-string).
+
+    **This is a deliberately ONE-SIDED proxy, and the direction is the safe one.** It measures
+    the raw name; whether a vault folder actually truncates is decided by the *slug*, computed
+    vault-side from a different quantity. Measured 2026-08-02: 6 live items truncate without
+    tripping a 60-character advisory (e.g. a 56-character name that loses its last word), and
+    **zero** trip the advisory without truncating. So the error is under-warning, never
+    over-warning — which is what an advisory should get wrong if it must get something wrong.
+
+    **A raw-name threshold is unsound in principle, not merely imprecise, so do not "fix" it by
+    lowering the number.** Slugging expands as well as contracts: `&` becomes `and`, so
+    `R&D & QA & Ops & Sec review` is 27 characters and slugs to 37. No raw-name threshold is
+    sound, and reaching for a sounder one here would mean importing the slug rule — which is
+    the membrane above. The band is closed at the other end instead, by the server that owns
+    the rule.
+
+    The message names a *length* and never a path, for the same reason.
+    """
+    if not isinstance(name, str) or len(name) <= limit:
+        return None
+    return (
+        f"Name is {len(name)} characters. Long names usually mean something belongs in another "
+        "field — an outcome statement, an acceptance criterion, or a date that belongs on the "
+        "due date. Consider shortening."
+    )
+
+
 def _count(data: dict[str, Any], key: str) -> int:
     value = data.get(key)
     return len(value) if isinstance(value, list) else 0
@@ -338,6 +392,7 @@ def attach(
     absent_optional: list[str],
     declared_optional: list[str],
     leaked: list[dict[str, Any]] | None = None,
+    item_name: Any = None,
 ) -> dict[str, Any]:
     """Attach the three receipt fields to a governed write's success payload.
 
@@ -349,18 +404,36 @@ def attach(
     A `not_applied[]` a tool body has already populated is preserved; this only guarantees the
     key exists. `guidance` is derived last, so it sees those entries.
 
+    **`advisory` and `guidance` are assigned UNCONDITIONALLY, so those two names are the
+    receipt's and a tool body may not also use them.** `gtd_item_create` did, from v4.0.0 to
+    v6.6.0: it wrote the Definition-of-Ready axes to `advisory` and this line silently replaced
+    them, while the advertised schema — where the result model wins the MRO — promised the list
+    that never arrived. Both sides worked and disagreed, which no test could see. Since v6.7.0
+    `models._write_envelope_schema` refuses the collision at import, and the axes have their own
+    `advisory_axes` key. If a tool needs to report something structured, give it a name.
+
     **`leaked` OUTRANKS the bare-call advisory, because it explains it.** When markup is found,
     the absence of the optionals is not a separate fact to report — it is the same fact, and the
     markup advisory names the lost parameter where the bare-call one can only list what is
     missing. Reporting both would say one thing twice, which is the duplication v4.1.0 narrowed
     `guidance` to avoid. And the markup advisory still fires when the bare-call one is silent
     (some facets supplied, one lost), which is the whole point of having it.
+
+    **The name advisory is APPENDED rather than ranked, and the asymmetry is the reason.**
+    Markup and bare-call are mutually exclusive because one *explains* the other, so emitting
+    both would say one thing twice. Name length explains neither and is explained by neither —
+    it is an independent observation about data that DID land, where the other two are about
+    data that may not have. Ranking it would silently drop a true signal; concatenating drops
+    nothing and duplicates nothing. `item_name` is None for every tool that has no such name,
+    so the producer is silent by construction rather than by exemption.
     """
     if not isinstance(data, dict) or "error" in data:
         return data
     data.setdefault("not_applied", [])
-    data["advisory"] = build_markup_advisory(tool_name, leaked or []) or build_advisory(
+    loss = build_markup_advisory(tool_name, leaked or []) or build_advisory(
         tool_name, absent_optional, declared_optional
     )
+    parts = [part for part in (loss, build_name_advisory(item_name)) if part]
+    data["advisory"] = " ".join(parts) or None
     data["guidance"] = build_guidance(data)
     return data
